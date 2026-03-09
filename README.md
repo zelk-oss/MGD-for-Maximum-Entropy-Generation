@@ -1,0 +1,1 @@
+# MGD-Moment-Guided-Diffusion-for-Maximum-Entropy-Generation
