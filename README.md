@@ -7,7 +7,7 @@ Official implementation of the paper:
 
 > **MGD: Moment Guided Diffusion for Maximum Entropy Generation**  
 > Etienne Lempereur¹, Nathanaël Cuvelle–Magar¹, Florentin Coeurdoux², Stéphane Mallat³⁴, Eric Vanden-Eijnden⁵⁶  
-> ¹ ENS / Université PSL — ² Capital Fund Management — ³ Collège de France — ⁴ Flatiron Institute — ⁵⁶ NYU Courant / CFM  
+> ¹ ENS / Université PSL — ² Capital Fund Management — ³ Collège de France — ⁴ Flatiron Institute — ⁵ NYU Courant Institute ⁶ ML Lab CFM  
 > *arXiv, February 2026*
 
 ---
