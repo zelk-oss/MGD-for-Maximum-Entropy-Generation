@@ -6,6 +6,85 @@ from copy import deepcopy
 
 import torch.nn as nn
 
+#---------------------------------------- 1d ----------------------------------------
+
+def indices_fourth_order_Q(J,Q,offset=0,lite=False,include_lowpass = True):
+    num_filters_Q = J*Q
+    if include_lowpass is True:
+        num_filters = J+1
+    else: 
+        num_filters = J
+
+    triu_indices = torch.triu_indices(row=num_filters_Q, col=num_filters_Q, offset=offset)
+    
+    
+
+    axis_a = []
+    axis_b = []
+    axis_c = []
+
+    for i in range(triu_indices.shape[1]):
+        row = triu_indices[1,i]
+        j = row//Q
+
+        if lite is False:
+            axis_a.extend([triu_indices[0,i] for j in range(num_filters-j)])
+            axis_b.extend([row for i in range(num_filters-j)])
+            axis_c.extend([i for i in range(j, num_filters)])
+        else:
+            axis_a.extend([triu_indices[0,i] for j in range(num_filters-j-1)])
+            axis_b.extend([row for i in range(num_filters-j-1)])
+            axis_c.extend([i for i in range(j+1, num_filters)])
+
+    axis_a = torch.Tensor(axis_a).to(dtype=torch.int32)
+    axis_b = torch.Tensor(axis_b).to(dtype=torch.int32)
+    axis_c = torch.Tensor(axis_c).to(dtype=torch.int32)
+
+  
+
+    indices = torch.stack([axis_a,axis_b,axis_c])
+    return indices
+
+def indices_fourth_order_Q_Condi(J,Q,offset=0,lite=False,include_lowpass = True):
+    num_filters_Q = J*Q
+    if include_lowpass is True:
+        num_filters = J+1
+    else: 
+        num_filters = J
+
+    triu_indices = torch.triu_indices(row=num_filters_Q, col=num_filters_Q, offset=offset)
+    
+    axis_a = []
+    axis_b = []
+    axis_c = []
+
+    for i in range(num_filters_Q*Q-(Q*(Q-1))//2):
+        row = triu_indices[1,i]
+        j = row//Q
+
+        if lite is False:
+            axis_a.extend([triu_indices[0,i] for j in range(num_filters-j)])
+            axis_b.extend([row for i in range(num_filters-j)])
+            axis_c.extend([i for i in range(j, num_filters)])
+        else:
+            axis_a.extend([triu_indices[0,i] for j in range(num_filters-j-1)])
+            axis_b.extend([row for i in range(num_filters-j-1)])
+            axis_c.extend([i for i in range(j+1, num_filters)])
+
+    axis_a = torch.Tensor(axis_a).to(dtype=torch.int32)
+    axis_b = torch.Tensor(axis_b).to(dtype=torch.int32)
+    axis_c = torch.Tensor(axis_c).to(dtype=torch.int32)
+
+  
+
+    indices = torch.stack([axis_a,axis_b,axis_c])
+    return indices
+    
+
+    
+
+#---------------------------------------- 2d ----------------------------------------
+
 def indices_third_order(J, L):
     num_filters = J*L+1
 
@@ -25,34 +104,6 @@ def indices_third_order(J, L):
 
     return indices
 
-def indices_fourth_order_Q(J, Q, offset=0):
-    num_filters_Q = J*Q
-    num_filters = J+1
-
-    triu_indices = torch.triu_indices(row=num_filters_Q, col=num_filters_Q, offset=offset)
-    
-    
-
-    axis_a = []
-    axis_b = []
-    axis_c = []
-
-    for i in range(triu_indices.shape[1]):
-        row = triu_indices[1,i]
-        j = row//Q
-
-        axis_a.extend([triu_indices[0,i] for j in range(num_filters-j)])
-        axis_b.extend([row for i in range(num_filters-j)])
-        axis_c.extend([i for i in range(j, num_filters)])
-
-    axis_a = torch.Tensor(axis_a).to(dtype=torch.int32)
-    axis_b = torch.Tensor(axis_b).to(dtype=torch.int32)
-    axis_c = torch.Tensor(axis_c).to(dtype=torch.int32)
-
-  
-
-    indices = torch.stack([axis_a,axis_b,axis_c])
-    return indices
 
 def indices_fourth_order(J,L):
     num_filters = J*L+1
