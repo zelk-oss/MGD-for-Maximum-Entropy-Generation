@@ -187,9 +187,8 @@ class SDE_condi(torch.nn.Module):
         increments. ``param_storage_frequency`` sets the recording cadence."""
 
 
-        #Fiting
-        self.fit(self.x_k_direct,self.x_k_condi)
-
+        self._validate_reference_fitting()
+        self._validate_all_fits()
         barphi_e = [self.compute_moments(self.x_0_direct,self.x_0_condi).mean(0)]
         barphi_p = [self.compute_moments(self.x_k_direct,self.x_k_condi).mean(0)]
 
@@ -198,11 +197,6 @@ class SDE_condi(torch.nn.Module):
         dH_k_list    = []
 
         for k, t_k in tqdm(enumerate(self.t[:-1])):
-
-            #Fiting
-            self.fit(self.x_k_direct,self.x_k_condi)
-            
-            
             self.x_k_direct, I_k_direct, eta_k, theta_k, dH_k = self.iteration_step_projection(self.x_k_direct,self.x_k_condi, k)
 
             if (k + 1) % param_storage_frequency == 0:
@@ -510,11 +504,28 @@ class SDE_condi(torch.nn.Module):
     # Optional
     # ------------------------------------------------------------------------------------------------------------------
     
+    def _validate_reference_fitting(self):
+        for pot in self.potentials.values():
+            if getattr(pot, 'requires_reference_fit', False) and not getattr(pot, 'is_fitted', False):
+                raise RuntimeError(
+                    f"Potential {pot.__class__.__name__} requires reference fitting before SDE_condi forward(). "
+                    f"Call pot.fit_reference(x_ref) or pot.fit(x_ref, reference=True) first."
+                )
+
+    def _validate_all_fits(self):
+        for pot in self.potentials.values():
+            if not getattr(pot, 'is_fitted', True):
+                raise RuntimeError(
+                    f"Potential {pot.__class__.__name__} must be fitted before SDE_condi forward(). "
+                    f"Call pot.fit(x_ref, x_condi_ref) first."
+                )
+
     def fit(self,x_k_direct,x_k_condi):
         """Refit potentials implementing ``fit(direct, condi)``; skip the rest."""
         for pot in self.potentials.values():
-                try:
-                    pot.fit(x_k_direct,x_k_condi)
-                    
-                except:
-                    pass
+            if getattr(pot, 'requires_reference_fit', False) and not getattr(pot, 'is_fitted', False):
+                continue
+            try:
+                pot.fit(x_k_direct, x_k_condi)
+            except Exception:
+                pass

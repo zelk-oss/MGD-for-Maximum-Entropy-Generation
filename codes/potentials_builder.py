@@ -128,10 +128,53 @@ def get_1d_potentials(terms, J, filters, Q=1, filters_Q=None, filters_Phi=None,s
 
     if 'Scalar_morlet_quantile_confine' in terms:
         potentials['Scalar_morlet_quantile_confine'] =Scalar(filters,scalar_param=scalar_param,quantiles = True,confine=True)
-        
+
     if 'Scalar_psi_quantile_confine' in terms:
         potentials['Scalar_psi_quantile_confine'] =Scalar(filters_Q,scalar_param=scalar_param,quantiles = True,confine=True)
 
+    # gaussian 
+    if 'Scalar_psi_generalized_gaussian' in terms:
+        potentials['Scalar_psi_generalized_gaussian'] = Scalar_generalized_gaussian(filters_Q)
+
+    if 'Scalar_morlet_generalized_gaussian' in terms:
+        potentials['Scalar_morlet_generalized_gaussian'] = Scalar_generalized_gaussian(filters)
+
+    # student t 
+    if 'Scalar_psi_student_t' in terms: 
+        potentials['Scalat_psi_student_t'] = Scalar_student_t(filters_Q) 
+
+    if 'Scalar_morlet_student_t' in terms: 
+        potentials['Scalat_morlet_student_t'] = Scalar_student_t(filters) 
+
+    # Generalized t 
+    if 'Scalar_psi_generalized_t' in terms: 
+        potentials['Scalar_psi_generalized_t'] = Scalar_generalized_t(filters_Q)
+
+    if 'Scalar_morlet_generalized_t' in terms: 
+        potentials['Scalar_morlet_generalized_t'] = Scalar_generalized_t(filters)
+        
+    # Coshgt
+    if 'Scalar_psi_coshgt' in terms: 
+        potentials['Scalar_psi_coshgt'] = Scalar_coshgt(filters_Q)
+
+    if 'Scalar_morlet_coshgt' in terms: 
+        potentials['Scalar_morlet_coshgt'] = Scalar_coshgt(filters)
+
+    # Maxent 
+    if 'Scalar_psi_maxent' in terms: 
+        potentials['Scalar_psi_maxent'] = Scalar_maxent(filters_Q)
+
+    if 'Scalar_morlet_maxent' in terms: 
+        potentials['Scalar_morlet_maxent'] = Scalar_maxent(filters)
+
+    # Maxent log 
+    if 'Scalar_psi_maxent_log' in terms: 
+        potentials['Scalar_psi_maxent_log'] = Scalar_maxent_log(filters_Q)
+
+    if 'Scalar_morlet_maxent_log' in terms: 
+        potentials['Scalar_morlet_maxent_log'] = Scalar_maxent_log(filters)
+
+    # scattering 
     if 'Scattering_First_Order' in terms:
         potentials['Scattering_First_Order'] = Scattering_First_Order_1d(filters_Q[:,:-1])
     
@@ -143,9 +186,18 @@ def get_1d_potentials(terms, J, filters, Q=1, filters_Q=None, filters_Phi=None,s
     if 'Scattering_Third_Order_Imag' in terms:
         pass
         #potentials['Scattering_Third_Order_Imag'] = Scattering_Third_Order_Imag_1d(J, filters_Q)
-
+    
     if 'Scattering_Fourth_Order_Real' in terms:
         potentials['Scattering_Fourth_Order_Real'] = Scattering_Fourth_Order_Real_1d(J, Q, filters, filters_Q[:,:-1])
+
+    # Q = 1 SCATTERING 2ND ORDER 
+    if 'Scattering_Second_Order_Q1' in terms:
+        potentials['Scattering_Second_Order_Q1'] = Scattering_Second_Order_1d(filters)
+
+
+    # Q = 1 SCATTERING 4TH ORDER 
+    if 'Scattering_Fourth_Order_Real_Q1' in terms:
+        potentials['Scattering_Fourth_Order_Real_Q1'] = Scattering_Fourth_Order_Real_1d(J, 1, filters, filters[:,:-1])
         
     if 'Scattering_Fourth_Order_Imag' in terms:
         pass
@@ -230,6 +282,12 @@ def get_1d_potentials_condi(W,terms, J, filters, Q=1, filters_Q=None, filters_Ph
         potentials['Scalar_psi_quantile_confine'] =Potential_Condi(Scalar(filters_Q_direct,scalar_param=scalar_param,quantiles = True,confine=True),W,parallel =parallel )
     if 'Scalar_morlet_quantile_confine' in terms:
         potentials['Scalar_morlet_quantile_confine'] =Potential_Condi(Scalar(filters[:,:1],scalar_param=scalar_param,quantiles = True,confine=True),W,parallel =parallel )
+
+    if 'Scalar_psi_generalized_gaussian' in terms:
+        potentials['Scalar_psi_generalized_gaussian'] = Potential_Condi(Scalar_psi_generalized_gaussian(filters_Q_direct), W, parallel=parallel)
+
+    if 'Scalar_morlet_generalized_gaussian' in terms:
+        potentials['Scalar_morlet_generalized_gaussian'] = Potential_Condi(Scalar_Morlet_Generalized_Gaussian(filters[:,:1]), W, parallel=parallel)
     
     if 'Scattering_First_Order' in terms:
         potentials['Scattering_First_Order'] = Potential_Condi(Scattering_First_Order_1d(filters_Q_direct),W,parallel =parallel )

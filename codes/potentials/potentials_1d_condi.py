@@ -33,16 +33,30 @@ class Potential_Prepare_condi(nn.Module):
 class Potential_Parallel_condi(nn.Module):
     def __init__(self,potential):
         super().__init__()
+        self._wrapped = potential
         self.potential = nn.DataParallel(Potential_Prepare(potential))
      
         #self.grad = potential.grad
+
+    @property
+    def is_fitted(self):
+        return getattr(self._wrapped, 'is_fitted', True)
+
+    @property
+    def requires_reference_fit(self):
+        return getattr(self._wrapped, 'requires_reference_fit', False)
+
     def forward(self,x):
         return self.potential(x,argument='forward')
+
     def grad(self,x,v=None):
         n_gpu = torch.cuda.device_count()
         if v is not None and n_gpu != 0:
             v = v.repeat((n_gpu,))
         return self.potential(x,v,argument='grad')
+    @property
+    def num_coefficients(self):
+        return getattr(self._wrapped, 'num_coefficients', None)
     def fit(self,x):
         print('fit_Parallel')
         self.potential(x,argument='fit')
@@ -51,6 +65,7 @@ class Potential_Condi(nn.Module):
   
     def __init__(self,potential,W,parallel =False):
         super().__init__()
+        self._wrapped = potential
         if parallel is False:
             self.potential = potential
         else: 
@@ -59,7 +74,14 @@ class Potential_Condi(nn.Module):
         self.num_potentials = None
         self.num_coefficients = self.potential.num_coefficients
         
-            
+    @property
+    def is_fitted(self):
+        return getattr(self._wrapped, 'is_fitted', True)
+
+    @property
+    def requires_reference_fit(self):
+        return getattr(self._wrapped, 'requires_reference_fit', False)
+
     def forward(self,x,x_condi):
         return self.potential(self.W(x,x_condi))
     def grad(self,x,x_condi,v=None):

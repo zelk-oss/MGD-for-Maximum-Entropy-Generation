@@ -13,6 +13,22 @@ from scipy import io
 def load_SNP(nb_copy=1):
     return torch.load('../../data/data_files/SNP')[None, None].repeat(nb_copy,1,1)
 
+def load_turbulence_1d(sous_ech = 0):
+
+
+    data_path = '/lustre/fswork/projects/rech/wbg/ukv59en/conditional_mgd/data/data_files/turbulence_1d_period.pt'
+    
+    Data = torch.load(data_path)
+    Data = Data.to(torch.float32)
+  
+    for i in range(sous_ech):
+        if Data.shape[-1]%2 == 0:
+            Data = (Data[:,:,::2]+Data[:,:,1::2]) / 2
+        else:
+            Data = (Data[:,:,:-1:2]+Data[:,:,1::2]) / 2
+  
+    return (Data)
+
 # -------- 2d signals --------
 
 def load_quijote(fact=0):

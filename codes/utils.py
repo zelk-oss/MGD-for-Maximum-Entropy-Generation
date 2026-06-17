@@ -65,36 +65,41 @@ def symmetrize_functional(x):
     bottom = torch.cat([torch.flip(x, dims=[2]), torch.flip(x, dims=[2, 3])], dim=3)
     return torch.cat([top, bottom], dim=2)
 
-def save_results(xt, theta_t, dH_t_bound, t, root, config):
-    torch.save(xt.cpu(), root / 'saved_results/samples' / config)
-    torch.save(theta_t.cpu(), root / 'saved_results/lagrange_multipliers' / config)
-    torch.save(dH_t_bound.cpu(), root / 'saved_results/entropy_bounds' / config)
-    torch.save(t.cpu(), root / 'saved_results/sampling_times' / config)
-    
-    return
+def save_results(
+    xt,
+    theta_t,
+    dH_t_bound,
+    t,
+    root,
+    config,
+    Theta_reg,
+):
+    base = root / 'saved_results'
+
+    torch.save(xt.cpu(), base / 'samples' / config)
+    torch.save(theta_t.cpu(), base / 'lagrange_multipliers' / config)
+    torch.save(dH_t_bound.cpu(), base / 'entropy_bounds' / config)
+    torch.save(t.cpu(), base / 'sampling_times' / config)
+
+    torch.save(
+        Theta_reg.cpu(),
+        base / 'lagrange_multipliers_regularised' / config
+    )
 
 def load_results(root, config):
-    """Load run outputs saved by :func:`save_results`.
- 
-    Parameters
-    ----------
-    root : pathlib.Path
-        Results root directory.
-    config : str
-        Filename for the run.
- 
-    Returns
-    -------
-    tuple
-        ``(x_t, theta_t, dH_t_bound, t)``.
-    """
+    base = root / 'saved_results'
 
-    x_t = torch.load(root / 'saved_results/samples' / config)
-    theta_t = torch.load(root / 'saved_results/lagrange_multipliers' / config)
-    dH_t_bound = torch.load(root / 'saved_results/entropy_bounds' / config)
-    t = torch.load( root / 'saved_results/sampling_times' / config)
-    
-    return (x_t,theta_t,dH_t_bound,t)
+    x_t = torch.load(base / 'samples' / config)
+    theta_t = torch.load(base / 'lagrange_multipliers' / config)
+    dH_t_bound = torch.load(base / 'entropy_bounds' / config)
+    t = torch.load(base / 'sampling_times' / config)
+
+    path_theta_reg = base / 'lagrange_multipliers_regularised' / config
+
+    if path_theta_reg.exists():
+        Theta_reg = torch.load(path_theta_reg)
+
+    return (x_t, theta_t, dH_t_bound, t, Theta_reg)
 
 def normalize(Data):
     """Standardize ``Data`` to zero mean and unit std, cast to float32.
@@ -114,3 +119,24 @@ def normalize(Data):
     Data = Data.to(torch.float32)
     return Data
 
+def split_periodize_reshape(Data, n1):
+    """
+    Splits Data into non-overlapping subseries of length n1 along the last axis,
+    discards the end if not divisible, periodizes each subseries, and reshapes
+    the output to [batch * num_subseries, channels, n1].
+    """
+    num_subseries = Data.size(-1) // n1
+    Data_sub = Data[:, :, :num_subseries * n1]
+    Data_sub = Data_sub.unfold(-1, n1, n1)
+
+    first = Data_sub[..., 0:1]
+    last = Data_sub[..., -1:]
+    a = (last - first) / (n1 - 1)
+    b = first
+    x = torch.arange(n1, device=Data.device, dtype=Data.dtype)
+    linear = a * x + b 
+    Data_periodized = Data_sub - linear 
+    Data_periodized = Data_periodized + first 
+
+    batch, channels, _, _ = Data_periodized.shape
+    return Data_periodized.reshape(batch * num_subseries, channels, n1)
