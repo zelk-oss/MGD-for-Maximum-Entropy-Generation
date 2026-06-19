@@ -89,6 +89,7 @@ def get_1d_potentials(terms, J, filters, Q=1, filters_Q=None, filters_Phi=None,s
 
     if 'L_2' in terms:
        potentials['L_2'] = L2p_norm(1,filters)
+
     if 'L_3' in terms:
         potentials['L_3'] = L2p1_norm(1,filters)
     if 'L_4' in terms:
@@ -122,6 +123,10 @@ def get_1d_potentials(terms, J, filters, Q=1, filters_Q=None, filters_Phi=None,s
         potentials['L_7_phi'] = L2p1_norm(3,filters_Phi)
     if 'L_8_phi' in terms:
         potentials['L_8_phi'] = L2p_norm(4,filters_Phi)
+
+    # capture low pass 
+    if 'L_2_lowpass' in terms:
+       potentials['L_2_lowpass'] = L2p_norm(1,filters[:,-1,:])
 
     if 'Scalar_phi_quantile_confine' in terms:
         potentials['Scalar_phi_quantile_confine'] =Scalar(filters_Phi,scalar_param=scalar_param,quantiles = True,confine=True)

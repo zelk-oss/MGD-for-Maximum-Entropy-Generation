@@ -1,26 +1,30 @@
 # run_sde.py
 
-import argparse
-import json
-import torch
 from pathlib import Path
 import sys
 
-# ── paths ─────────────────────────────────────────────
-root = Path().resolve()
-sys.path.insert(0, str(root / '../codes'))
+# Anchor to THIS file, not where SLURM runs
+root = Path(__file__).resolve().parent
 
-# ── imports (unchanged) ───────────────────────────────
-from sde_routines_condi import *
+project_root = root.parent  # this is x/
+
+codes_path = project_root / "codes"
+data_path = project_root / "data"
+
+if str(codes_path) not in sys.path:
+    sys.path.insert(0, str(codes_path))
+
+if str(data_path) not in sys.path:
+    sys.path.insert(0, str(data_path))
+
+import argparse
+import json
+import torch
+
 from sde_routines import *
 from potentials_builder import *
 from filters_bank import *
-from utils import *
-from utils_entropy import *
-from potentials import *
-from regularised_theta import *
 
-sys.path.insert(0, str(root / '../data'))
 from data_loader import *
 
 # ── args ─────────────────────────────────────────────

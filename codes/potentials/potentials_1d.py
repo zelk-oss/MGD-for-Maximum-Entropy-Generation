@@ -1445,7 +1445,7 @@ class Scalar_maxent:
     def __init__(self, filters, eps_abs=1e-6, eps_scale=1e-6,
                  fixed_p0=None, p0_bounds=(0.2, 1.5)):
         self.filters = filters
-        self.num_coefficients = filters.shape[1]
+        self.num_coefficients = filters.shape[1]*3
         self.eps_abs, self.eps_scale = eps_abs, eps_scale
         self.fixed_p0, self.p0_bounds = fixed_p0, p0_bounds
         self.theta = self.p0 = self.s0 = None     # (J,3), (J,), (J,)
@@ -1522,10 +1522,9 @@ class Scalar_maxent:
         t1, t2, t3, p0, s0 = self._bcast(x)
         az = torch.sqrt(z ** 2 + self.eps_abs)
         # full potential 
-        psi = t1 * az.pow(p0) + t2 * torch.log1p((z / s0) ** 2) + t3 * az
-        # only the log 
-        # psi = t2 * torch.log1p((z / s0) ** 2) 
-        return psi.mean(-1)                                          # (B, J)
+        psi = torch.stack([az.pow(p0), torch.log1p((z / s0) ** 2), az], dim=1) # (B, 3, J, T) 
+        psi = psi.mean(dim=-1)    # (B, 3, J)  
+        return psi.reshape((psi.shape[0], -1))  # (B, 3J)
 
     # ∂φ_pot/∂z = θ1·p0·|z|^{p0-2}z + θ2·2z/(s0²+z²) + θ3·z/|z|
     def grad(self, x, v=None, means=None):
@@ -1534,13 +1533,12 @@ class Scalar_maxent:
         z = torch.fft.ifft(filters * torch.fft.fft(x)).real          # (B, J, T)
         t1, t2, t3, p0, s0 = self._bcast(x)
         az = torch.sqrt(z ** 2 + self.eps_abs)
-        dpsi = (t1 * p0 * az.pow(p0 - 2.0) * z
-                + t2 * (2.0 * z / (s0 ** 2 + z ** 2 + self.eps_abs))
-                + t3 * (z / az))                                     # (B, J, T)
+        dpsi = torch.stack([p0 * az.pow(p0 - 2.0) * z, (2.0 * z / (s0 ** 2 + z ** 2 + self.eps_abs)), (z / az)], dim=1)  # (B, 3, J, T)
 
         grad_coeff = torch.fft.ifft(
             torch.fft.fft(dpsi) * filters
-        ).real / x.shape[-1]                                          # (B, J, T)
+        ).real / x.shape[-1]                                          # (B, 3, J, T)
+        grad_coeff = grad_coeff.reshape((grad_coeff.shape[0],-1, grad_coeff.shape[-1])) # (B, 3J, T) 
 
         if v is None:
             return grad_coeff

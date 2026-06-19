@@ -24,6 +24,7 @@ from potentials import *
 from filters import *
 from mala import *
 from ortho_wavelet import *
+from utils_entropy import *
 
 sys.path.insert(0, str(root / '../data'))
 from data_loader import *
@@ -200,6 +201,68 @@ def plot_histogram_overlay(
     plt.tight_layout()
     plt.show()
 
+def plot_entropy_curves(
+    x_ref: torch.Tensor,
+    results: Dict[str, Dict],
+    experiments: Dict[str, Dict],
+    interpolant: Any,
+    nt: Optional[int] = None,
+) -> None:
+    """Plot entropy bounds and Gaussian entropy estimates for all experiments."""
+    
+    def _entropy_curves(x_ref, dH_t_bound, t_used, nt_val):
+        # Fallback to length of t if nt is not explicitly provided
+        if nt_val is None:
+            nt_val = t_used.shape[0]
+        
+        d = x_ref.shape[-2] * x_ref.shape[-1]
+        H_p_0 = (np.log(2 * np.pi) + 1) * d / 2
+        H_t_bound = dH_t_bound.cumsum(0).detach().cpu() / nt_val + H_p_0
+        H_t_gaussian = compute_gaussian_entropy(x_ref.detach().cpu(), interpolant, t_used.detach().cpu())
+        return H_t_bound, H_t_gaussian
+
+    fig, ax = plt.subplots(figsize=(7, 5))
+    
+    last_gaussian = None
+    last_t = None
+
+    for key, exp in experiments.items():
+        t_used = results[key]['t']
+        H_t_bound, H_t_gaussian = _entropy_curves(
+            x_ref, results[key]['dH_t_bound'], t_used, nt
+        )
+        
+        # Track the last entries to plot the baseline Gaussian curve
+        last_gaussian = H_t_gaussian
+        last_t = t_used
+        
+        # Print metrics to console
+        print(f"{exp['label']}:")
+        val_bound = H_t_bound[-1].item() if torch.is_tensor(H_t_bound[-1]) else H_t_bound[-1]
+        val_gauss = H_t_gaussian[-1].item() if torch.is_tensor(H_t_gaussian[-1]) else H_t_gaussian[-1]
+        print(f"  Entropy bound: {val_bound:.4f}")
+        print(f"  Gaussian estimation: {val_gauss:.4f}")
+        
+        # Plot individual experiment bounds
+        ax.plot(t_used.detach().cpu(), H_t_bound, label=f"Bound: {exp['label']}")
+
+    # Plot the baseline Gaussian curve using the final configuration's time vector
+    if last_gaussian is not None and last_t is not None:
+        y_gauss = last_gaussian.detach().cpu() if torch.is_tensor(last_gaussian) else last_gaussian
+        ax.plot(
+            last_t.detach().cpu(),
+            y_gauss,
+            '--',
+            color="black",
+            label='Gaussian entropy estimate',
+        )
+
+    ax.set_xlabel('t')
+    ax.set_ylabel('entropy')
+    ax.set_title('Entropy Curves')
+    ax.legend(frameon=False)
+    plt.tight_layout()
+    plt.show()
 
 # ================================================================================
 # 2. Per-band wavelet coefficient histograms  (from hist_plot)
@@ -661,6 +724,8 @@ def run_diagnostics(
     results: Dict[str, Dict],
     experiments: Dict[str, Dict],
     threshold: float = 1e-8,
+    interpolant: str = 'Cos',
+    nt: int = 1000,
     structure_qs: tuple = (2, 4, 6, 8),
     pdf_taus: tuple = (1, 2, 4, 8, 16, 32),
     cross_pq: list = ((2, 1), (2, 2), (3, 1), (3, 3)),
@@ -747,6 +812,9 @@ def run_diagnostics(
     
             plt.tight_layout()
             plt.show()
+    
+    print(sep); print("Moment matching"); print(sep)
+    plot_moment_matching_overlay(results, experiments, threshold=threshold)
 
     print(sep); print("Power spectra"); print(sep)
     plot_spectrum_overlay(x_ref, results, experiments)
@@ -760,8 +828,8 @@ def run_diagnostics(
     print(sep); print("Cross structure functions"); print(sep)
     plot_cross_structure_overlay(x_ref, results, experiments, pq=cross_pq)
 
-    print(sep); print("Moment matching"); print(sep)
-    plot_moment_matching_overlay(results, experiments, threshold=threshold)
+    print(sep); print("Entropy bound"); print(sep)
+    plot_entropy_curves(x_ref, results, experiments, interpolant, nt)
 
     if show_visual_comparison:
         print(sep); print("Visual comparison panels"); print(sep)

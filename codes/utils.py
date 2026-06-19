@@ -72,6 +72,22 @@ def save_results(
     t,
     root,
     config,
+):
+    base = root / 'saved_results'
+
+    torch.save(xt.cpu(), base / 'samples' / config)
+    torch.save(theta_t.cpu(), base / 'lagrange_multipliers' / config)
+    torch.save(dH_t_bound.cpu(), base / 'entropy_bounds' / config)
+    torch.save(t.cpu(), base / 'sampling_times' / config)
+
+
+def save_results_theta_reg(
+    xt,
+    theta_t,
+    dH_t_bound,
+    t,
+    root,
+    config,
     Theta_reg,
 ):
     base = root / 'saved_results'
@@ -96,10 +112,10 @@ def load_results(root, config):
 
     path_theta_reg = base / 'lagrange_multipliers_regularised' / config
 
-    if path_theta_reg.exists():
-        Theta_reg = torch.load(path_theta_reg)
+    #if path_theta_reg.exists():
+    #    Theta_reg = torch.load(path_theta_reg)
 
-    return (x_t, theta_t, dH_t_bound, t, Theta_reg)
+    return (x_t, theta_t, dH_t_bound, t) #, Theta_reg)
 
 def normalize(Data):
     """Standardize ``Data`` to zero mean and unit std, cast to float32.

@@ -290,7 +290,7 @@ class SDE(torch.nn.Module):
             #self.fit(self.x_k)
             
             
-            self.x_k, I_k, eta_k, theta_k, dH_k = self.iteration_step_projection(self.x_k, k)
+            self.x_k, y_k, I_k, eta_k, theta_k, dH_k, bk= self.iteration_step_projection(self.x_k, k)
 
             if (k + 1) % param_storage_frequency == 0:
                 eta_k_list.append(eta_k)
@@ -348,18 +348,24 @@ class SDE(torch.nn.Module):
         accM = accG = accb = accc = None
         cnt = 0
 
+  
+
         for k, t_k in tqdm(enumerate(self.t[:-1])):
-            self.x_k, y_k, I_k, eta_k, theta_k, dH_k = self.iteration_step_projection(self.x_k, k)
+            h = self.t[k + 1] - self.t[k]
+            self.x_k, y_k, I_k, eta_k, theta_k, dH_k, bk = self.iteration_step_projection(self.x_k, k)
             t_node = self.t[k + 1]
             ak = np.pi * t_node / 2.0
             cos_k, sin_k, tan_k = np.cos(ak), np.sin(ak), np.tan(ak)
 
-            if sin_k > eps and cos_k > eps:                # skip t = 0 (sin = 0), t = 1 (cos = 0)
+            if sin_k > eps:                # skip t = 0 (sin = 0), t = 1 (cos = 0)
                 Xt    = y_k                                           # predicted walkers at target time
                 mom   = self.compute_moments(Xt)                       # phi(y_k)              (B, r)
-                Mk    = self.compute_G(Xt) + self.regularization * eye # grad Gram at y_k
+                Mk    = self.compute_G(Xt)                             # raw Gram at y_k
+                #if self.regularization != 0:
+                #    Mk = Mk + self.regularization * torch.diag(torch.diag(Mk))
+
                 Gk    = mom.T @ mom / B                                # moment Gram at y_k
-                bk    = self.compute_rhs_constraint_correction(y_k, I_k)  # phi_bar(I_{k+1}) - phi_bar(y_k)
+                bk    = bk / (h * self.sigma**2)  # phi_bar(I_{k+1}) - phi_bar(y_k)
                 X_eff = (Xt - cos_k * x0) / sin_k                      # X = (X_t - cos a Z)/sin a
                 zx    = (x0 * X_eff).reshape(B, -1).sum(1)             # Z . X                 (B,)
                 tau   = -adot * (tan_k * (d - z2) + zx)                # tau_k^i               (B,)
@@ -385,26 +391,19 @@ class SDE(torch.nn.Module):
             M.append(accM / cnt); Gf.append(accG / cnt)
             bb.append(accb / cnt); cc.append(accc / cnt)
 
-        Theta_reg = self._solve_regularised(t_used, M, Gf, bb, cc, lam)
+        Theta_reg = self._solve_regularised(t_used[1:], M[1:], Gf[1:], bb[1:], cc[1:], lam)
 
         return (
             self.x_k,
-            torch.stack(barphi_e), torch.stack(barphi_p),
-            torch.stack(eta_k_list), torch.stack(theta_k_list), torch.cat(dH_k_list),
-            Theta_reg,
+            torch.stack(barphi_e)[1:], torch.stack(barphi_p)[1:],
+            torch.stack(eta_k_list)[1:], torch.stack(theta_k_list)[1:], torch.cat(dH_k_list)[1:],
+            Theta_reg[1:],
         )
 
     def _solve_regularised(self, t, M, Gf, bb, cc, lam):
-        """
-        Assemble and solve the block-tridiagonal system (section 4).
-
-        t is the COARSE grid (the kept points t[n_subsample*j]), so dt = diff(t) is the
-        coarse spacing -- the only Delta t entering the time coupling. The matrix is now
-        (n_coarse * r)^2.
-        """
         t = np.asarray(t, dtype=float)
         n, r, dev = len(t), self.num_potentials, self.device
-        dt = np.diff(t)                                   # coarse spacing
+        dt = np.diff(t)
         A = torch.zeros((n, r, n, r)).to(dev)
         f = torch.zeros((n, r)).to(dev)
         for k in range(n):
@@ -418,7 +417,80 @@ class SDE(torch.nn.Module):
             A[k + 1, :, k,     :] -= w * Gf[k]
             f[k]     -= (lam / dt[k]) * cc[k]
             f[k + 1] += (lam / dt[k]) * cc[k]
-        return torch.linalg.solve(A.reshape(n * r, n * r), f.reshape(n * r)).reshape(n, r)
+
+        # --- diagonal (Jacobi) preconditioning, mirrors compute_eta / compute_theta ---
+        A_flat = A.reshape(n * r, n * r)
+        f_flat = f.reshape(n * r)
+        S = torch.diagonal(A_flat).clamp_min(1e-30).sqrt()        # per-(k,potential) scale
+        A_flat = A_flat / (S[:, None] * S[None, :])
+        A_flat = (A_flat + A_flat.T) / 2
+        f_flat = f_flat / S
+        if self.regularization:
+            A_flat = A_flat + self.regularization * torch.eye(n * r, device=dev, dtype=A_flat.dtype)
+
+        z = torch.linalg.solve(A_flat, f_flat)
+        return (z / S).reshape(n, r) 
+    
+    def _solve_regularised_thomas(self, t, M, Gf, bb, cc, lam, eps_reg_theta=1e-6):
+        """
+        Same block-tridiagonal system as _solve_regularised, solved via block-Thomas
+        elimination with block-Jacobi preconditioning instead of a dense (n*r, n*r)
+        solve. Memory: O(n * r**2) instead of O(n**2 * r**2). At lam=0 this reduces
+        exactly to compute_theta's preconditioned per-step solve.
+        """
+        t = np.asarray(t, dtype=float)
+        n, r, dev = len(t), self.num_potentials, self.device
+        dt = np.diff(t)
+        w  = [lam / dk ** 2 for dk in dt]
+
+        D = [M[k].clone() for k in range(n)]
+        for k in range(n - 1):
+            D[k]     = D[k]     + w[k] * Gf[k]
+            D[k + 1] = D[k + 1] + w[k] * Gf[k]
+        U = [-w[k] * Gf[k] for k in range(n - 1)]
+        L = [Uk.transpose(0, 1) for Uk in U]
+
+        f = [bb[k].clone() for k in range(n)]
+        for k in range(n - 1):
+            f[k]     = f[k]     - (lam / dt[k]) * cc[k]
+            f[k + 1] = f[k + 1] + (lam / dt[k]) * cc[k]
+
+        # block-Jacobi preconditioning, mirrors compute_eta / compute_theta
+        S = [torch.diagonal(Dk).clamp_min(1e-30).sqrt() for Dk in D]
+        for k in range(n):
+            D[k] = D[k] / (S[k][:, None] * S[k][None, :])
+            D[k] = (D[k] + D[k].T) / 2
+            f[k] = f[k] / S[k]
+        for k in range(n - 1):
+            U[k] = U[k] / (S[k][:, None] * S[k + 1][None, :])
+            L[k] = U[k].transpose(0, 1)
+
+        eye = torch.eye(r, device=dev, dtype=D[0].dtype)
+        c_prime, d_prime = [None] * max(n - 1, 0), [None] * n
+
+        denom0 = D[0] + eps_reg_theta * D[0].diagonal().abs().mean() * eye
+        if n > 1:
+            sol0 = torch.linalg.solve(denom0, torch.cat([U[0], f[0][:, None]], dim=1))
+            c_prime[0], d_prime[0] = sol0[:, :-1], sol0[:, -1]
+        else:
+            d_prime[0] = torch.linalg.solve(denom0, f[0])
+
+        for k in range(1, n):
+            denom = D[k] - L[k - 1] @ c_prime[k - 1]
+            rhs   = f[k] - L[k - 1] @ d_prime[k - 1]
+            denom = denom + eps_reg_theta * denom.diagonal().abs().mean() * eye
+            if k < n - 1:
+                sol = torch.linalg.solve(denom, torch.cat([U[k], rhs[:, None]], dim=1))
+                c_prime[k], d_prime[k] = sol[:, :-1], sol[:, -1]
+            else:
+                d_prime[k] = torch.linalg.solve(denom, rhs)
+
+        Theta_scaled = [None] * n
+        Theta_scaled[-1] = d_prime[-1]
+        for k in range(n - 2, -1, -1):
+            Theta_scaled[k] = d_prime[k] - c_prime[k] @ Theta_scaled[k + 1]
+
+        return torch.stack([Theta_scaled[k] / S[k] for k in range(n)])
 
 
     def iteration_step_projection(self, x_k, k):
@@ -473,22 +545,22 @@ class SDE(torch.nn.Module):
         y_k         = x_k + h * drift + noise
 
         # Corrector
-        theta_k        = self.compute_theta(y_k, k)
-        corrector      = self.compute_grad_phi_projected(y_k, theta_k)
+        theta_k_raw, bk       = self.compute_theta(y_k, k)
+        corrector      = self.compute_grad_phi_projected(y_k, theta_k_raw)
         x_k_plus_one   = y_k + corrector
 
         # Normalise theta
         if self.sigma > 0:
-            theta_k = theta_k / (h * self.sigma ** 2)
+            theta_k = theta_k_raw / (h * self.sigma ** 2)
         else:
-            theta_k = torch.zeros_like(theta_k)
+            theta_k = torch.zeros_like(theta_k_raw)
 
         # Entropy estimate
         I_k          = self.compute_interpolant(k + 1)
         dt_phi_I_k   = self.compute_rhs_dt_phi_I_t(I_k, k)
         dH_k         = -theta_k @ dt_phi_I_k
 
-        return x_k_plus_one, y_k, I_k, eta_k, theta_k, dH_k
+        return x_k_plus_one, y_k, I_k, eta_k, theta_k, dH_k, bk
 
 
     # ------------------------------------------------------------------------------------------------------------------
@@ -615,7 +687,7 @@ class SDE(torch.nn.Module):
         theta_k = torch.linalg.solve(G_k, rhs_constraint_correction/D_k12)
         theta_k = theta_k/D_k12
         
-        return theta_k
+        return theta_k, rhs_constraint_correction
 
         
 
