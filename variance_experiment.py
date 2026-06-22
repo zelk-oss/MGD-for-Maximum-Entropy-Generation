@@ -248,8 +248,8 @@ def run_one_trial(
     Run one full MGD forward pass (with regularized post-processing) with
     freshly sampled workers. Data x1 and potentials are shared across trials.
     """
-    torch.manual_seed(args.seed + trial_idx)
-    np.random.seed(args.seed + trial_idx)
+    torch.manual_seed(args.seed + trial_idx + 9999)
+    np.random.seed(args.seed + trial_idx + 9999)
 
     batch_size = args.batch_size if args.batch_size is not None else x1.shape[0]
     nb_workers = x1.shape[0]
@@ -288,6 +288,7 @@ def run_one_trial(
 
 # ── main ──────────────────────────────────────────────────────────────────────
 def main():
+
     args = parse_args()
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 
@@ -324,35 +325,69 @@ def main():
     x1, M = make_data(args, device, logger)
     n1_actual, channels, M_actual = x1.shape
 
-    logger.info("M and M actual", M, M_actual)
-
     # ── potentials (shared across all trials) ─────────────────────────────────
     logger.info('Building potentials …')
     potentials = make_potentials(M_actual, args, device, logger)
 
     # ── time schedule (shared) ────────────────────────────────────────────────
-    t_sched = 1 - (1 - torch.linspace(0, 1, args.nt + 1)) ** args.schedule_exponent
-
+    t_sched = (1 - (1 - torch.linspace(0, 1, args.nt + 1)) ** args.schedule_exponent)
+    
     # ── K trials ─────────────────────────────────────────────────────────────
-    all_mgd = []   # will become (K, T_mgd, r)
-    all_reg = []   # will become (K, T_reg, r)
+    # possibility to resume job 
+    checkpoint_path = outdir / f'{config}__checkpoint.npz'
+    start_k = 0
 
-    for k in range(args.K):
+    if checkpoint_path.exists():
+        data = np.load(checkpoint_path, allow_pickle=True)
+        start_k = int(data["K_done"])
+
+        all_mgd = list(data["theta_mgd"])
+        all_reg = list(data["theta_reg"])
+
+        all_mgd += [None] * (args.K - len(all_mgd))
+        all_reg += [None] * (args.K - len(all_reg))
+    else:
+        start_k = 0
+        all_mgd = [None] * args.K
+        all_reg = [None] * args.K
+
+
+    for k in range(start_k, args.K):
         logger.info(f'--- Trial {k+1}/{args.K} ---')
         result = run_one_trial(k, x1, t_sched, potentials, args, device, logger)
-        all_mgd.append(result['theta_mgd'])
-        all_reg.append(result['theta_reg'])
+        all_mgd[k] = result['theta_mgd']
+        all_reg[k] = result['theta_reg']
+
+        # ── checkpoint after each trial ─────────────────────────────────────
+        np.savez(
+            checkpoint_path,
+            K_done=np.array(k + 1),
+
+            # partial trajectories (list → stack only what exists so far)
+            theta_mgd=np.stack(all_mgd[:k+1], axis=0),
+            theta_reg=np.stack(all_reg[:k+1], axis=0),
+
+            # metadata (important for resume / analysis)
+            sigma=np.array(args.sigma),
+            lam=np.array(args.lam),
+            n_subsample=np.array(args.n_subsample),
+        )
+
+        logger.info(f'Checkpoint saved ({k+1}/{args.K}) -> {checkpoint_path}')
 
     # ── stack → (K, T, r) ────────────────────────────────────────────────────
-    all_mgd = np.stack(all_mgd, axis=0) # (K, T, r) 
-    all_reg = np.stack(all_reg, axis=0)
+    K_done = next((i for i, x in enumerate(all_mgd) if x is None), args.K)
+
+    all_mgd = np.stack(all_mgd[:K_done], axis=0) # (K, T, r) 
+    all_reg = np.stack(all_reg[:K_done], axis=0)
 
     t_mgd_np = infer_time_axis(all_mgd.shape[1], t_sched)
     t_reg_np = infer_time_axis(all_reg.shape[1], t_sched)
 
     # ── compute variance and mean across trials (axis=0) ─────────────────────
-    var_mgd = np.var(all_mgd, axis=0, ddof=1)   # (T_mgd, r)
-    var_reg = np.var(all_reg, axis=0, ddof=1)   # (T_reg, r)
+    ddof = 1 if K_done > 1 else 0
+    var_mgd = np.var(all_mgd, axis=0, ddof=ddof)   # (T_mgd, r)
+    var_reg = np.var(all_reg, axis=0, ddof=ddof)   # (T_reg, r)
 
     mean_mgd = np.mean(all_mgd, axis=0) # (T, r) 
     mean_reg = np.mean(all_reg, axis=0)
@@ -380,7 +415,7 @@ def main():
     np.savez(
         npz_path,
         # metadata
-        K=np.array(args.K),
+        K=np.array(K_done),
         sigma=np.array(args.sigma),
         lam=np.array(args.lam),
         n_subsample=np.array(args.n_subsample),
@@ -406,7 +441,7 @@ def main():
     ax.semilogy(t_reg_np, var_reg.sum(axis=1), label='Regularized', color='tomato')
     ax.set_xlabel('t (normalized)')
     ax.set_ylabel('total variance  sum_r Var[theta_r]')
-    ax.set_title(f'Variance over time  (K={args.K})')
+    ax.set_title(f'Variance over time  (K={all_mgd.shape[0]})')
     ax.legend()
     ax.grid(True, which='both', alpha=0.3)
 

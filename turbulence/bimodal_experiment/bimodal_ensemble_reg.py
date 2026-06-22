@@ -1,7 +1,7 @@
 """
 Run the MGD experiment with scalar bimodal distribution for K repetitions
 to compute variance of theta estimates across independent runs — for BOTH
-the raw MGD estimator and the regularized estimator.
+the raw MGD estimator and the regularized estimator (Florentin Guth's paper).
 
 x1 ~ bimodal(n1, beta)          [data draw, redrawn every run — see TEST comment]
 
@@ -27,9 +27,8 @@ import numpy as np
 import os
 import argparse
 
-from sde_routines_scalar_new import solve_sde
+from sde_routines_scalar_reg import solve_sde
 from utils import bimodal
-from regularised_theta_scalar import regularised_theta_scalar
 
 parser = argparse.ArgumentParser()
 parser.add_argument("--K", type=int, default=100)
@@ -39,6 +38,8 @@ parser.add_argument("--sigma", type=float, default=10)
 parser.add_argument("--beta", type=float, default=0.5)
 parser.add_argument("--lam", type=float, default=2e-5,
                      help="Smoothing regularization weight for regularised_theta_scalar")
+parser.add_argument("--n_subsample", type=int, default=1,
+                     help="Dimension of the regularization averaging time window")
 parser.add_argument("--outdir", type=str, default="results_bim_theta_beta")
 args = parser.parse_args()
 
@@ -48,6 +49,7 @@ nt    = args.nt
 sigma = args.sigma
 beta  = args.beta
 lam   = args.lam
+n_subsample = args.n_subsample
 
 # ── Fixed hyperparameters ────────────────────────────────────────────────────
 device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
@@ -70,12 +72,10 @@ def estimate_theta_full(n1: int, nt: int, seed: int):
     Run one MGD solve and return raw + regularized estimates:
       theta_traj_mgd  : (nt+1, 4) – raw MGD theta estimate at every SDE step
       theta_final_mgd : (4,)      – raw estimate at t=1
-      theta_avg10_mgd : (4,)      – raw average over last 10 steps
       theta_traj_reg  : (n, 4)    – regularized theta estimate, n ≈ nt (dense
                                      full-resolution solve, its own time grid
                                      since the data endpoint is dropped)
       theta_final_reg : (4,)      – regularized estimate at its final time point
-      theta_avg10_reg : (4,)      – regularized average over its last 10 (or fewer) points
 
     Randomness:
       • x0 ~ N(0,1) inside solve_sde  (torch seed controls this)
@@ -88,7 +88,7 @@ def estimate_theta_full(n1: int, nt: int, seed: int):
     # TEST : x1 redrawn inside the loop (fresh dataset per run, not fixed)
     x1 = torch.from_numpy(bimodal(n1, beta)).to(device)
 
-    x0, _, _, _, _, eta_t2, _ = solve_sde(
+    x0, _, _, _, _, theta_t_list, _, theta_reg_t = solve_sde(
         x1,
         n1,
         t,
@@ -96,65 +96,56 @@ def estimate_theta_full(n1: int, nt: int, seed: int):
         potential_names=potential_names,
         device=device,
         std_init=1,
+        lam=lam,
+        n_subsample=n_subsample,
     )
-    eta_t2 = eta_t2.to(device)
+    theta_t_list = theta_t_list.to(device)
     x0     = x0.to(device)
 
     # ── raw MGD ───────────────────────────────────────────────────────────────
-    theta_traj_mgd  = eta_t2 / DENOM                  # (nt+1, 4)
+    theta_traj_mgd  = theta_t_list                 # (nt+1, 4)
     theta_final_mgd = theta_traj_mgd[-1]              # (4,)
-    theta_avg10_mgd = theta_traj_mgd[-10:].mean(0)     # (4,)
-
-    # ── regularized (dense solve, built from the fixed endpoints x0/x1) ──────
-    eta_traj_reg   = regularised_theta_scalar(
-        x0, x1, t, potential_names, regularization=0.0, lam=lam, device=device,
-    )
-    theta_traj_reg = eta_traj_reg / DENOM             # (n, 4)
+    theta_traj_reg = theta_reg_t                  # (nt+1 / subsample, 4)
     theta_final_reg = theta_traj_reg[-1]
-    avg_window      = min(10, theta_traj_reg.shape[0])
-    theta_avg10_reg = theta_traj_reg[-avg_window:].mean(0)
+
 
     return (
-        theta_traj_mgd.cpu(), theta_final_mgd.cpu(), theta_avg10_mgd.cpu(),
-        theta_traj_reg.cpu(), theta_final_reg.cpu(), theta_avg10_reg.cpu(),
+        theta_traj_mgd.cpu(), theta_final_mgd.cpu(),
+        theta_traj_reg.cpu(), theta_final_reg.cpu(), 
     )
 
 
 # ── Main loop ────────────────────────────────────────────────────────────────
 
-all_theta_traj_mgd, all_theta_final_mgd, all_theta_avg10_mgd = [], [], []
-all_theta_traj_reg, all_theta_final_reg, all_theta_avg10_reg = [], [], []
+all_theta_traj_mgd, all_theta_final_mgd = [], []
+all_theta_traj_reg, all_theta_final_reg = [], []
 
 for k in range(K):
     seed = 42 + k
     print(f"Run {k+1}/{K}  (beta={beta}, seed={seed})")
 
-    (theta_traj_mgd, theta_final_mgd, theta_avg10_mgd,
-     theta_traj_reg, theta_final_reg, theta_avg10_reg) = estimate_theta_full(n1, nt, seed)
+    (theta_traj_mgd, theta_final_mgd, 
+     theta_traj_reg, theta_final_reg) = estimate_theta_full(n1, nt, seed)
 
     all_theta_traj_mgd.append(theta_traj_mgd)
     all_theta_final_mgd.append(theta_final_mgd)
-    all_theta_avg10_mgd.append(theta_avg10_mgd)
 
     all_theta_traj_reg.append(theta_traj_reg)
     all_theta_final_reg.append(theta_final_reg)
-    all_theta_avg10_reg.append(theta_avg10_reg)
 
     # ── Partial save after every run ─────────────────────────────────────────
     torch.save(
         {
             "theta_traj_mgd":  torch.stack(all_theta_traj_mgd),    # (k+1, nt+1, 4)
             "theta_final_mgd": torch.stack(all_theta_final_mgd),   # (k+1, 4)
-            "theta_avg10_mgd": torch.stack(all_theta_avg10_mgd),   # (k+1, 4)
             "theta_traj_reg":  torch.stack(all_theta_traj_reg),    # (k+1, n, 4)
             "theta_final_reg": torch.stack(all_theta_final_reg),   # (k+1, 4)
-            "theta_avg10_reg": torch.stack(all_theta_avg10_reg),   # (k+1, 4)
             "runs_done":       k + 1,
             "target_theta":    target_theta,
             "complexity":      complexity,
             "config": {
                 "beta": beta, "sigma": sigma, "nt": nt, "n1": n1, "K": K,
-                "lam": lam,
+                "lam": lam, "n_subsample": n_subsample, 
             },
         },
         os.path.join(results_dir, "partial_results.pt"),
@@ -163,16 +154,12 @@ for k in range(K):
 # ── Final consolidated save ──────────────────────────────────────────────────
 theta_traj_mgd_all  = torch.stack(all_theta_traj_mgd)    # (K, nt+1, 4)
 theta_final_mgd_all = torch.stack(all_theta_final_mgd)   # (K, 4)
-theta_avg10_mgd_all = torch.stack(all_theta_avg10_mgd)   # (K, 4)
 
 theta_traj_reg_all  = torch.stack(all_theta_traj_reg)    # (K, n, 4)
 theta_final_reg_all = torch.stack(all_theta_final_reg)   # (K, 4)
-theta_avg10_reg_all = torch.stack(all_theta_avg10_reg)   # (K, 4)
 
 var_final_mgd = theta_final_mgd_all.var(0, unbiased=True)   # (4,)
-var_avg10_mgd = theta_avg10_mgd_all.var(0, unbiased=True)   # (4,)
 var_final_reg = theta_final_reg_all.var(0, unbiased=True)   # (4,)
-var_avg10_reg = theta_avg10_reg_all.var(0, unbiased=True)   # (4,)
 
 print("\n── Results ──────────────────────────────────────")
 print(f"beta              : {beta}")
@@ -189,20 +176,16 @@ torch.save(
         "theta_traj_reg":  theta_traj_reg_all,    # (K, n, 4)
         # summary statistics
         "theta_final_mgd": theta_final_mgd_all,   # (K, 4)
-        "theta_avg10_mgd": theta_avg10_mgd_all,   # (K, 4)
         "theta_final_reg": theta_final_reg_all,   # (K, 4)
-        "theta_avg10_reg": theta_avg10_reg_all,   # (K, 4)
         "var_final_mgd":   var_final_mgd,
-        "var_avg10_mgd":   var_avg10_mgd,
         "var_final_reg":   var_final_reg,
-        "var_avg10_reg":   var_avg10_reg,
         # reference
         "target_theta":    target_theta,
         # experimental cost
         "complexity":      complexity,        # = n1 * nt  (scalar, fixed across the beta sweep)
         "config": {
             "beta": beta, "sigma": sigma, "nt": nt, "n1": n1, "K": K,
-            "lam": lam,
+            "lam": lam, "n_subsample": n_subsample, 
         },
     },
     os.path.join(results_dir, "experiment_K_runs.pt"),

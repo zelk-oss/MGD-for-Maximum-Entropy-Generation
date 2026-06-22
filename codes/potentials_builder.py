@@ -126,7 +126,7 @@ def get_1d_potentials(terms, J, filters, Q=1, filters_Q=None, filters_Phi=None,s
 
     # capture low pass 
     if 'L_2_lowpass' in terms:
-       potentials['L_2_lowpass'] = L2p_norm(1,filters[:,-1,:])
+       potentials['L_2_lowpass'] = L2p_norm(1,filters[:,-1:,:])
 
     if 'Scalar_phi_quantile_confine' in terms:
         potentials['Scalar_phi_quantile_confine'] =Scalar(filters_Phi,scalar_param=scalar_param,quantiles = True,confine=True)

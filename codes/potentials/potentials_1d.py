@@ -1072,6 +1072,12 @@ from scipy.integrate import quad
 from scipy.optimize import minimize
 
 
+def compute_z(x, filters):
+    filters = filters.to(x.device)
+    return torch.fft.ifft(filters * torch.fft.fft(x)).real
+
+# z0 = compute_z(x, filters) --> in the notebook 
+
 class Scalar_coshgt:
     """
     Per-channel cosh-tempered Generalized-t (coshGT) potential for wavelet coefficients.
@@ -1364,7 +1370,7 @@ def _robust_scale(h):
     s = 1.4826 * np.median(np.abs(h - np.median(h)))
     return float(s) or float(np.std(h)) or 1.0
 
-def maxent_fit(h, p0_bounds=(0.2, 1.5), th3_min=None, fixed_p0=None):
+def maxent_fit(h, p0_bounds=(0.2, 1.5), th3_min=None, fixed_p0=None, fixed_s0=None):
     scale_ref = _robust_scale(h)
     if th3_min is None:
         th3_min = 1e-3 / scale_ref               # constant exp-tail floor (≠ fitted s0)
@@ -1378,7 +1384,10 @@ def maxent_fit(h, p0_bounds=(0.2, 1.5), th3_min=None, fixed_p0=None):
             p0 = p0_lo + (p0_hi - p0_lo) / (1.0 + np.exp(-u[k])); k += 1
         else:
             p0 = float(fixed_p0)
-        s0 = np.exp(u[k])                         # s0 > 0, fitted
+        if fixed_s0 is not None:
+            s0 = float(fixed_s0)
+        else:
+            s0 = np.exp(u[k])                         # s0 > 0, fitted
         return np.array([t1, t2, t3]), p0, s0
 
     def nll(u):                                  # NLL/N = θ·Ê[φ] + log Z(θ,p0,s0)
@@ -1388,8 +1397,10 @@ def maxent_fit(h, p0_bounds=(0.2, 1.5), th3_min=None, fixed_p0=None):
         E3 = np.mean(np.abs(h))
         return theta[0] * E1 + theta[1] * E2 + theta[2] * E3 + maxent_logZ(theta, p0, s0)
 
-    n = 4 + (1 if free_p0 else 0)                # θ(3) + p0(0/1) + s0(1)
-    u0 = np.zeros(n); u0[-1] = np.log(scale_ref)  # s0 init = robust scale
+    n = 3 + (1 if free_p0 else 0) + (0 if fixed_s0 is not None else 1)
+    u0 = np.zeros(n)
+    if fixed_s0 is None:
+        u0[-1] = np.log(scale_ref)  # s0 init = robust scale
     res = minimize(nll, u0, method="Nelder-Mead",
                    options=dict(xatol=1e-4, fatol=1e-4, maxiter=15000))
     theta, p0, s0 = unpack(res.x)
@@ -1557,12 +1568,11 @@ class Scalar_maxent:
             
 
 
-
 class Scalar_maxent_log:
     """
     Per-channel max-entropy potential, linear in θ over fixed features:
 
-        φ(x)     = ( |x|^{p0},  log(1 + (x/s0)^2),  |x| )
+        φ(x)     = (log(1 + (x/s0)^2))
         φ_pot(x) = θ · φ(x)        (scalar potential; const log Z dropped)
 
     fit_reference jointly fits (θ, p0, s0) per channel, then FREEZES p0 and s0
@@ -1595,19 +1605,30 @@ class Scalar_maxent_log:
     # ------------------------------------------------------------------
     # Stage 1: fit (θ, p0, s0) per channel; keep p0 and s0  → φ fixed
     # ------------------------------------------------------------------
-    def fit_reference(self, x):
-        z = self._coeffs_np(x)
+    def fit_reference(self, x=None, z=None, s0=None):
+        if z is not None:
+            z_np = z.detach().cpu().numpy()
+        else:
+            z_np = self._coeffs_np(x)
+        fixed_s0 = None
+        if s0 is not None:
+            if isinstance(s0, torch.Tensor):
+                fixed_s0 = s0.detach().cpu().numpy()
+            else:
+                fixed_s0 = np.asarray(s0)
         TH, P0, S0 = [], [], []
-        for j in range(z.shape[1]):
-            h = z[:, j, :].reshape(-1)
+        for j in range(z_np.shape[1]):
+            h = z_np[:, j, :].reshape(-1)
             h = h[np.isfinite(h)]
+            fixed_s0_j = None if fixed_s0 is None else float(fixed_s0[j])
             if h.size < 10:
-                s0 = _robust_scale(h) if h.size else 1.0
+                s0 = fixed_s0_j if fixed_s0_j is not None else (_robust_scale(h) if h.size else 1.0)
                 theta, p0 = np.array([1.0, 1.0, 1.0 / s0]), 0.5
             else:
                 try:
                     theta, p0, s0 = maxent_fit(h, p0_bounds=self.p0_bounds,
-                                               fixed_p0=self.fixed_p0)
+                                               fixed_p0=self.fixed_p0,
+                                               fixed_s0=fixed_s0_j)
                 except Exception as e:
                     print(f"[MaxEnt][ch {j}] fit failed ({e}) → fallback")
                     s0 = _robust_scale(h)
@@ -1621,8 +1642,8 @@ class Scalar_maxent_log:
         self.p0    = torch.tensor(P0, dtype=dtype, device=x.device)
         self.s0    = torch.tensor(S0, dtype=dtype, device=x.device)
 
-    def fit(self, x):
-        return self.fit_reference(x)
+    def fit(self, x=None, z=None, s0=None):
+        return self.fit_reference(x=x, z=z, s0=s0)
 
     # ------------------------------------------------------------------
     # Re-solve θ only, (p0, s0) frozen — convex moment matching
@@ -1649,12 +1670,11 @@ class Scalar_maxent_log:
         self._check_fitted()
         filters = self.filters.to(x.device)
         z = torch.fft.ifft(filters * torch.fft.fft(x)).real          # (B, J, T)
-        t1, t2, t3, p0, s0 = self._bcast(x)
-        az = torch.sqrt(z ** 2 + self.eps_abs)
+        _, t2, _, _, s0 = self._bcast(x)
         # full potential 
         # psi = t1 * az.pow(p0) + t2 * torch.log1p((z / s0) ** 2) + t3 * az
         # only the log 
-        psi = t2 * torch.log1p((z / s0) ** 2) 
+        psi = t2 * torch.log1p(1 + (z / s0) ** 2) 
         return psi.mean(-1)                                          # (B, J)
 
     # ∂φ_pot/∂z = θ1·p0·|z|^{p0-2}z + θ2·2z/(s0²+z²) + θ3·z/|z|
@@ -1662,11 +1682,8 @@ class Scalar_maxent_log:
         self._check_fitted()
         filters = self.filters.to(x.device)
         z = torch.fft.ifft(filters * torch.fft.fft(x)).real          # (B, J, T)
-        t1, t2, t3, p0, s0 = self._bcast(x)
-        az = torch.sqrt(z ** 2 + self.eps_abs)
-        dpsi = (t1 * p0 * az.pow(p0 - 2.0) * z
-                + t2 * (2.0 * z / (s0 ** 2 + z ** 2 + self.eps_abs))
-                + t3 * (z / az))                                     # (B, J, T)
+        _, t2, _, _, s0 = self._bcast(x)
+        dpsi = (t2 * (2.0 * z / (s0 ** 2 + z ** 2 + self.eps_abs)))  # (B, J, T)
 
         grad_coeff = torch.fft.ifft(
             torch.fft.fft(dpsi) * filters

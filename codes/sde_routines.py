@@ -392,7 +392,7 @@ class SDE(torch.nn.Module):
             bb.append(accb / cnt); cc.append(accc / cnt)
 
         Theta_reg = self._solve_regularised(t_used[1:], M[1:], Gf[1:], bb[1:], cc[1:], lam)
-
+        #Theta_reg_thomas = self._solve_regularised_thomas(t_used[1:], M[1:], Gf[1:], bb[1:], cc[1:], lam)
         return (
             self.x_k,
             torch.stack(barphi_e)[1:], torch.stack(barphi_p)[1:],
@@ -986,270 +986,29 @@ class SDE(torch.nn.Module):
             Current samples to refit on.
         """
 
-        for pot in self.potentials.values():
+        coshgt_x0 = None
+        morlet_coshgt_x0 = None
+        # first fit coshGT potentials, capturing x0 to reuse as s0 in maxent_log
+        for name, pot in self.potentials.items():
+            if name in ('Scalar_psi_maxent_log', 'Scalar_morlet_maxent_log'):
+                continue
+            try:
+                pot.fit(x_k)
+                if name == 'Scalar_psi_coshgt' and getattr(pot, 'is_fitted', False):
+                    coshgt_x0 = pot.x0
+                elif name == 'Scalar_morlet_coshgt' and getattr(pot, 'is_fitted', False):
+                    morlet_coshgt_x0 = pot.x0
+            except:
+                pass
+
+        for name, pot in self.potentials.items():
+            if name == 'Scalar_psi_maxent_log':
                 try:
-                    pot.fit(x_k)
+                    pot.fit(x_k, s0=coshgt_x0)
                 except:
                     pass
-
-    
-    # methods for regularised theta 
-    def _grad_contract(self, S, V):
-        """E_n[ grad phi(S_n) . V_n ] -> (r,). Same contraction as
-        compute_rhs_dt_phi_I_t, but with an arbitrary per-sample field V."""
-        bs, num = self.batch_size, S.shape[0]
-        nb = (num + bs - 1) // bs
-        out = torch.zeros((self.num_potentials, 1)).to(self.device)
-        for ib in range(nb):
-            sb = S[ib * bs:(ib + 1) * bs]
-            vb = V[ib * bs:(ib + 1) * bs]
-            gp = self.compute_grad_potentials(sb)               # (B, r, *signal)
-            if self.signal_dim == 0:
-                out += torch.matmul(gp, vb.reshape(sb.shape[0], 1, 1)).sum(0)
-            elif self.signal_dim == 1:
-                out += torch.matmul(gp, vb.reshape(sb.shape[0], sb.shape[-1], 1)).sum(0)
-            elif self.signal_dim == 2:
-                out += torch.matmul(
-                    gp.reshape(sb.shape[0], self.num_potentials, sb.shape[-2] * sb.shape[-1]),
-                    vb.reshape(sb.shape[0], sb.shape[-2] * sb.shape[-1], 1)).sum(0)
-        return (out / num).squeeze(1)                           # (r,)
-
-
-    def regularised_theta(self, lam=1.0, t=None):
-        assert self.interpolant == 'Cos', "this routine assumes the Cos schedule"
-        t = self.t if t is None else t
-        t = np.asarray(t, dtype=float)
-        if np.isclose(t[-1], 1.0):
-            t = t[:-1]                                          # drop data endpoint (cos = 0)
-        n, r, dev = len(t), self.num_potentials, self.device
-
-        x0, x1 = self.x_0, self.x_1
-        B    = x0.shape[0]
-        d    = int(np.prod(x0.shape[1:]))                       # ambient dimension
-        z2   = x0.reshape(B, -1).pow(2).sum(1)                  # ||Z||^2   (B,)
-        zx   = (x0 * x1).reshape(B, -1).sum(1)                  # Z . X     (B,)
-        adot = np.pi / 2.0                                      # d alpha / dt (Cos)
-        eye  = torch.eye(r).to(dev)
-
-        M, Gf, bb, cc = [], [], [], []
-        for tk in t:
-            ak = np.pi * tk / 2.0
-            cos_k, tan_k = np.cos(ak), np.tan(ak)
-            I_k = np.cos(ak) * x0 + np.sin(ak) * x1             # interpolant at t_k
-            moments = self.compute_moments(I_k)                 # (B, r)
-            M.append(self.compute_G(I_k) + self.regularization * eye)   # grad Gram (doc M_k)
-            Gf.append(moments.T @ moments / B)                  # moment Gram (doc G_k)
-            bb.append(self._grad_contract(I_k, x0) / cos_k)     # b_k = E[grad phi . Z]/cos
-            tau = -adot * (tan_k * (d - z2) + zx)               # (B,)
-            cc.append(torch.einsum('br,b->r', moments, tau) / B)  # c_k = E[phi tau]
-
-        dt = np.diff(t)
-        A  = torch.zeros((n, r, n, r)).to(dev)
-        f  = torch.zeros((n, r)).to(dev)
-        for k in range(n):
-            A[k, :, k, :] += M[k]
-            f[k]          += bb[k]
-        for k in range(n - 1):
-            w = lam / dt[k] ** 2
-            A[k,     :, k,     :] += w * Gf[k]
-            A[k + 1, :, k + 1, :] += w * Gf[k]
-            A[k,     :, k + 1, :] -= w * Gf[k]
-            A[k + 1, :, k,     :] -= w * Gf[k]
-            f[k]     -= (lam / dt[k]) * cc[k]
-            f[k + 1] += (lam / dt[k]) * cc[k]
-
-        Theta = torch.linalg.solve(A.reshape(n * r, n * r), f.reshape(n * r))
-        return Theta.reshape(n, r)
-
-
-    # windowing approximation 
-    def max_window_for_budget(r, budget_gb=32, dtype_bytes=8):
-        budget = budget_gb * 1e9
-        return int((budget / (dtype_bytes * r**2)) ** 0.5)
-    
-    def regularised_theta_chunked(self, lam=1.0, t=None, chunk_size=60, halo=20,
-                                eps_reg_theta=1e-6, use_float64=True):
-        """
-        Windowed version of regularised_theta. Solves the same block-tridiagonal
-        smoothing system, but the dense reshape-and-solve is done on small,
-        overlapping windows of the FULL-resolution grid rather than on all n
-        points at once.
-
-        Every M_k, Gf_k, b_k, c_k is still built from the exact entries of t
-        (no subsampling) -- chunking only bounds how many adjacent steps are
-        coupled in one dense solve. Each window is (chunk_size + 2*halo) points;
-        only the central chunk_size "core" is kept (the halo gives that core
-        correct boundary information from its true neighbours -- without it,
-        every chunk edge would behave like an artificial free boundary and you'd
-        see a kink at every seam).
-
-        Memory per window: O((chunk_size+2*halo)^2 * r^2), independent of n.
-        This is an approximation relative to the single global solve: coupling
-        beyond the halo is dropped. halo=0 recovers fully decoupled, seam-prone
-        chunks; growing halo trades cost for fidelity to the true global
-        smoother.
-
-        Parameters mirror regularised_theta; chunk_size/halo control the window,
-        eps_reg_theta is scaled by each window's own diagonal magnitude rather
-        than used as a fixed absolute constant (the lam/dt**2 coupling weight
-        can vary by orders of magnitude with resolution, so an absolute eps
-        isn't portable across grids -- see earlier debugging in this thread).
-        """
-        assert self.interpolant == 'Cos', "this routine assumes the Cos schedule"
-        t_full = self.t if t is None else t
-        t_full = np.asarray(t_full, dtype=float)
-        if np.isclose(t_full[-1], 1.0):
-            t_full = t_full[:-1]
-        n, r, dev = len(t_full), self.num_potentials, self.device
-        solve_dtype = torch.float64 if use_float64 else self.x_1.dtype
-
-        W_max = chunk_size + 2 * halo
-        est_bytes = (W_max ** 2) * (r ** 2) * (8 if use_float64 else 4)
-        print(f'window size W={W_max}, r={r} -> dense block ~{est_bytes/1e9:.1f} GB per window')
-
-        x0, x1 = self.x_0, self.x_1
-        B    = x0.shape[0]
-        d    = int(np.prod(x0.shape[1:]))
-        z2   = x0.reshape(B, -1).pow(2).sum(1)
-        zx   = (x0 * x1).reshape(B, -1).sum(1)
-        adot = np.pi / 2.0
-
-        # Per-step matrices, computed once over the full grid -- O(n) memory of
-        # r x r matrices (cheap: r~500 -> ~2MB each, a few thousand of these is
-        # fine). It's the COUPLED solve that's expensive, not storing these.
-        M_all, Gf_all, bb_all, cc_all = [], [], [], []
-        for tk in t_full:
-            ak = np.pi * tk / 2.0
-            cos_k, tan_k = np.cos(ak), np.tan(ak)
-            I_k = np.cos(ak) * x0 + np.sin(ak) * x1
-            moments = self.compute_moments(I_k)
-            Mk  = (self.compute_G(I_k) + self.regularization * torch.eye(r, device=dev)).to(solve_dtype)
-            Gfk = (moments.T @ moments / B).to(solve_dtype)
-            bk  = (self._grad_contract(I_k, x0) / cos_k).to(solve_dtype)
-            tau = -adot * (tan_k * (d - z2) + zx)
-            ck  = (torch.einsum('br,b->r', moments, tau) / B).to(solve_dtype)
-            M_all.append(Mk); Gf_all.append(Gfk); bb_all.append(bk); cc_all.append(ck)
-
-        Theta_full = torch.zeros((n, r), dtype=solve_dtype, device=dev)
-
-        core_start = 0
-        while core_start < n:
-            core_end = min(core_start + chunk_size, n)
-            win_start = max(0, core_start - halo)
-            win_end   = min(n, core_end + halo)
-
-            idx    = range(win_start, win_end)
-            Wn     = win_end - win_start
-            t_win  = t_full[win_start:win_end]
-            dt_win = np.diff(t_win)
-
-            M  = [M_all[i]  for i in idx]
-            Gf = [Gf_all[i] for i in idx]
-            bb = [bb_all[i] for i in idx]
-            cc = [cc_all[i] for i in idx]
-
-            A = torch.zeros((Wn, r, Wn, r), dtype=solve_dtype, device=dev)
-            f = torch.zeros((Wn, r), dtype=solve_dtype, device=dev)
-            for k in range(Wn):
-                A[k, :, k, :] += M[k]
-                f[k]          += bb[k]
-            for k in range(Wn - 1):
-                w_k = lam / dt_win[k] ** 2
-                A[k,     :, k,     :] += w_k * Gf[k]
-                A[k + 1, :, k + 1, :] += w_k * Gf[k]
-                A[k,     :, k + 1, :] -= w_k * Gf[k]
-                A[k + 1, :, k,     :] -= w_k * Gf[k]
-                f[k]     -= (lam / dt_win[k]) * cc[k]
-                f[k + 1] += (lam / dt_win[k]) * cc[k]
-
-            A_flat = A.reshape(Wn * r, Wn * r)
-            scale  = A_flat.diagonal().abs().mean()              # scale-aware reg,
-            A_flat = A_flat + eps_reg_theta * scale * torch.eye(  # not a fixed eps
-                Wn * r, dtype=solve_dtype, device=dev)
-
-            Theta_win = torch.linalg.solve(A_flat, f.reshape(Wn * r)).reshape(Wn, r)
-
-            keep_lo = core_start - win_start
-            keep_hi = keep_lo + (core_end - core_start)
-            Theta_full[core_start:core_end] = Theta_win[keep_lo:keep_hi]
-
-            core_start = core_end
-
-        return Theta_full.to(self.x_1.dtype)
-
-
-    # block thomas approximation 
-    def regularised_theta_thomas(self, lam=1.0, eps_reg_theta = 1e-6, t=None):
-        """Same system as regularised_theta, but solved via block-tridiagonal
-        (block Thomas) elimination instead of a dense (n*r, n*r) solve.
-        Memory: O(n * r**2) instead of O(n**2 * r**2) -> works at full
-        resolution (n = len(self.t)) without needing to subsample t."""
-        assert self.interpolant == 'Cos', "this routine assumes the Cos schedule"
-        t = self.t if t is None else t
-        t = np.asarray(t, dtype=float)
-        if np.isclose(t[-1], 1.0):
-            t = t[:-1]
-        n, r, dev = len(t), self.num_potentials, self.device
-
-        x0, x1 = self.x_0, self.x_1
-        B    = x0.shape[0]
-        d    = int(np.prod(x0.shape[1:]))
-        z2   = x0.reshape(B, -1).pow(2).sum(1)
-        zx   = (x0 * x1).reshape(B, -1).sum(1)
-        adot = np.pi / 2.0
-        eye  = torch.eye(r).to(dev)
-
-        M, Gf, bb, cc = [], [], [], []
-        for tk in t:
-            ak = np.pi * tk / 2.0
-            cos_k, tan_k = np.cos(ak), np.tan(ak)
-            I_k = np.cos(ak) * x0 + np.sin(ak) * x1
-            moments = self.compute_moments(I_k)
-            M.append(self.compute_G(I_k) + self.regularization * eye)
-            Gf.append(moments.T @ moments / B)
-            bb.append(self._grad_contract(I_k, x0) / cos_k)
-            tau = -adot * (tan_k * (d - z2) + zx)
-            cc.append(torch.einsum('br,b->r', moments, tau) / B)
-
-        dt = np.diff(t)
-        w  = [lam / dk ** 2 for dk in dt]
-
-        D = [M[k].clone() for k in range(n)]
-        for k in range(n - 1):
-            D[k]     = D[k]     + w[k] * Gf[k]
-            D[k + 1] = D[k + 1] + w[k] * Gf[k]
-        U = [-w[k] * Gf[k] for k in range(n - 1)]
-        L = [Uk.transpose(0, 1) for Uk in U]
-
-        f = [bb[k].clone() for k in range(n)]
-        for k in range(n - 1):
-            f[k]     = f[k]     - (lam / dt[k]) * cc[k]
-            f[k + 1] = f[k + 1] + (lam / dt[k]) * cc[k]
-
-        c_prime = [None] * max(n - 1, 0)
-        d_prime = [None] * n
-
-        if n > 1:
-            sol0 = torch.linalg.solve(D[0], torch.cat([U[0], f[0][:, None]], dim=1))
-            c_prime[0], d_prime[0] = sol0[:, :-1], sol0[:, -1]
-        else:
-            d_prime[0] = torch.linalg.solve(D[0], f[0])
-
-        for k in range(1, n):
-            denom = D[k] - L[k - 1] @ c_prime[k - 1]
-            rhs   = f[k] - L[k - 1] @ d_prime[k - 1]
-
-            eps = eps_reg_theta  # Adjust this if you still get errors (e.g., 1e-5 or 1e-4)
-            denom = denom + eps * torch.eye(denom.shape[0], device=denom.device)            
-            if k < n - 1:
-                sol = torch.linalg.solve(denom, torch.cat([U[k], rhs[:, None]], dim=1))
-                c_prime[k], d_prime[k] = sol[:, :-1], sol[:, -1]
-            else:
-                d_prime[k] = torch.linalg.solve(denom, rhs)
-
-        Theta = [None] * n
-        Theta[-1] = d_prime[-1]
-        for k in range(n - 2, -1, -1):
-            Theta[k] = d_prime[k] - c_prime[k] @ Theta[k + 1]
-
-        return torch.stack(Theta)
+            elif name == 'Scalar_morlet_maxent_log':
+                try:
+                    pot.fit(x_k, s0=morlet_coshgt_x0)
+                except:
+                    pass

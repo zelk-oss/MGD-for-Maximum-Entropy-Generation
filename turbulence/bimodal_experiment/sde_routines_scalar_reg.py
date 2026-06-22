@@ -40,168 +40,6 @@ def constraint_correction(xt, It, potentials):
 
     return output
 
-# ======================================================================================
-# Regularised (temporally-smoothed) corrector  --  transposed from sde_routines.py
-# ======================================================================================
-# This is the scalar counterpart of `SDE.regularised_theta` / `regularised_theta_thomas`
-# in sde_routines.py. It does NOT replace the per-step corrector `theta_t` computed inside
-# `iteration_step_projection` (that one is kept exactly as is). Instead it builds, over the
-# WHOLE time grid at once, a single block-tridiagonal system
-#
-#       (M_k + coupling) Theta = b_k + coupling      (section 4 of the MGD paper)
-#
-# whose solution `theta_regularised_t` is a temporally-SMOOTHED corrector: the weight `lam`
-# couples neighbouring time nodes through the moment-Gram blocks `Gf_k`, penalising
-# fast variation of Theta in time. `lam -> 0` decouples the system into the per-node
-# solves `M_k Theta_k = b_k`; larger `lam` smooths harder.
-#
-# Everything is evaluated on the INTERPOLANT I_k = cos(a) x0 + sin(a) x1 (Cos schedule),
-# so only (x0, x1, t, potentials) are needed -- no walker trajectory required, matching the
-# standalone `regularised_theta(lam, t)` in the reference.
-#
-# Notes / caveats (mirror the reference):
-#   * Cos schedule only (uses cos/sin/tan of a = pi t / 2 and adot = pi/2).
-#   * The last node t = 1 is dropped (cos = 0 would divide by zero in b_k).
-#   * Scalar signal => ambient dimension d = 1, so ||Z||^2 = x0^2 and Z.X = x0*x1.
-#   * Normalisation: like the reference's interpolant-based `regularised_theta`, the result
-#     is a RATE-like coefficient and is directly comparable to the normalised per-step
-#     `theta_t = etat2/(sigma*h)` (NOT to the raw etat2). No sigma/h enters here.
-#   * Time alignment: row k of the returned array sits at node t[k] (k = 0 .. n_kept-1),
-#     whereas the per-step theta_t[i] targets t[i+1]. Shift by one if you overlay them.
-# --------------------------------------------------------------------------------------
-
-def _assemble_regularised_blocks(x0, x1, t, potentials, regularization, device):
-    """Build the per-node blocks (M_k, Gf_k, b_k, c_k) of the regularised system.
-
-    Returns the trimmed time grid `t` (numpy, last node dropped) plus four python lists,
-    one entry per retained node. All matrices are float64 for a stable solve.
-
-        M_k  : (r, r) gradient Gram of the potentials at I_k  (+ regularization * I)
-        Gf_k : (r, r) moment Gram  moments_k^T moments_k / B   (the temporal-coupling block)
-        b_k  : (r,)   E_n[ grad phi(I_k) . x0 ] / cos_k        (space target)
-        c_k  : (r,)   E_n[ phi(I_k) * tau_k ]                  (time target)
-    """
-    # --- time grid: accept torch or numpy, drop the t = 1 endpoint (cos = 0) ----------
-    t = t.detach().cpu().numpy() if torch.is_tensor(t) else np.asarray(t, dtype=float)
-    t = np.asarray(t, dtype=float)
-    if np.isclose(t[-1], 1.0):
-        t = t[:-1]
-
-    r = len(potentials)
-    B = x0.shape[0]
-    d = int(np.prod(x0.shape[1:])) if x0.dim() > 1 else 1   # scalar => d = 1
-    eye = torch.eye(r, dtype=torch.float64, device=device)
-
-    # per-sample geometric quantities (fixed across nodes); Z = x0, X = x1
-    z2 = x0.reshape(B, -1).double().pow(2).sum(1)           # ||Z||^2  (B,)
-    zx = (x0 * x1).reshape(B, -1).double().sum(1)           # Z . X    (B,)
-    adot = np.pi / 2.0                                      # d alpha / dt for the Cos schedule
-
-    M, Gf, bb, cc = [], [], [], []
-    for tk in t:
-        ak = np.pi * tk / 2.0
-        cos_k, tan_k = np.cos(ak), np.tan(ak)
-
-        I_k = np.cos(ak) * x0 + np.sin(ak) * x1                                   # (B,)
-        moments = torch.stack([p(I_k)      for p in potentials], dim=1).double()  # (B, r)
-        grads   = torch.stack([p.grad(I_k) for p in potentials], dim=1).double()  # (B, r)
-
-        M.append(gradmat(I_k, potentials).double() + regularization * eye)        # (r, r)
-        Gf.append(moments.T @ moments / B)                                        # (r, r)
-        bb.append((grads * x0.reshape(B, 1).double()).mean(0) / cos_k)            # (r,)
-
-        tau = -adot * (tan_k * (d - z2) + zx)                                     # (B,)
-        cc.append((moments * tau.reshape(B, 1)).mean(0))                          # (r,)
-
-    return t, M, Gf, bb, cc
-
-
-def regularised_theta(x0, x1, t, potentials, lam=1.0, regularization=0.0, device='cpu'):
-    lam = 0
-    """Dense solve of the block-tridiagonal regularised-corrector system.
-
-    Memory O((n*r)^2): only practical for small grids / verification. For full grids use
-    `regularised_theta_thomas` (identical solution, O(n*r^2) memory). Returns (n_kept, r).
-    """
-    t_arr, M, Gf, bb, cc = _assemble_regularised_blocks(x0, x1, t, potentials, regularization, device)
-    n, r = len(t_arr), len(potentials)
-    dt = np.diff(t_arr)
-
-    A = torch.zeros((n, r, n, r), dtype=torch.float64, device=device)
-    f = torch.zeros((n, r),       dtype=torch.float64, device=device)
-    for k in range(n):                              # diagonal blocks + space target
-        A[k, :, k, :] += M[k]
-        f[k]          += bb[k]
-    for k in range(n - 1):                          # nearest-neighbour temporal coupling
-        w = lam / dt[k] ** 2
-        A[k,     :, k,     :] += w * Gf[k]
-        A[k + 1, :, k + 1, :] += w * Gf[k]
-        A[k,     :, k + 1, :] -= w * Gf[k]
-        A[k + 1, :, k,     :] -= w * Gf[k]
-        f[k]     -= (lam / dt[k]) * cc[k]
-        f[k + 1] += (lam / dt[k]) * cc[k]
-
-    Theta = torch.linalg.solve(A.reshape(n * r, n * r), f.reshape(n * r)).reshape(n, r)
-    return Theta.to(x1.dtype)
-
-
-def regularised_theta_thomas(x0, x1, t, potentials, lam=1.0, regularization=0.0,
-                             eps_reg_theta=1e-6, device='cpu'):
-    """Block-tridiagonal (block-Thomas) solve of the same system as `regularised_theta`.
-
-    Memory O(n*r^2) instead of O((n*r)^2), so it runs at full grid resolution. A tiny
-    scale-aware jitter `eps_reg_theta * mean|diag|` is added to each pivot for robustness
-    against near-singular Gram blocks (set eps_reg_theta=0 to recover the exact dense
-    solution -- verified to agree to ~1e-10). Returns (n_kept, r).
-    """
-    lam = 0
-    t_arr, M, Gf, bb, cc = _assemble_regularised_blocks(x0, x1, t, potentials, regularization, device)
-    n, r = len(t_arr), len(potentials)
-    dt = np.diff(t_arr)
-    w  = [lam / dk ** 2 for dk in dt]
-    eye = torch.eye(r, dtype=torch.float64, device=device)
-
-    # Block tridiagonal: diagonal D, super-diagonal U, sub-diagonal L = U^T.
-    D = [M[k].clone() for k in range(n)]
-    for k in range(n - 1):
-        D[k]     = D[k]     + w[k] * Gf[k]
-        D[k + 1] = D[k + 1] + w[k] * Gf[k]
-    U = [-w[k] * Gf[k] for k in range(n - 1)]
-    L = [Uk.transpose(0, 1) for Uk in U]
-
-    f = [bb[k].clone() for k in range(n)]
-    for k in range(n - 1):
-        f[k]     = f[k]     - (lam / dt[k]) * cc[k]
-        f[k + 1] = f[k + 1] + (lam / dt[k]) * cc[k]
-
-    # Forward elimination (block Thomas).
-    c_prime = [None] * max(n - 1, 0)
-    d_prime = [None] * n
-    denom0 = D[0] + eps_reg_theta * D[0].diagonal().abs().mean() * eye
-    if n > 1:
-        sol0 = torch.linalg.solve(denom0, torch.cat([U[0], f[0][:, None]], dim=1))
-        c_prime[0], d_prime[0] = sol0[:, :-1], sol0[:, -1]
-    else:
-        d_prime[0] = torch.linalg.solve(denom0, f[0])
-    for k in range(1, n):
-        denom = D[k] - L[k - 1] @ c_prime[k - 1]
-        rhs   = f[k] - L[k - 1] @ d_prime[k - 1]
-        denom = denom + eps_reg_theta * denom.diagonal().abs().mean() * eye
-        if k < n - 1:
-            sol = torch.linalg.solve(denom, torch.cat([U[k], rhs[:, None]], dim=1))
-            c_prime[k], d_prime[k] = sol[:, :-1], sol[:, -1]
-        else:
-            d_prime[k] = torch.linalg.solve(denom, rhs)
-
-    # Back substitution.
-    Theta = [None] * n
-    Theta[-1] = d_prime[-1]
-    for k in range(n - 2, -1, -1):
-        Theta[k] = d_prime[k] - c_prime[k] @ Theta[k + 1]
-
-    return torch.stack(Theta).to(x1.dtype)
-
-
 def iteration_step_projection(x0, x1, xt, n1, t, i, sigma, potentials, device='cpu'):
 
     h = t[i+1]-t[i]
@@ -217,50 +55,153 @@ def iteration_step_projection(x0, x1, xt, n1, t, i, sigma, potentials, device='c
     noise_scale = torch.sqrt(torch.tensor(2 * h * sigma))
     noise = noise_scale * torch.randn(n1).to(device)
     
-    # First update step
-    xt = xt + h * drift + noise
+    # Predictor step: walkers after drift + noise (y_k)
+    y_k = xt + h * drift + noise
     
     # Update interpolation for next step
     #It = (1 - t[i + 1]) * x0 + t[i + 1] * x1
     It = torch.cos(.5*torch.pi*t[i+1]) * x0 +  torch.sin(.5*torch.pi*t[i+1]) * x1
     
-    # Constraint correction
-    rhs = constraint_correction(xt, It, potentials)
+    # Constraint correction (raw moment mismatch b_k = phi_bar(I_{k+1}) - phi_bar(y_k))
+    rhs = constraint_correction(y_k, It, potentials)
     
-    # Gradient matrix
-    grad_mat = gradmat(xt, potentials)
+    # Gradient (Gram) matrix at the predicted walker: M_k = G(y_k)
+    grad_mat = gradmat(y_k, potentials)
 
 
     etat2 = torch.linalg.solve(grad_mat, rhs)
     
-    # Apply constraint correction
-    xt = xt + gradphi(xt, potentials) @ etat2
+    # Apply constraint correction (corrector step) -> x_{k+1}
+    xt = y_k + gradphi(y_k, potentials) @ etat2
     
     dH_t = -(etat2/(sigma*h))@dt_phi_It
 
-    return xt, eta_t, etat2/(sigma*h), grad_mat, dH_t
+    # Also return the predicted walker y_k and the raw mismatch b_k so the caller
+    # can assemble the time-regularised theta problem (see solve_sde / _solve_regularised).
+    return xt, eta_t, etat2/(sigma*h), grad_mat, dH_t, y_k, rhs
+
+def moments_matrix(x, potentials):
+    """
+    Per-sample potentials stacked column-wise: phi(x) of shape (N, r).
+
+    Scalar analogue of SDE.compute_moments. Each potential is scalar-valued here
+    (one coefficient), so potential(x) returns a length-N tensor; we reshape to be
+    safe and stack along the potential axis.
+    """
+    return torch.stack([potential(x).reshape(-1) for potential in potentials], dim=1)
+
+
+def _solve_regularised(t, M, Gf, bb, cc, lam, num_potentials, device='cpu', regularization=0.0):
+    """
+    Scalar (d = 1) port of SDE._solve_regularised.
+
+    Assembles and solves the block-tridiagonal-in-time system
+
+        (data)        M[k] Theta[k]
+        (smoothness)  + lam/dt^2 * Gf[k] (Theta[k] - Theta[k+1])  (and the symmetric term)
+                      = bb[k] + lam/dt * (cc terms)
+
+    as one dense (n*r, n*r) linear solve, with diagonal (Jacobi) preconditioning
+    mirroring compute_eta_t_partial / the corrector solve. At lam = 0 this reduces
+    exactly to the per-step theta solve.
+    """
+    t = np.asarray(t, dtype=float)
+    n, r, dev = len(t), num_potentials, device
+    dt = np.diff(t)
+    A = torch.zeros((n, r, n, r)).to(dev)
+    f = torch.zeros((n, r)).to(dev)
+    for k in range(n):
+        A[k, :, k, :] += M[k]
+        f[k]          += bb[k]
+    for k in range(n - 1):
+        w = lam / dt[k] ** 2
+        A[k,     :, k,     :] += w * Gf[k]
+        A[k + 1, :, k + 1, :] += w * Gf[k]
+        A[k,     :, k + 1, :] -= w * Gf[k]
+        A[k + 1, :, k,     :] -= w * Gf[k]
+        f[k]     -= (lam / dt[k]) * cc[k]
+        f[k + 1] += (lam / dt[k]) * cc[k]
+
+    # --- diagonal (Jacobi) preconditioning, mirrors the per-step solves ---
+    A_flat = A.reshape(n * r, n * r)
+    f_flat = f.reshape(n * r)
+    S = torch.diagonal(A_flat).clamp_min(1e-30).sqrt()        # per-(k, potential) scale
+    A_flat = A_flat / (S[:, None] * S[None, :])
+    A_flat = (A_flat + A_flat.T) / 2
+    f_flat = f_flat / S
+    if regularization:
+        A_flat = A_flat + regularization * torch.eye(n * r, device=dev, dtype=A_flat.dtype)
+
+    z = torch.linalg.solve(A_flat, f_flat)
+    return (z / S).reshape(n, r)
+
+
+def _solve_regularised_thomas(t, M, Gf, bb, cc, lam, num_potentials, device='cpu', eps_reg_theta=1e-6):
+    """
+    Scalar (d = 1) port of SDE._solve_regularised_thomas.
+
+    Same block-tridiagonal system as _solve_regularised, solved via block-Thomas
+    elimination with block-Jacobi preconditioning instead of a dense (n*r, n*r)
+    solve. Memory: O(n * r**2) instead of O(n**2 * r**2). At lam = 0 this reduces
+    exactly to the per-step preconditioned theta solve.
+    """
+    t = np.asarray(t, dtype=float)
+    n, r, dev = len(t), num_potentials, device
+    dt = np.diff(t)
+    w  = [lam / dk ** 2 for dk in dt]
+
+    D = [M[k].clone() for k in range(n)]
+    for k in range(n - 1):
+        D[k]     = D[k]     + w[k] * Gf[k]
+        D[k + 1] = D[k + 1] + w[k] * Gf[k]
+    U = [-w[k] * Gf[k] for k in range(n - 1)]
+    L = [Uk.transpose(0, 1) for Uk in U]
+
+    f = [bb[k].clone() for k in range(n)]
+    for k in range(n - 1):
+        f[k]     = f[k]     - (lam / dt[k]) * cc[k]
+        f[k + 1] = f[k + 1] + (lam / dt[k]) * cc[k]
+
+    # block-Jacobi preconditioning, mirrors the per-step solves
+    S = [torch.diagonal(Dk).clamp_min(1e-30).sqrt() for Dk in D]
+    for k in range(n):
+        D[k] = D[k] / (S[k][:, None] * S[k][None, :])
+        D[k] = (D[k] + D[k].T) / 2
+        f[k] = f[k] / S[k]
+    for k in range(n - 1):
+        U[k] = U[k] / (S[k][:, None] * S[k + 1][None, :])
+        L[k] = U[k].transpose(0, 1)
+
+    eye = torch.eye(r, device=dev, dtype=D[0].dtype)
+    c_prime, d_prime = [None] * max(n - 1, 0), [None] * n
+
+    denom0 = D[0] + eps_reg_theta * D[0].diagonal().abs().mean() * eye
+    if n > 1:
+        sol0 = torch.linalg.solve(denom0, torch.cat([U[0], f[0][:, None]], dim=1))
+        c_prime[0], d_prime[0] = sol0[:, :-1], sol0[:, -1]
+    else:
+        d_prime[0] = torch.linalg.solve(denom0, f[0])
+
+    for k in range(1, n):
+        denom = D[k] - L[k - 1] @ c_prime[k - 1]
+        rhs   = f[k] - L[k - 1] @ d_prime[k - 1]
+        denom = denom + eps_reg_theta * denom.diagonal().abs().mean() * eye
+        if k < n - 1:
+            sol = torch.linalg.solve(denom, torch.cat([U[k], rhs[:, None]], dim=1))
+            c_prime[k], d_prime[k] = sol[:, :-1], sol[:, -1]
+        else:
+            d_prime[k] = torch.linalg.solve(denom, rhs)
+
+    Theta_scaled = [None] * n
+    Theta_scaled[-1] = d_prime[-1]
+    for k in range(n - 2, -1, -1):
+        Theta_scaled[k] = d_prime[k] - c_prime[k] @ Theta_scaled[k + 1]
+
+    return torch.stack([Theta_scaled[k] / S[k] for k in range(n)])
+
 
 def solve_sde(x1, n1, t, sigmas, potential_names=['x', 'x_abs', 'x2'], device='cpu', std_init=1, xt=None,
-              compute_regularised=True, lam=1.0, regularization=0.0, eps_reg_theta=1e-6,
-              regularised_solver='thomas'):
-    """
-    ... existing behaviour unchanged ...
-
-    Extra (additive) outputs
-    ------------------------
-    The per-step corrector `theta_t` (returned as the stacked `eta_t2` array, i.e.
-    etat2/(sigma*h)) is kept exactly as before. In ADDITION, when `compute_regularised`
-    is True, a temporally-smoothed corrector `theta_regularised_t` is computed over the
-    whole grid and appended as the LAST return value (None otherwise).
-
-        compute_regularised : toggle the regularised corrector.
-        lam                 : temporal-smoothing weight (lam -> 0 == per-node corrector).
-        regularization      : diagonal jitter added to each gradient-Gram block M_k.
-        eps_reg_theta       : scale-aware pivot jitter for the Thomas solve.
-        regularised_solver  : 'thomas' (memory-safe, default) or 'dense' (verification).
-
-    NOTE: the return tuple now has 8 elements (was 7). Update call sites accordingly.
-    """
+              lam=1.0, n_subsample=1, regularization=0.0, reg_eps=1e-8):
 
     nt = len(t)-1
 
@@ -284,11 +225,22 @@ def solve_sde(x1, n1, t, sigmas, potential_names=['x', 'x_abs', 'x2'], device='c
     
     barphi_p[0, :] = barphi(xt, potentials)
 
+    num_potentials = len(potentials)
+
     eta_t_list = []
-    eta_t2_list = []
+    theta_t_list = []
 
     dH_t_list = []
     ratio = []
+
+    # --- regularised theta problem: accumulators for the block-tridiagonal system ---
+    # Mirrors SDE.forward_regularised. Quantities are collected at the *predicted*
+    # walker y_k (target time t[i+1]). With n_subsample > 1 the fine-step ingredients
+    # are averaged into coarse blocks.
+    M_blocks, Gf_blocks, bb_blocks, cc_blocks, t_used = [], [], [], [], []
+    accM = accG = accb = accc = None
+    cnt = 0
+    adot = 0.5 * np.pi                       # d/dt of the Cos-schedule angle a_t = (pi/2) t
 
     sigma = sigmas[0]
     
@@ -296,13 +248,49 @@ def solve_sde(x1, n1, t, sigmas, potential_names=['x', 'x_abs', 'x2'], device='c
         if i % 200 == 0:
             print(f"Step {i}/{nt}")
 
-        xt, etat_t, etat_t2, H, dH_t = iteration_step_projection(x0, x1, xt, n1, t, i, sigma, potentials, device=device)
+        h = t[i+1] - t[i]
+        sigma_i = sigma                      # diffusion coefficient D used at this step
+
+        xt, etat_t, etat_t2, H, dH_t, y_k, b_k = iteration_step_projection(
+            x0, x1, xt, n1, t, i, sigma_i, potentials, device=device)
+
+        # --- collect regularised-problem ingredients at the predicted walker y_k ---
+        t_node = float(t[i + 1])
+        a = adot * t_node
+        cos_a, sin_a, tan_a = np.cos(a), np.sin(a), np.tan(a)
+
+        if sin_a > reg_eps:                  # skip t = 0 (sin = 0); X = (X_t - cos a Z)/sin a
+            mom  = moments_matrix(y_k, potentials)          # phi(y_k)              (N, r)
+            M_k  = H                                        # G(y_k)  (raw Gram, = grad_mat)
+            Gf_k = mom.T @ mom / n1                         # moment Gram           (r, r)
+            # normalise the mismatch by h * D. Here D = sigma (noise var = 2 h sigma),
+            # which is the scalar-file analogue of the class's 1/(h sigma**2).
+            bb_k = b_k / (h * sigma_i)
+
+            z2    = x0 ** 2                                  # ||Z||^2 per sample (d = 1)
+            X_eff = (y_k - cos_a * x0) / sin_a              # reconstructed data endpoint X
+            zx    = x0 * X_eff                              # Z . X per sample
+            tau   = -adot * (tan_a * (1.0 - z2) + zx)       # tau_k^i               (N,)
+            cc_k  = (mom * tau[:, None]).mean(0)            # E[phi(y_k) tau]       (r,)
+
+            if cnt == 0:
+                t_used.append(t_node)                       # coarse node at target time
+                accM, accG = M_k.clone(), Gf_k.clone()
+                accb, accc = bb_k.clone(), cc_k.clone()
+            else:
+                accM = accM + M_k; accG = accG + Gf_k
+                accb = accb + bb_k; accc = accc + cc_k
+            cnt += 1
+            if cnt == n_subsample:
+                M_blocks.append(accM / cnt);  Gf_blocks.append(accG / cnt)
+                bb_blocks.append(accb / cnt); cc_blocks.append(accc / cnt)
+                cnt = 0
 
         sigma = sigmas[i+1]
         #ratio.append(torch.sqrt((etat_t@H@etat_t)/(etat_t2@H@etat_t2.T)))
         
         eta_t_list.append(etat_t.cpu().detach())
-        eta_t2_list.append(etat_t2.cpu().detach())
+        theta_t_list.append(etat_t2.cpu().detach())
 
         dH_t_list.append(dH_t.cpu().detach().numpy())
 
@@ -310,24 +298,32 @@ def solve_sde(x1, n1, t, sigmas, potential_names=['x', 'x_abs', 'x2'], device='c
         barphi_e[i + 1, :] = barphi(torch.cos(.5*torch.pi*t[i+1]) * x0 +  torch.sin(.5*torch.pi*t[i+1]) * x1, potentials) # barphi((1 - t[i + 1]) * x0 + t[i + 1] * x1, 0)
         barphi_p[i + 1, :] = barphi(xt, potentials)
 
+    if cnt > 0:                                             # final partial block
+        M_blocks.append(accM / cnt);  Gf_blocks.append(accG / cnt)
+        bb_blocks.append(accb / cnt); cc_blocks.append(accc / cnt)
+
     #plt.plot(ratio)
     #plt.show()
 
-    # --- regularised (temporally-smoothed) corrector over the whole grid -------------
-    # Kept ALONGSIDE the per-step theta_t above (not a substitute). Built from the
-    # interpolant endpoints x0, x1 and the time grid only.
-    theta_regularised_t = None
-    if compute_regularised:
-        if regularised_solver == 'dense':
-            theta_regularised_t = regularised_theta(
-                x0, x1, t, potentials, lam=lam, regularization=regularization, device=device)
-        else:
-            theta_regularised_t = regularised_theta_thomas(
-                x0, x1, t, potentials, lam=lam, regularization=regularization,
-                eps_reg_theta=eps_reg_theta, device=device)
-        theta_regularised_t = theta_regularised_t.cpu().detach()
+    # --- solve the time-regularised theta problem with both solvers ---
+    # (same [1:] front-trimming as SDE.forward_regularised: drop the first coarse
+    #  node before the solve, then drop the first row of the solution).
+    theta_reg_t = _solve_regularised(
+        t_used[1:], M_blocks[1:], Gf_blocks[1:], bb_blocks[1:], cc_blocks[1:],
+        lam, num_potentials, device=device, regularization=regularization)
+    #theta_reg_thomas_t = _solve_regularised_thomas(t_used[1:], M_blocks[1:], Gf_blocks[1:], bb_blocks[1:], cc_blocks[1:], lam, num_potentials, device=device)
 
-    return x0, xt, barphi_e, barphi_p, torch.stack([etat_t for etat_t in eta_t_list], dim=0), torch.stack([etat_t2 for etat_t2 in eta_t2_list], dim=0), dH_t_list, theta_regularised_t
+    theta_reg_t        = theta_reg_t[1:].cpu().detach()
+    #theta_reg_thomas_t = theta_reg_thomas_t[1:].cpu().detach()
+
+    return (
+        x0, xt, barphi_e, barphi_p,
+        torch.stack(eta_t_list, dim=0),
+        torch.stack(theta_t_list, dim=0),
+        dH_t_list,
+        theta_reg_t,
+        #theta_reg_thomas_t,
+    )
 
 
 def get_potentials(potential_names, device):
