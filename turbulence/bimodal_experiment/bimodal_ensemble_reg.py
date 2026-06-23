@@ -114,6 +114,15 @@ def estimate_theta_full(n1: int, nt: int, seed: int):
         theta_traj_reg.cpu(), theta_final_reg.cpu(), 
     )
 
+# energy variance and Cramer-Rao bound 
+def get_phi(x_tensor):
+    """Evaluates the basis potentials [x, x^2, x^3, x^4] for a given tensor."""
+    return torch.stack([
+        x_tensor, 
+        x_tensor**2, 
+        x_tensor**3, 
+        x_tensor**4
+    ], dim=1)
 
 # ── Main loop ────────────────────────────────────────────────────────────────
 
@@ -158,31 +167,74 @@ theta_final_mgd_all = torch.stack(all_theta_final_mgd)   # (K, 4)
 theta_traj_reg_all  = torch.stack(all_theta_traj_reg)    # (K, n, 4)
 theta_final_reg_all = torch.stack(all_theta_final_reg)   # (K, 4)
 
-var_final_mgd = theta_final_mgd_all.var(0, unbiased=True)   # (4,)
+var_final_mgd = theta_final_mgd_all.var(0, unbiased=True)   # (4,)  
 var_final_reg = theta_final_reg_all.var(0, unbiased=True)   # (4,)
+
+# ── Variance of Energy & Cramér-Rao Bounds ───────────────────────────────────
+
+# 1. Generate a large true sample to compute expectations over the dataset
+N_ref = n1
+x_ref_np = bimodal(N_ref, beta)
+x_ref = torch.from_numpy(x_ref_np).to(device, dtype=torch.float32)
+
+# 2. Compute covariance matrix of phi(X)
+phi_x = get_phi(x_ref) # Shape: (N_ref, 4)
+phi_mean = phi_x.mean(dim=0)
+phi_centered = phi_x - phi_mean
+# Cov(phi(X))
+cov_phi = (phi_centered.T @ phi_centered) / (N_ref - 1) 
+inv_cov_phi = torch.linalg.inv(cov_phi)
+
+# 3. Cramér-Rao bound for theta (diagonal represents the variance bounds)
+cr_bound_theta_matrix = inv_cov_phi / n1
+cr_bound_theta_var = torch.diag(cr_bound_theta_matrix)
+
+# 4. Compute the MSE matrix for theta across the K runs (Expectation over runs)
+delta_theta_mgd = theta_final_mgd_all.to(device) - theta_final_mgd_all.mean(0).to(device)
+mse_matrix_mgd = (delta_theta_mgd.T @ delta_theta_mgd) / K
+
+delta_theta_reg = theta_final_reg_all.to(device) - theta_final_reg_all.mean(0).to(device)
+mse_matrix_reg = (delta_theta_reg.T @ delta_theta_reg) / K
+
+# 5. Compute Variance of the Energy (Outer expectation over the dataset)
+# Evaluates E_x [ phi(x)^T * MSE_matrix * phi(x) ] efficiently using batch operations
+var_energy_mgd = torch.sum((phi_x @ mse_matrix_mgd) * phi_x, dim=1).mean() 
+var_energy_reg = torch.sum((phi_x @ mse_matrix_reg) * phi_x, dim=1).mean()
+
+# 6. Cramér-Rao bound for the Energy
+cr_bound_energy = torch.sum((phi_x @ inv_cov_phi) * phi_x, dim=1).mean() / n1
+
 
 print("\n── Results ──────────────────────────────────────")
 print(f"beta              : {beta}")
 print(f"Target theta      : {target_theta.tolist()}")
-print(f"Mean theta_final (MGD)        : {theta_final_mgd_all.mean(0).tolist()}")
-print(f"Var  theta_final (MGD)        : {var_final_mgd.tolist()}")
-print(f"Mean theta_final (Regularized): {theta_final_reg_all.mean(0).tolist()}")
-print(f"Var  theta_final (Regularized): {var_final_reg.tolist()}")
+print(f"CR Bound (Theta)  : {cr_bound_theta_var.tolist()}")
+print(f"Var theta (MGD)   : {var_final_mgd.tolist()}")
+print(f"Var theta (Reg)   : {var_final_reg.tolist()}")
+print("─" * 40)
+print(f"CR Bound (Energy) : {cr_bound_energy.item():.6e}")
+print(f"Var Energy (MGD)  : {var_energy_mgd.item():.6e}")
+print(f"Var Energy (Reg)  : {var_energy_reg.item():.6e}")
 
+# Append the new metrics to your torch.save dict
 torch.save(
     {
-        # full trajectories: lets you replay / animate convergence
-        "theta_traj_mgd":  theta_traj_mgd_all,    # (K, nt+1, 4)
-        "theta_traj_reg":  theta_traj_reg_all,    # (K, n, 4)
-        # summary statistics
-        "theta_final_mgd": theta_final_mgd_all,   # (K, 4)
-        "theta_final_reg": theta_final_reg_all,   # (K, 4)
+        "theta_traj_mgd":  theta_traj_mgd_all,    
+        "theta_traj_reg":  theta_traj_reg_all,    
+        "theta_final_mgd": theta_final_mgd_all,   
+        "theta_final_reg": theta_final_reg_all,   
         "var_final_mgd":   var_final_mgd,
         "var_final_reg":   var_final_reg,
+        # New additions below:
+        "var_energy_mgd":  var_energy_mgd.cpu(),
+        "var_energy_reg":  var_energy_reg.cpu(),
+        "cr_bound_theta":  cr_bound_theta_var.cpu(),
+        "cr_bound_energy": cr_bound_energy.cpu(),
+        "mse_matrix_mgd":  mse_matrix_mgd.cpu(),
+        "mse_matrix_reg":  mse_matrix_reg.cpu(),
         # reference
         "target_theta":    target_theta,
-        # experimental cost
-        "complexity":      complexity,        # = n1 * nt  (scalar, fixed across the beta sweep)
+        "complexity":      complexity,        
         "config": {
             "beta": beta, "sigma": sigma, "nt": nt, "n1": n1, "K": K,
             "lam": lam, "n_subsample": n_subsample, 

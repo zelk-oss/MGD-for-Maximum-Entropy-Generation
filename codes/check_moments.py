@@ -861,28 +861,57 @@ def plot_moment_matching(barphi_e, barphi_p, t, threshold):
     threshold : float
         Minimum final moment magnitude to keep.
     """
-
-    try:
-        idx_non_negligeable = np.where(barphi_e[-1].cpu()>threshold)[0]
-        barphi_e= barphi_e[:,idx_non_negligeable] 
-        barphi_p = barphi_p[:,idx_non_negligeable]
+    # Move everything to CPU once to avoid repetitive .cpu() calls
+    barphi_e = barphi_e.cpu()
+    barphi_p = barphi_p.cpu()
+    t = t.cpu()
     
-        plt.plot(t[2:],(2*(barphi_e-barphi_p).abs()/(barphi_e.abs()+barphi_p.abs())).mean(1)[2:-1].cpu(),marker='.')
+    # 1. Use PyTorch native boolean masking instead of np.where
+    keep_mask = barphi_e[-1] > threshold
+    
+    # Safety check: If nothing survives the threshold, we can't plot the time series
+    if not keep_mask.any():
+        print(f"Warning: No moments exceeded the threshold of {threshold}. Plotting fallback histogram.")
+        # Calculate error for all moments just to show the fallback histogram
+        error_last = (2 * (barphi_e - barphi_p).abs() / (barphi_e.abs() + barphi_p.abs()))[-1]
+        plt.hist(error_last, bins=100)
+        plt.title('Distribution of moment matching error (All Moments)')
+        plt.yscale('log')
+        plt.show()
+        return
+
+    # Filter tensors
+    barphi_e = barphi_e[:, keep_mask]
+    barphi_p = barphi_p[:, keep_mask]
+
+    # Calculate the symmetric relative error matrix
+    rel_error = 2 * (barphi_e - barphi_p).abs() / (barphi_e.abs() + barphi_p.abs())
+    
+    try:
+        # --- FIX: Align dimensions along the time axis ---
+        # Find the minimum available length between time grid and error steps
+        min_len = min(t.shape[0], rel_error.shape[0])
+        
+        # Force both to share the same length, then apply your [2:-1] slice
+        t_sliced = t[:min_len][2:-1]
+        error_mean_sliced = rel_error.mean(dim=1)[:min_len][2:-1]
+        
+        plt.plot(t_sliced, error_mean_sliced, marker='.')
         plt.xlabel('t')
         plt.yscale('log')
         plt.title('Relative moment matching error')
         plt.show()
-    
-        plt.hist((2*(barphi_e-barphi_p).abs()/(barphi_e.abs()+barphi_p.abs()))[-1].cpu(),bins=100)
-        plt.title('Distribution of moment matching error')
-        plt.yscale('log')
-        plt.show()
         
-    except:
-        plt.hist((2*(barphi_e-barphi_p).abs()/(barphi_e.abs()+barphi_p.abs()))[-1].cpu(),bins=100)
-        plt.title('Distribution of moment matching error')
-        plt.yscale('log')
-        plt.show()
+    except Exception as e:
+        print(f"Time-plot failed due to: {e}. Falling back to histogram.")
+    
+    # This will now run regardless of whether the first plot succeeded
+    plt.hist(rel_error[-1], bins=100)
+    plt.title('Distribution of moment matching error')
+    plt.yscale('log')
+    plt.show()
+
+
 
 def plot_image_row(Data, N):
     """Show the first ``N`` images (channel 0) in a single row.

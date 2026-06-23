@@ -126,7 +126,10 @@ def get_1d_potentials(terms, J, filters, Q=1, filters_Q=None, filters_Phi=None,s
 
     # capture low pass 
     if 'L_2_lowpass' in terms:
-       potentials['L_2_lowpass'] = L2p_norm(1,filters[:,-1:,:])
+        potentials['L_2_lowpass'] = L2p_norm(1,filters[:,-1:,:])
+
+    if 'L_4_lowpass' in terms: 
+        potentials['L_4_lowpass'] = L2p_norm(2,filters[:,-1:,:])
 
     if 'Scalar_phi_quantile_confine' in terms:
         potentials['Scalar_phi_quantile_confine'] =Scalar(filters_Phi,scalar_param=scalar_param,quantiles = True,confine=True)
@@ -164,6 +167,20 @@ def get_1d_potentials(terms, J, filters, Q=1, filters_Q=None, filters_Phi=None,s
 
     if 'Scalar_morlet_coshgt' in terms: 
         potentials['Scalar_morlet_coshgt'] = Scalar_coshgt(filters)
+
+    # Coshgt 3 regions 
+    if 'Scalar_psi_coshgt3regions' in terms: 
+        potentials['Scalar_psi_coshgt3regions'] = Scalar_coshgt_3region(filters_Q)
+
+    if 'Scalar_morlet_coshgt3regions' in terms: 
+        potentials['Scalar_morlet_coshgt3regions'] = Scalar_coshgt_3region(filters)
+
+    # Coshgt 4 regions 
+    if 'Scalar_psi_coshgt4regions' in terms: 
+        potentials['Scalar_psi_coshgt4regions'] = Scalar_coshgt_4region(filters_Q)
+
+    if 'Scalar_morlet_coshgt4regions' in terms: 
+        potentials['Scalar_morlet_coshgt4regions'] = Scalar_coshgt_4region(filters)
 
     # Maxent 
     if 'Scalar_psi_maxent' in terms: 

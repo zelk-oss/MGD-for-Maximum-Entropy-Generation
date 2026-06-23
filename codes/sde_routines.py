@@ -135,10 +135,11 @@ class SDE(torch.nn.Module):
         potentials,
         batch_size,
         device='cpu',
-        regularization=0,
+        regularization=1e-4,
         interpolant='Cos',
         x_0=None,
         x_k=None,
+        use_coshgt_s0=True,
     ):
         super().__init__()
 
@@ -167,6 +168,7 @@ class SDE(torch.nn.Module):
         self.interpolant     = interpolant
         self.x_0             = x_0
         self.x_k             = x_k
+        self.use_coshgt_s0   = use_coshgt_s0
 
         self.init_interpolants_and_workers()
 
@@ -597,12 +599,13 @@ class SDE(torch.nn.Module):
         G_k              = self.compute_G(x_k)
         
         ################################Regularization###################################
-        D_k12 = torch.diag(G_k)**0.5 
+        D_k12 = torch.diag(G_k).sqrt()
         G_k = G_k /(D_k12[:,None]*D_k12[None,:])
         G_k = (G_k+G_k.T)/2
         G_k+= self.regularization*torch.eye(G_k.shape[-1],).to(G_k.dtype).to(G_k.device)
         
-        eta_k = torch.linalg.solve(G_k, rhs_dt_phi_I_k/D_k12[:,None])[:, 0]
+        # double precision to avoid fit colinearity 
+        eta_k = torch.linalg.solve(G_k, (rhs_dt_phi_I_k/D_k12[:,None]))[:, 0]
         eta_k = eta_k/D_k12
 
         return eta_k
@@ -988,27 +991,35 @@ class SDE(torch.nn.Module):
 
         coshgt_x0 = None
         morlet_coshgt_x0 = None
-        # first fit coshGT potentials, capturing x0 to reuse as s0 in maxent_log
-        for name, pot in self.potentials.items():
-            if name in ('Scalar_psi_maxent_log', 'Scalar_morlet_maxent_log'):
-                continue
-            try:
-                pot.fit(x_k)
-                if name == 'Scalar_psi_coshgt' and getattr(pot, 'is_fitted', False):
-                    coshgt_x0 = pot.x0
-                elif name == 'Scalar_morlet_coshgt' and getattr(pot, 'is_fitted', False):
-                    morlet_coshgt_x0 = pot.x0
-            except:
-                pass
 
-        for name, pot in self.potentials.items():
-            if name == 'Scalar_psi_maxent_log':
+        if self.use_coshgt_s0:
+            # first fit coshGT potentials, capturing x0 to reuse as s0 in maxent_log
+            for name, pot in self.potentials.items():
+                if name in ('Scalar_psi_maxent_log', 'Scalar_morlet_maxent_log'):
+                    continue
                 try:
-                    pot.fit(x_k, s0=coshgt_x0)
+                    pot.fit(x_k)
+                    if name == 'Scalar_psi_coshgt' and getattr(pot, 'is_fitted', False):
+                        coshgt_x0 = pot.x0
+                    elif name == 'Scalar_morlet_coshgt' and getattr(pot, 'is_fitted', False):
+                        morlet_coshgt_x0 = pot.x0
                 except:
                     pass
-            elif name == 'Scalar_morlet_maxent_log':
+
+            for name, pot in self.potentials.items():
+                if name == 'Scalar_psi_maxent_log':
+                    try:
+                        pot.fit(x_k, s0=coshgt_x0 * 10)
+                    except:
+                        pass
+                elif name == 'Scalar_morlet_maxent_log':
+                    try:
+                        pot.fit(x_k, s0=morlet_coshgt_x0 * 10)
+                    except:
+                        pass
+        else:
+            for name, pot in self.potentials.items():
                 try:
-                    pot.fit(x_k, s0=morlet_coshgt_x0)
+                    pot.fit(x_k)
                 except:
                     pass
