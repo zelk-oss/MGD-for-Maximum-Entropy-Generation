@@ -112,10 +112,12 @@ def load_results(root, config):
 
     path_theta_reg = base / 'lagrange_multipliers_regularised' / config
 
-    #if path_theta_reg.exists():
-    #    Theta_reg = torch.load(path_theta_reg)
-
-    return (x_t, theta_t, dH_t_bound, t) #, Theta_reg)
+    if path_theta_reg.exists():
+        Theta_reg = torch.load(path_theta_reg)
+        return (x_t, theta_t, dH_t_bound, t, Theta_reg)
+    
+    else: 
+        return (x_t, theta_t, dH_t_bound, t)
 
 def normalize(Data):
     """Standardize ``Data`` to zero mean and unit std, cast to float32.

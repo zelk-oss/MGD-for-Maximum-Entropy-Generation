@@ -28,7 +28,7 @@ import os
 import argparse
 
 from sde_routines_scalar_reg import solve_sde
-from utils import bimodal
+from utils import bimodal, get_phi
 
 parser = argparse.ArgumentParser()
 parser.add_argument("--K", type=int, default=100)
@@ -113,16 +113,6 @@ def estimate_theta_full(n1: int, nt: int, seed: int):
         theta_traj_mgd.cpu(), theta_final_mgd.cpu(),
         theta_traj_reg.cpu(), theta_final_reg.cpu(), 
     )
-
-# energy variance and Cramer-Rao bound 
-def get_phi(x_tensor):
-    """Evaluates the basis potentials [x, x^2, x^3, x^4] for a given tensor."""
-    return torch.stack([
-        x_tensor, 
-        x_tensor**2, 
-        x_tensor**3, 
-        x_tensor**4
-    ], dim=1)
 
 # ── Main loop ────────────────────────────────────────────────────────────────
 

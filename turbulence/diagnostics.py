@@ -712,6 +712,7 @@ def plot_visual_comparison(
         axC.grid(True, ls=":", alpha=0.5)
 
         plt.tight_layout()
+        plt.savefig("visual_comparison.png")
         plt.show()
 
 
@@ -813,23 +814,23 @@ def run_diagnostics(
             plt.tight_layout()
             plt.show()
     
-    print(sep); print("Moment matching"); print(sep)
-    plot_moment_matching_overlay(results, experiments, threshold=threshold)
+    #print(sep); print("Moment matching"); print(sep)
+    #plot_moment_matching_overlay(results, experiments, threshold=threshold)
 
-    print(sep); print("Power spectra"); print(sep)
-    plot_spectrum_overlay(x_ref, results, experiments)
+    #print(sep); print("Power spectra"); print(sep)
+    #plot_spectrum_overlay(x_ref, results, experiments)
 
-    print(sep); print("Structure functions"); print(sep)
-    plot_structure_overlay(x_ref, results, experiments, qs=structure_qs)
+    #print(sep); print("Structure functions"); print(sep)
+    #plot_structure_overlay(x_ref, results, experiments, qs=structure_qs)
 
-    print(sep); print("Increment PDFs"); print(sep)
-    plot_increment_pdf_overlay(x_ref, results, experiments, taus=pdf_taus)
+    #print(sep); print("Increment PDFs"); print(sep)
+    #plot_increment_pdf_overlay(x_ref, results, experiments, taus=pdf_taus)
 
-    print(sep); print("Cross structure functions"); print(sep)
-    plot_cross_structure_overlay(x_ref, results, experiments, pq=cross_pq)
+    #print(sep); print("Cross structure functions"); print(sep)
+    #plot_cross_structure_overlay(x_ref, results, experiments, pq=cross_pq)
 
-    print(sep); print("Entropy bound"); print(sep)
-    plot_entropy_curves(x_ref, results, experiments, interpolant, nt)
+    #print(sep); print("Entropy bound"); print(sep)
+    #plot_entropy_curves(x_ref, results, experiments, interpolant, nt)
 
     if show_visual_comparison:
         print(sep); print("Visual comparison panels"); print(sep)
@@ -843,6 +844,8 @@ def run_diagnostics(
         return df
 
     return None
+
+
 
 def split_periodize_reshape(Data, n1):
     """

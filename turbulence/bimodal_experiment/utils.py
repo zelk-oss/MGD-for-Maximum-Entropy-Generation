@@ -197,7 +197,15 @@ def gen_unbalanced(n_samples, n_steps = 10000, alpha=1, device='cpu'):
 
     return Mala_Sampler(score_unbalanced_, energy_unbalanced_, x, n_steps, step_size)
 
-
+# energy variance and Cramer-Rao bound 
+def get_phi(x_tensor):
+    """Evaluates the basis potentials [x, x^2, x^3, x^4] for a given tensor."""
+    return torch.stack([
+        x_tensor, 
+        x_tensor**2, 
+        x_tensor**3, 
+        x_tensor**4
+    ], dim=1)
 
 # Entropy related funtions
 

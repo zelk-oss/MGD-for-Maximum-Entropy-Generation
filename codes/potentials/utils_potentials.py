@@ -134,3 +134,20 @@ def indices_fourth_order(J,L):
 
 def abs_eps(x, epsilon=0):
     return torch.sqrt(x.real**2+x.imag**2+epsilon)
+
+
+# to identify bulk of the distribution 
+def compute_bulk_window(z, bulk_quantile=0.9, trans_quantiles=(0.85, 0.97)):
+    ah = z.abs()
+
+    c = torch.quantile(ah.flatten(0,1), bulk_quantile)
+    q_lo, q_hi = trans_quantiles
+    band = torch.quantile(ah.flatten(0,1), q_hi) - torch.quantile(ah.flatten(0,1), q_lo)
+
+    s = band / 4
+    s = torch.clamp(s, min=1e-6)
+
+    w_tail = torch.sigmoid((ah - c) / s)
+    w_bulk = 1 - w_tail
+
+    return w_bulk

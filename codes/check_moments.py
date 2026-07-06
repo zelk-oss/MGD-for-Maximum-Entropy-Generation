@@ -30,11 +30,44 @@ import matplotlib.pyplot as plt
 
 from scipy.ndimage import gaussian_filter
 import scipy.fftpack as sfft
-
 from filters import init_band_pass
-
 from scipy.ndimage import gaussian_filter1d
 
+
+class StructureFunctionCache:
+    def __init__(self):
+        self.cache = {}
+
+    def get_or_compute(self, data, p, taus):
+        """
+        Retrieves structure functions from cache if computed, 
+        otherwise computes and stores them.
+        """
+        p_arr = np.array(p)
+        taus_arr = np.array(taus, dtype=int)
+        
+        # Create a unique key based on the data memory id, powers, and taus
+        key = (id(data), p_arr.tobytes(), taus_arr.tobytes())
+        
+        if key not in self.cache:
+            print(f"Computing structure functions for {len(taus_arr)} lags...")
+            sf = np.zeros(shape=(len(p_arr), len(taus_arr)))
+            
+            # Handle PyTorch tensors gracefully
+            data_np = data.cpu().numpy() if hasattr(data, 'cpu') else data
+            
+            for i, tau in enumerate(taus_arr):
+                d_data = data_np[..., tau:] - data_np[..., :-tau]
+                for j, power in enumerate(p_arr):
+                    sf[j, i] = np.abs(np.mean(np.power(d_data.reshape(-1), power)))
+            self.cache[key] = sf
+        else:
+            print("Loaded structure functions from cache!")
+            
+        return self.cache[key]
+
+# Instantiate the cache globally so it persists across function calls
+sf_cache = StructureFunctionCache()
 
 
 def spec_plot(Data,synth):
@@ -89,8 +122,8 @@ def hist_plot(Data,synth,psi = None):
   for j in range(int(np.log2(M))-2):
     for q in range(3):
 
-      x_j = x[:,j*3+q].flatten().abs()
-      x_j_synth = x_synth[:,j*3+q].flatten().abs()
+      x_j = x[:,j*3+q].flatten().real
+      x_j_synth = x_synth[:,j*3+q].flatten().real
 
       plt.hist(x_j,bins=50,density=True,label='Orig')
       plt.hist(x_j_synth,bins=50,density=True,alpha=0.7,label='Synth')
@@ -217,12 +250,7 @@ def second_order_structure_function(data, p=np.array([2, 4, 6, 8]), max_tau=10):
     """
 
     taus = np.arange(1, max_tau, 1)
-    second_order = np.zeros(shape=(len(p), len(taus)))
-    for i in range(len(taus)):
-        d_data = data[..., taus[i]:] - data[..., :-taus[i]]
-        for j, power in enumerate(p):
-            second_order[j, i] = np.abs(np.mean(np.power(d_data.reshape(-1), power)))
-    return second_order
+    return sf_cache.get_or_compute(data, p, taus)
 
 def structure_plot(Data,synth):
   """Plot structure functions ``S_p(tau)`` for ``p in {2,4,6,8}``, original vs gen.
@@ -238,19 +266,21 @@ def structure_plot(Data,synth):
   """
 
   max_tau = Data.shape[-1]//2
-  second_order = second_order_structure_function(Data.cpu().numpy(), p=np.array([2, 4, 6, 8]), max_tau=max_tau)
-  second_order_gen = second_order_structure_function(synth.cpu().numpy(), p=np.array([2, 4, 6, 8]), max_tau=max_tau)
+  # NOTE: pass tensors (not .cpu().numpy()) so sf_cache keys on a stable id()
+  # and gets reused by ratio_flatness_dataset / flatness_ratio_compare below.
+  second_order = second_order_structure_function(Data, p=np.array([2, 4, 6, 8]), max_tau=max_tau)
+  second_order_gen = second_order_structure_function(synth, p=np.array([2, 4, 6, 8]), max_tau=max_tau)
   fig = plt.figure()
   ax = fig.add_subplot()
-  #ax.plot(second_order[0], 'b--', label='original_2', ms=3)
+  ax.plot(second_order[0], 'b--', label='original_2', ms=3)
   ax.plot(second_order[1]/second_order[0]**(4/2), 'r--', label='original_4', ms=3)
   ax.plot(second_order[2]/second_order[0]**(6/2), 'g--', label='original_6', ms=3)
-  ax.plot(second_order[3]/second_order[0]**(8/2), 'b--', label='original_8', ms=3)
+  #ax.plot(second_order[3]/second_order[0]**(8/2), 'b--', label='original_8', ms=3)
 
-  #ax.plot(second_order_gen[0], 'bo', label='gen_2')
+  ax.plot(second_order_gen[0], 'bo', label='gen_2')
   ax.plot(second_order_gen[1]/second_order_gen[0]**(4/2), 'ro', label='gen_4')
   ax.plot(second_order_gen[2]/second_order_gen[0]**(6/2), 'go', label='gen_6')
-  ax.plot(second_order_gen[3]/second_order_gen[0]**(8/2), 'bo', label='gen_8')
+  #ax.plot(second_order_gen[3]/second_order_gen[0]**(8/2), 'bo', label='gen_8')
   ax.set_xscale('log')
   ax.set_yscale('log')
   ax.set_xlabel('tau')
@@ -260,21 +290,124 @@ def structure_plot(Data,synth):
 
   fig = plt.figure()
   ax = fig.add_subplot()
-  #ax.plot(second_order[0], 'b--', label='original_2', ms=3)
+  ax.plot(second_order[0], 'b--', label='original_2', ms=3)
   ax.plot(second_order[1], 'r--', label='original_4', ms=3)
   ax.plot(second_order[2], 'g--', label='original_6', ms=3)
-  ax.plot(second_order[3], 'b--', label='original_8', ms=3)
+  #ax.plot(second_order[3], 'b--', label='original_8', ms=3)
 
-  #ax.plot(second_order_gen[0], 'bo', label='gen_2')
+  ax.plot(second_order_gen[0], 'bo', label='gen_2')
   ax.plot(second_order_gen[1], 'ro', label='gen_4')
   ax.plot(second_order_gen[2], 'go', label='gen_6')
-  ax.plot(second_order_gen[3], 'bo', label='gen_8')
+  #ax.plot(second_order_gen[3], 'bo', label='gen_8')
   ax.set_xscale('log')
   ax.set_yscale('log')
   ax.set_xlabel('tau')
   ax.set_ylabel('S_tau_p')
   ax.legend()
   plt.show()
+
+
+def log_spaced_taus(max_tau, num_points=30, min_tau=1):
+    """Unique integer lags, log-spaced over ``[min_tau, max_tau)``.
+
+    Standard practice for structure-function / flatness diagnostics: linear
+    tau spacing over-samples large tau (dense near max_tau) and under-samples
+    small tau, where most of the scaling behaviour lives. geomspace fixes that.
+    """
+    return np.unique(np.geomspace(min_tau, max_tau - 1, num_points, dtype=int))
+
+
+def flatness(data, p_hi=4, p_lo=2, taus=None, num_points=30):
+    """Flatness factor F(tau) = S_hi(tau) / S_lo(tau)**(p_hi/p_lo).
+
+    For Gaussian increments and p_hi=4, p_lo=2, F=3 (kurtosis); departure from
+    a flat F(tau) reflects intermittency. Uses sf_cache, so calling this after
+    structure_plot on the same Data/synth tensor is free (cache hit).
+
+    Parameters
+    ----------
+    data : torch.Tensor or numpy.ndarray
+    taus : array-like of int, optional
+        Defaults to log_spaced_taus(data.shape[-1]//2, num_points).
+
+    Returns
+    -------
+    taus, F : numpy.ndarray, numpy.ndarray
+    """
+    if taus is None:
+        taus = log_spaced_taus(data.shape[-1] // 2, num_points)
+    S = sf_cache.get_or_compute(data, p=[p_lo, p_hi], taus=taus)
+    F = S[1] / S[0] ** (p_hi / p_lo)
+    return taus, F
+
+
+def scaling_exponent_ratio(data, taus=None, num_points=30):
+    """Local scaling-exponent ratio d(log S4)/d(log S2) on log-spaced tau.
+
+    = [d log S4/d tau] / [d log S2/d tau] via the chain rule, i.e. ESS-style
+    ratio zeta_4(tau)/zeta_2(tau). For NS solutions this is expected to sit
+    near 2 in the inertial range, dip below 2 from intermittency, and rise
+    again approaching the dissipation scale (S2's log-derivative -> 0).
+
+    Returns
+    -------
+    taus, ratio : numpy.ndarray
+    """
+    if taus is None:
+        taus = log_spaced_taus(data.shape[-1] // 2, num_points)
+    S = sf_cache.get_or_compute(data, p=[2, 4], taus=taus)
+    ratio = logder(S[1], taus) / logder(S[0], taus)
+    return taus, ratio
+
+
+def scaling_exponent_ratio_compare(Data, synth, num_points=30):
+    """Compare d(log S4)/d(log S2) of Data vs synth on shared log-spaced lags.
+
+    Reproduces Buzzicotti et al. 2016 (NJP 18 113047) figure 4: log-lin plot of
+    the local slope zeta_4/zeta_2, with a dashed reference at the
+    non-intermittent dimensional value 2.
+    """
+    max_tau = Data.shape[-1] // 2
+    taus = log_spaced_taus(max_tau, num_points)
+
+    _, ratio_data = scaling_exponent_ratio(Data, taus=taus)
+    _, ratio_synth = scaling_exponent_ratio(synth, taus=taus)
+
+    fig, ax = plt.subplots(figsize=(6, 4))
+    ax.plot(taus, ratio_data, 'ko-', ms=4, label='Data')
+    ax.plot(taus, ratio_synth, 'ro-', ms=4, label='Synth')
+    ax.axhline(2.0, color='grey', ls='--', lw=1, label=r'$\zeta_4/\zeta_2=2$ (dimensional)')
+    ax.set_xscale('log')
+    ax.set_xlabel(r'$\tau$')
+    ax.set_ylabel(r'$\zeta_4^L/\zeta_2^L = d\log S_4 / d\log S_2$')
+    ax.grid(True, alpha=0.3)
+    ax.legend()
+    plt.show()
+
+    return taus, ratio_data, ratio_synth
+
+
+
+# Non periodic structure function. Ne = number of particles = x1.shape[0]
+# Nx = domain size = x1.shape[-1]
+def SF(x,ells,n,per=False):
+    Ne,B,Nx=x.shape
+    nl=len(ells)
+    S=np.zeros((len(n),nl))
+    for i in range(nl):
+        ii=int(ells[i])
+        if per==False:
+            temp1=np.roll(x,-ii,axis=1)[:,:,:-ii]-x[:,:,:-ii]
+        else:
+            temp1=np.roll(x,-ii,axis=1)-x
+
+        for j in range(len(n)):
+            S[j,i]=np.mean(np.abs(temp1)**n[j])
+
+    return S
+
+def logder(y,x):
+    return np.gradient(np.log(y),np.log(x),edge_order=2)
 
 
 def signals_plot(synth):
@@ -970,9 +1103,9 @@ def Compare_time_series_row( Data,Synth ,N):
     for i in range(N):
         idx = random_indexes[i]
         axs[0,i].get_xaxis().set_visible(False)
-        axs[0,i].plot(Data[idx,0].cpu())
+        axs[0,i].plot(Data[idx,0].cpu(), marker="o", markersize = 3)
         axs[1,i].get_xaxis().set_visible(False)
-        axs[1,i].plot(Synth[idx,0].cpu())
+        axs[1,i].plot(Synth[idx,0].cpu(), marker="o", markersize = 3)
     axs[0,0].set_ylabel('Data')
     axs[1,0].set_ylabel('Synth')
     plt.show()
