@@ -123,7 +123,13 @@ class SDE(torch.nn.Module):
         Cumulative offsets delimiting each potential's coefficient block, used to
         slice ``eta`` / ``theta`` per potential.
     """
-
+    # 1) Add a small helper that (re)computes the potential-dimension bookkeeping
+    # added because of generalized gaussian class pruning the number of potentials 
+    #    from whatever num_coefficients the potentials currently report.
+    def _sync_potential_dims(self):
+        sizes = [p.num_coefficients for p in self.potentials.values()]
+        self.num_potentials = sum(sizes)
+        self.indices_potentials = np.cumsum([0] + sizes)
 
     def __init__(
         self,
@@ -171,6 +177,10 @@ class SDE(torch.nn.Module):
         self.use_coshgt_s0   = use_coshgt_s0
 
         self.init_interpolants_and_workers()
+
+        self.fit(self.x_1)              # <-- moved up: potentials are pruned by now
+        self._sync_potential_dims()     # <-- reads post-prune sizes
+        print(f'The model has {self.num_potentials} potentials.')
 
         list_potential_num_coefficients = [p.num_coefficients for p in self.potentials.values()]
         self.num_potentials    = sum(list_potential_num_coefficients)
@@ -277,7 +287,8 @@ class SDE(torch.nn.Module):
 
         #Fiting
         #self.fit(self.x_k)
-        self.fit(self.x_1)
+        #self.fit(self.x_1)
+        #self._sync_potential_dims()  # update after possible potential pruning 
 
         barphi_e = [self.compute_moments(self.x_0).mean(0)]
         barphi_p = [self.compute_moments(self.x_k).mean(0)]
@@ -334,7 +345,8 @@ class SDE(torch.nn.Module):
         """
         assert self.interpolant == 'Cos', "this routine assumes the Cos schedule"
         assert self.x_k.shape[0] == self.x_0.shape[0], "need n_rep == nb_interpolants to pair X_t with Z"
-        self.fit(self.x_1)
+        #self.fit(self.x_1)
+        #self._sync_potential_dims()  
 
         x0  = self.x_0
         B   = x0.shape[0]

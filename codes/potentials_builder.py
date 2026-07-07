@@ -146,6 +146,34 @@ def get_1d_potentials(terms, J, filters, Q=1, filters_Q=None, filters_Phi=None,s
 
     if 'Scalar_morlet_generalized_gaussian' in terms:
         potentials['Scalar_morlet_generalized_gaussian'] = Scalar_generalized_gaussian(filters)
+
+    # generalized gaussian k regions 
+    
+    if 'Scalar_psi_gaussianK' in terms:
+        potentials['Scalar_psi_gaussianK'] = Scalar_GGD_KRegion(filters_Q)
+
+    if 'Scalar_morlet_gaussianK' in terms:
+        potentials['Scalar_morlet_gaussianK'] = Scalar_GGD_KRegion(filters)
+
+
+    # generalized gaussian k regions fixed 
+    from pathlib import Path
+
+    PARAM_DIR = Path("/lustre/fswork/projects/rech/wbg/ukv59en/MGD-for-Maximum-Entropy-Generation/fixed_potentials")
+    
+    if 'Scalar_psi_gaussianK_fixed' in terms:
+        potentials['Scalar_psi_gaussianK_fixed'] = Scalar_GGD_KRegion_Fixed(
+            filters_Q,
+            PARAM_DIR / "Scalar_psi_gaussianK.pt",
+        )
+
+    if 'Scalar_morlet_gaussianK_fixed' in terms:
+        potentials['Scalar_morlet_gaussianK_fixed'] = Scalar_GGD_KRegion_Fixed(
+            filters,
+            PARAM_DIR / "Scalar_morlet_gaussianK.pt",
+        )
+
+
         
     # Coshgt
     if 'Scalar_psi_coshgt' in terms: 
