@@ -38,7 +38,7 @@ def _aux_path(root: Path, config: str) -> Path:
 
 def load_experiment(config: str, root: Path, device: torch.device) -> Dict[str, Any]:
     """Load one saved experiment. Raises RuntimeError if files are missing."""
-    xt, theta_t, dH_t_bound, t = load_results(root.parent, config)
+    xt, theta_t, dH_t_bound, t, Theta_reg = load_results(root.parent, config)
     ap = _aux_path(root, config)
     if not ap.exists():
         raise RuntimeError(f"Missing aux moments file: {ap}")
@@ -50,6 +50,7 @@ def load_experiment(config: str, root: Path, device: torch.device) -> Dict[str, 
         "t":           t.to(device),
         "barphi_e":    aux["barphi_e"],
         "barphi_p":    aux["barphi_p"],
+        "theta_reg":    Theta_reg,
     }
 
 

@@ -14,8 +14,32 @@ NOTE on imports: the sys.path manipulation below is intentional and must
 stay exactly as written — the project's 'codes' and 'data' packages rely on
 these paths being inserted, in this order, before anything under them is
 imported.
+
+NOTE on output layout: every run now gets its own self-contained folder,
+  <outdir>/experiments/<config>/
+      config.json
+      logs/run.log
+      figures/*.png
+  instead of dumping everything with config-name-prefixed filenames into a
+  shared saved_results/ directory. See build_config_name / main() below.
+
+NOTE on figure saving (see save_all_open_figures / isolate_pyplot_calls):
+  the previous version did
+      hist_plot(x1, res['xt'])
+      plt.suptitle(...)
+      plt.savefig(single_file)
+      plt.close('all')
+  plt.suptitle/plt.savefig only ever touch the *current* figure
+  (plt.gcf()). If hist_plot() opens a new figure per channel/scale inside
+  its own loop, only the last one was ever saved — the rest were silently
+  dropped by plt.close('all'). If instead it never opens a new figure at
+  all and just calls plt.hist() repeatedly, everything piles onto a single
+  axes ("superimposed on one canvas"). Both failure modes are fixed below:
+  see the docstring on isolate_pyplot_calls() for the caveat on when the
+  monkeypatch trick can and can't help.
 """
 import argparse
+import contextlib
 import hashlib
 import json
 import logging
@@ -61,6 +85,8 @@ from codes.check_moments import *     # noqa: E402
 from codes.ortho_wavelet.ReadyToUseWavelets import *
 from data.data_loader import *        # noqa: E402
 from data_loader import *             # noqa: E402
+
+device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 
 # ── argument parsing ─────────────────────────────────────────────────────────
 def parse_args():
@@ -134,7 +160,9 @@ def parse_args():
 
     # Experiment / bookkeeping
     p.add_argument('--outdir', type=str, default='saved_results',
-                    help='Directory for results, figures, logs and config JSON')
+                    help='Base directory. Each run gets its own subfolder at '
+                         '<outdir>/experiments/<config>/ containing config.json, '
+                         'logs/ and figures/.')
     p.add_argument('--label', type=str, default=None,
                     help='Optional extra label appended to the config name')
     p.add_argument('--force_rerun', action='store_true',
@@ -147,10 +175,9 @@ def parse_args():
 
 
 # ── logging ───────────────────────────────────────────────────────────────────
-def setup_logging(outdir: Path, config: str) -> logging.Logger:
-    log_dir = outdir / 'logs'
+def setup_logging(log_dir: Path, config: str) -> logging.Logger:
     log_dir.mkdir(parents=True, exist_ok=True)
-    log_path = log_dir / f'{config}.log'
+    log_path = log_dir / 'run.log'
 
     logger = logging.getLogger(config)
     logger.setLevel(logging.DEBUG)
@@ -213,11 +240,87 @@ def build_config_name(args, M, coarse_grained):
     return '_'.join(parts)
 
 
+# ── figure-saving helpers ─────────────────────────────────────────────────────
+@contextlib.contextmanager
+def isolate_pyplot_calls(*fn_names):
+    """
+    Temporarily patch selected matplotlib.pyplot plotting primitives
+    (e.g. 'hist') so that every call opens its own fresh figure first.
+    Restores the originals on exit.
+
+    Why this can work at all without touching hist_plot's source: Python
+    modules are singletons, so if codes/utils.py did
+    `import matplotlib.pyplot as plt` and calls `plt.hist(...)`, that `plt`
+    is the SAME module object we hold here. Patching the attribute on the
+    module affects every caller that looks it up afterwards, including
+    inside hist_plot.
+
+    CAVEAT (please read before assuming this "fixes" everything): this only
+    helps if the function actually calls the *module-level* `plt.hist` /
+    `plt.plot` for each trace. If it instead does something like
+    `fig, axes = plt.subplots(n, 1)` once and then calls `axes[i].hist(...)`
+    on its own Axes objects, this patch is a complete no-op — plt.hist is
+    never invoked, so there's nothing to intercept, and you'd need to either
+    edit hist_plot directly or share its source with me so I can patch it
+    precisely instead of guessing.
+    """
+    originals = {name: getattr(plt, name) for name in fn_names}
+
+    def make_wrapper(name, orig):
+        def wrapper(*args, **kwargs):
+            plt.figure()
+            return orig(*args, **kwargs)
+        return wrapper
+
+    for name in fn_names:
+        setattr(plt, name, make_wrapper(name, originals[name]))
+    try:
+        yield
+    finally:
+        for name, orig in originals.items():
+            setattr(plt, name, orig)
+
+
+def save_all_open_figures(fig_dir, tag, logger, split_panels=True):
+    """
+    Save every currently-open matplotlib figure to its own file under
+    fig_dir, named '<tag>_fig<N>.png'. If split_panels is True and a figure
+    has more than one Axes (e.g. a subplot grid), also save each individual
+    Axes cropped to its own bounding box as '<tag>_fig<N>_panel<M>.png', so a
+    crowded multi-panel figure is still available as separate, readable
+    per-panel images.
+
+    This does NOT and cannot separate traces that share a single Axes (real
+    overplotting within one panel) — that requires either the monkeypatch in
+    isolate_pyplot_calls (if the culprit is a bare plt.<fn> call) or an edit
+    to the plotting function itself.
+
+    Does not close figures — call plt.close('all') after, once you're done
+    saving from this batch.
+    """
+    saved = []
+    for num in plt.get_fignums():
+        fig = plt.figure(num)
+        fname = fig_dir / f'{tag}_fig{num}.png'
+        fig.savefig(fname, dpi=150, bbox_inches='tight')
+        saved.append(fname)
+
+        if split_panels and len(fig.axes) > 1:
+            for j, ax in enumerate(fig.axes):
+                extent = ax.get_window_extent().transformed(fig.dpi_scale_trans.inverted())
+                sub_fname = fig_dir / f'{tag}_fig{num}_panel{j}.png'
+                fig.savefig(sub_fname, dpi=150, bbox_inches=extent.expanded(1.2, 1.3))
+                saved.append(sub_fname)
+
+    logger.info('Saved %d figure/panel file(s) for %s', len(saved), tag)
+    return saved
+
+
 # ── experiment run / reload ──────────────────────────────────────────────────
-def try_load_experiment(outdir, config):
+def try_load_experiment(exp_dir, config):
     """Try loading saved SDE outputs and auxiliary moment-matching data."""
     try:
-        loaded = load_results(outdir, config)
+        loaded = load_results(exp_dir, config)
         xt, theta_t, dH_t_bound, t_loaded, Theta_reg = loaded
 
         out = {
@@ -228,7 +331,7 @@ def try_load_experiment(outdir, config):
             'Theta_reg': Theta_reg,
             'loaded': True,
         }
-        aux_path = outdir / f'{config}_aux_moments.pt'
+        aux_path = exp_dir / f'{config}_aux_moments.pt'
         if aux_path.exists():
             aux = torch.load(aux_path, map_location=device)
             out.update(aux)
@@ -241,9 +344,9 @@ def try_load_experiment(outdir, config):
         return None
 
 
-def run_experiment(args, config, x1, filters, filters_Phi, filters_Q, t, logger, outdir):
+def run_experiment(args, config, x1, filters, filters_Phi, filters_Q, t, logger, exp_dir):
     if not args.force_rerun:
-        loaded = try_load_experiment(outdir, config)
+        loaded = try_load_experiment(exp_dir, config)
         if loaded is not None:
             logger.info('Loaded existing results for %s', config)
             return loaded
@@ -270,12 +373,12 @@ def run_experiment(args, config, x1, filters, filters_Phi, filters_Q, t, logger,
     )
     logger.info('SDE integration finished in %.1f s', timer.time() - t0)
 
-    save_results_theta_reg(xt, theta_t, dH_t_bound, t, outdir, config, Theta_reg=Theta_reg)
+    save_results_theta_reg(xt, theta_t, dH_t_bound, t, exp_dir, config, Theta_reg=Theta_reg)
 
     if not args.no_save_aux_moments:
         torch.save(
             {'barphi_e': barphi_e.detach().cpu(), 'barphi_p': barphi_p.detach().cpu()},
-            outdir / f'{config}_aux_moments.pt',
+            exp_dir / f'{config}_aux_moments.pt',
         )
 
     return {
@@ -292,8 +395,7 @@ def save_diagnostics(x1, res, t, args, config, fig_dir, logger):
     # 1. moment matching
     if res.get('barphi_e') is not None and res.get('barphi_p') is not None:
         plot_moment_matching(res['barphi_e'], res['barphi_p'], res['t'], threshold)
-        plt.suptitle(f'Moment matching: {config}')
-        plt.savefig(fig_dir / f'{config}_moment_matching.png', dpi=150, bbox_inches='tight')
+        save_all_open_figures(fig_dir, 'moment_matching', logger)
         plt.close('all')
     else:
         logger.warning('No aux moments available (loaded run without saved aux file?); '
@@ -303,26 +405,27 @@ def save_diagnostics(x1, res, t, args, config, fig_dir, logger):
     n_groups = max(1, min(args.n_traj_groups, x1.shape[0] // 5))
     for i in range(n_groups):
         Compare_time_series_row(x1[i * 5:i * 5 + 5], res['xt'][i * 5:i * 5 + 5], 5)
-        plt.suptitle(f'Trajectories group {i}: {config}')
-        plt.savefig(fig_dir / f'{config}_trajectories_group{i}.png', dpi=150, bbox_inches='tight')
+        save_all_open_figures(fig_dir, f'trajectories_group{i}', logger)
         plt.close('all')
 
     # 3. wavelet histogram collection
-    hist_plot(x1, res['xt'])
-    plt.suptitle(f'Wavelet histograms: {config}')
-    plt.savefig(fig_dir / f'{config}_histograms.png', dpi=150, bbox_inches='tight')
+    # This is the section that was coming out "superimposed on one canvas".
+    # We force every plt.hist() call inside hist_plot to open its own new
+    # figure (see isolate_pyplot_calls docstring for the caveat on when this
+    # can't help), then save every figure that resulted, individually.
+    with isolate_pyplot_calls('hist'):
+        hist_plot(x1, res['xt'])
+    save_all_open_figures(fig_dir, 'histograms', logger)
     plt.close('all')
 
     # 4. power spectrum
     spec_plot(x1, res['xt'])
-    plt.suptitle(f'Power spectrum: {config}')
-    plt.savefig(fig_dir / f'{config}_spectrum.png', dpi=150, bbox_inches='tight')
+    save_all_open_figures(fig_dir, 'spectrum', logger)
     plt.close('all')
 
     # 5. structure functions
     structure_plot(x1, res['xt'])
-    plt.suptitle(f'Structure functions: {config}')
-    plt.savefig(fig_dir / f'{config}_structure_functions.png', dpi=150, bbox_inches='tight')
+    save_all_open_figures(fig_dir, 'structure_functions', logger)
     plt.close('all')
 
     # 6. scaling exponent ratio (zeta4 / zeta2)
@@ -339,47 +442,52 @@ def save_diagnostics(x1, res, t, args, config, fig_dir, logger):
     ax.grid(True, alpha=0.3)
     ax.legend()
     ax.set_title(config)
-    fig.savefig(fig_dir / f'{config}_scaling_exponent_ratio.png', dpi=150, bbox_inches='tight')
+    fig.savefig(fig_dir / 'scaling_exponent_ratio.png', dpi=150, bbox_inches='tight')
     plt.close(fig)
 
     # 7. entropy bound evolution
-    H_t_bound, H_t_gaussian = entropy_curves(x1, res['dH_t_bound'], res['t'])
-    logger.info('Final entropy bound: %s',
-                H_t_bound[-1].item() if torch.is_tensor(H_t_bound[-1]) else H_t_bound[-1])
-    logger.info('Final Gaussian entropy estimate: %s',
-                H_t_gaussian[-1].item() if torch.is_tensor(H_t_gaussian[-1]) else H_t_gaussian[-1])
+    #H_t_bound, H_t_gaussian = entropy_curves(x1, res['dH_t_bound'], res['t'], args.interpolant)
+    #logger.info('Final entropy bound: %s',
+    #            H_t_bound[-1].item() if torch.is_tensor(H_t_bound[-1]) else H_t_bound[-1])
+    #logger.info('Final Gaussian entropy estimate: %s',
+    #            H_t_gaussian[-1].item() if torch.is_tensor(H_t_gaussian[-1]) else H_t_gaussian[-1])
 
-    fig = plt.figure(figsize=(7, 5))
-    plt.plot(res['t'].detach().cpu(), H_t_bound, label='bound')
-    gauss_cpu = H_t_gaussian.detach().cpu() if torch.is_tensor(H_t_gaussian) else H_t_gaussian
-    plt.plot(t.detach().cpu(), gauss_cpu, '--', label='Gaussian entropy estimate')
-    plt.xlabel('t')
-    plt.ylabel('entropy')
-    plt.legend()
-    plt.title(config)
-    plt.tight_layout()
-    fig.savefig(fig_dir / f'{config}_entropy_bound.png', dpi=150, bbox_inches='tight')
-    plt.close(fig)
+    #fig = plt.figure(figsize=(7, 5))
+    #plt.plot(res['t'].detach().cpu(), H_t_bound, label='bound')
+    #gauss_cpu = H_t_gaussian.detach().cpu() if torch.is_tensor(H_t_gaussian) else H_t_gaussian
+    #plt.plot(t.detach().cpu(), gauss_cpu, '--', label='Gaussian entropy estimate')
+    #plt.xlabel('t')
+    #plt.ylabel('entropy')
+    #plt.legend()
+    #plt.title(config)
+    #plt.tight_layout()
+    #fig.savefig(fig_dir / f'{config}_entropy_bound.png', dpi=150, bbox_inches='tight')
+    #plt.close(fig)
 
-    plot_entropy_bound_evolution(res['dH_t_bound'], H_t_bound, H_t_gaussian, res['t'])
-    plt.suptitle(config)
-    plt.savefig(fig_dir / f'{config}_entropy_bound_detail.png', dpi=150, bbox_inches='tight')
-    plt.close('all')
+    #plot_entropy_bound_evolution(res['dH_t_bound'], H_t_bound, H_t_gaussian, res['t'])
+    #plt.suptitle(config)
+    #plt.savefig(fig_dir / f'{config}_entropy_bound_detail.png', dpi=150, bbox_inches='tight')
+    #plt.close('all')
 
     logger.info('Saved diagnostic figures to %s', fig_dir)
+
+
+def entropy_curves(x_ref, dH_t_bound, t_used, interpolant):
+    d = x_ref.shape[-2] * x_ref.shape[-1]
+    H_p_0 = (np.log(2 * np.pi) + 1) * d / 2
+    H_t_bound = dH_t_bound.cumsum(0).detach().cpu() / (t_used.shape) + H_p_0
+    H_t_gaussian = compute_gaussian_entropy(x_ref, interpolant, t_used)
+    return H_t_bound, H_t_gaussian
 
 
 # ── main ──────────────────────────────────────────────────────────────────────
 def main():
     args = parse_args()
-    device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     torch.manual_seed(args.seed)
     np.random.seed(args.seed)
 
     outdir = Path(args.outdir)
-    fig_dir = outdir / 'figures'
     outdir.mkdir(parents=True, exist_ok=True)
-    fig_dir.mkdir(parents=True, exist_ok=True)
 
     # ---- data ----
     W = DefineWavelet('Db', m=3, device=device)
@@ -403,8 +511,17 @@ def main():
     B, channels, M = x1.shape
 
     config = build_config_name(args, M, coarse_grained)
-    logger = setup_logging(outdir, config)
+
+    # ---- per-experiment folder: outdir/experiments/<config>/ ----
+    exp_dir = outdir / 'experiments' / config
+    fig_dir = exp_dir / 'figures'
+    log_dir = exp_dir / 'logs'
+    exp_dir.mkdir(parents=True, exist_ok=True)
+    fig_dir.mkdir(parents=True, exist_ok=True)
+
+    logger = setup_logging(log_dir, config)
     logger.info('Config: %s', config)
+    logger.info('Experiment folder: %s', exp_dir)
     logger.info('Arguments: %s', vars(args))
     logger.info('Data shape after split/reshape (pre coarse-grain): (%d, %d, %d)', B, C, pre_len)
     logger.info('x1 final shape: %s (coarse_grained=%s)', tuple(x1.shape), coarse_grained)
@@ -420,7 +537,7 @@ def main():
         'coarse_grained': coarse_grained,
         'pre_coarse_grain_length': pre_len,
     })
-    with open(outdir / f'{config}_config.json', 'w') as f:
+    with open(exp_dir / 'config.json', 'w') as f:
         json.dump(config_dict, f, indent=2, default=str)
 
     filters, filters_Phi = return_Filters(M, args.J, 1, device=device, include_phi=True)
@@ -428,7 +545,7 @@ def main():
 
     t = 1 - (1 - torch.linspace(0, 1, args.nt + 1)) ** args.schedule_exponent
 
-    result = run_experiment(args, config, x1, filters, filters_Phi, filters_Q, t, logger, outdir)
+    result = run_experiment(args, config, x1, filters, filters_Phi, filters_Q, t, logger, exp_dir)
 
     save_diagnostics(x1, result, t, args, config, fig_dir, logger)
 
