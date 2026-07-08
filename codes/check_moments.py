@@ -1109,7 +1109,7 @@ def plot_moment_matching(barphi_e, barphi_p, t, threshold, save=None):
             ax.hist(error_last, bins=100)
             ax.set_yscale("log")
             ax.set_title("Distribution of moment matching error (all moments)")
-            fig.suptitle(save["title"])
+            fig.suptitle(["title"])
             fig.tight_layout(rect=[0, 0, 1, 0.95])
             fig.savefig(save["filename"], dpi=200, bbox_inches="tight")
             plt.close(fig)

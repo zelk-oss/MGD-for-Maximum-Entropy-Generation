@@ -372,7 +372,7 @@ def save_diagnostics(x1, res, t, args, config, fig_dir, logger):
 
     # 1. moment matching
     if res.get('barphi_e') is not None and res.get('barphi_p') is not None:
-        plot_moment_matching(res['barphi_e'], res['barphi_p'], res['t'], threshold, save=True)
+        plot_moment_matching(res['barphi_e'], res['barphi_p'], res['t'], threshold, save={"filename": fig_dir / "moment_matching.png","title": config})
     else:
         logger.warning('No aux moments available (loaded run without saved aux file?); '
                         'skipping moment-matching plot.')
@@ -380,20 +380,20 @@ def save_diagnostics(x1, res, t, args, config, fig_dir, logger):
     # 2. trajectories: true vs synthesized
     n_groups = max(1, min(args.n_traj_groups, x1.shape[0] // 5))
     for i in range(n_groups):
-        Compare_time_series_row(x1[i * 5:i * 5 + 5], res['xt'][i * 5:i * 5 + 5], 5, save=True)
+        Compare_time_series_row(x1[i * 5:i * 5 + 5], res['xt'][i * 5:i * 5 + 5], 5, save={"filename": fig_dir / "compare_time_series.png","title": config})
 
     # 3. wavelet histogram collection
     # This is the section that was coming out "superimposed on one canvas".
     # We force every plt.hist() call inside hist_plot to open its own new
     # figure (see isolate_pyplot_calls docstring for the caveat on when this
     # can't help), then save every figure that resulted, individually.
-    hist_plot(x1, res['xt'], save=True)
+    hist_plot(x1, res['xt'], save={"filename": fig_dir / "histograms.png","title": config})
 
     # 4. power spectrum
-    spec_plot(x1, res['xt'], save=True)
+    spec_plot(x1, res['xt'], save={"filename": fig_dir / "spectrum.png","title": config})
 
     # 5. structure functions
-    structure_plot(x1, res['xt'], save=True)
+    structure_plot(x1, res['xt'], save={"filename": fig_dir / "structure_functions.png","title": config})
 
     # 6. scaling exponent ratio (zeta4 / zeta2)
     # NOTE: the original notebook compared against an undefined `xt_cg` here;

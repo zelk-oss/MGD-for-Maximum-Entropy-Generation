@@ -6,6 +6,14 @@ import torch
 from scipy.special import gammaln, gammainc
 from scipy.optimize import minimize
 
+import numpy as np
+import matplotlib
+matplotlib.use("Agg")
+import matplotlib.pyplot as plt
+import torch
+from scipy.special import gammaln, gammainc
+from scipy.optimize import minimize
+
 
 class Scalar_GGD_KRegion:
     """
@@ -66,6 +74,7 @@ class Scalar_GGD_KRegion:
                  auto_prune=True,
                  cond_tol=1e-6,
                  prune_max_cols=20000,
+                 kurt_thresholds=None,
                  verbose=True):
         self.filters = filters
         self.K = int(num_regions)
@@ -85,6 +94,12 @@ class Scalar_GGD_KRegion:
         self.cond_tol = cond_tol
         self.prune_max_cols = prune_max_cols
         self.verbose = verbose
+        # kurtosis -> region-count search budget (see _kurtosis_Kmax). Default:
+        # K-1 log-spaced thresholds from kurt=1 (near-Gaussian) to kurt=100
+        # (very sparse/intermittent), e.g. for K=4: [1, ~4.6, ~21.5, 100].
+        if kurt_thresholds is None:
+            kurt_thresholds = np.logspace(0, 2, max(self.K - 1, 1)).tolist()
+        self.kurt_thresholds = list(kurt_thresholds)
 
         # per-region params, each (J, K) once fitted
         self.alpha = self.scale = None
@@ -212,11 +227,58 @@ class Scalar_GGD_KRegion:
                 cuts[m] = best
         return sorted(cuts)
 
-    def _select_model_order(self, h, seed=0):
+    # ================= kurtosis-adaptive region budget =================
+    #
+    # Rationale (from the real Q=1/Q=3 wavelet data): kurtosis descends
+    # smoothly and monotonically from very sparse/intermittent fine scales
+    # (kurt in the hundreds) to near-Gaussian coarse scales (kurt ~ 0), in
+    # BOTH filter banks. There is no fixed K right for every channel: a
+    # near-Gaussian channel forced into K=4 regions fits noise into an
+    # arbitrary partition (exactly the "bulk fit almost absent" failure
+    # mode seen earlier), while a kurt~600 channel genuinely needs several
+    # regions to resolve spike -> shoulder -> tail. Rather than paying for
+    # full AIC/BIC order search (K=1..K) on every channel, kurtosis gives a
+    # near-free way to cap the search budget per channel BEFORE any
+    # boundary optimization runs.
+    @staticmethod
+    def _channel_kurtosis(h):
+        """Excess (Fisher) kurtosis of the raw (signed) coefficients."""
+        h = np.asarray(h, dtype=float)
+        h = h[np.isfinite(h)]
+        if h.size < 8:
+            return 0.0
+        m = h.mean()
+        v = ((h - m) ** 2).mean()
+        if v <= 1e-300:
+            return 0.0
+        m4 = ((h - m) ** 4).mean()
+        return float(m4 / (v ** 2) - 3.0)
+
+    def _kurtosis_Kmax(self, kurt):
+        """
+        Map kurtosis to a cap on region count: Kmax = 1 + (number of
+        self.kurt_thresholds exceeded). With the default log-spaced
+        thresholds (kurt=1..100), a near-Gaussian channel (kurt<1) gets
+        Kmax=1 (single GGD, no fake partition); a very peaked channel
+        (kurt>=100) gets the full Kmax=self.K search budget. This directly
+        implements "fewer regions used if fewer are needed": Kmax only
+        caps the search, _select_model_order / AIC-BIC can still pick
+        something smaller within that budget.
+        """
+        Kmax = 1
+        for t in self.kurt_thresholds:
+            if kurt >= t:
+                Kmax += 1
+        return int(min(Kmax, self.K))
+
+    def _select_model_order(self, h, seed=0, K_max=None):
+        if K_max is None:
+            K_max = self.K
+        K_max = max(1, min(int(K_max), self.K))
         N = h.size
         pen = (np.log(N) if self.model_criterion == "bic" else 2.0)
         results = []
-        for K in range(1, self.K + 1):
+        for K in range(1, K_max + 1):
             cuts = self._fit_boundaries_k(
                 h, K, self.alpha_bounds, n_grid=self.boundary_search_grid,
                 n_iters=self.boundary_search_iters,
@@ -232,7 +294,8 @@ class Scalar_GGD_KRegion:
         crit, K, cuts = min(results, key=lambda r: r[0])
         if self.verbose:
             table = "  ".join(f"K{k}={c:.0f}" for c, k, _ in sorted(results, key=lambda r: r[1]))
-            print(f"    [model-select] chose K={K}  ({self.model_criterion.upper()}: {table})")
+            print(f"    [model-select] chose K={K}  (Kmax={K_max})  "
+                  f"({self.model_criterion.upper()}: {table})")
         return K, cuts
 
     def _embed_slots(self, cuts, ah):
@@ -262,17 +325,21 @@ class Scalar_GGD_KRegion:
         for j in range(J):
             h = z[:, j, :].reshape(-1); h = h[np.isfinite(h)]; ah = np.abs(h); N = h.size
 
+            kurt = self._channel_kurtosis(h)
+            K_max = self._kurtosis_Kmax(kurt)
+
             if boundary_method == "auto":
-                Keff, cuts = self._select_model_order(h, seed=0)
+                Keff, cuts = self._select_model_order(h, seed=0, K_max=K_max)
             elif boundary_method == "likelihood":
-                Keff = K
+                Keff = K_max
                 cuts = self._fit_boundaries_k(
-                    h, K, self.alpha_bounds, n_grid=self.boundary_search_grid,
+                    h, K_max, self.alpha_bounds, n_grid=self.boundary_search_grid,
                     n_iters=self.boundary_search_iters,
                     subsample=self.boundary_search_subsample)
             else:
-                qs = np.linspace(0.5, 0.97, K - 1); Keff = K
-                cuts = list(np.quantile(ah, qs))
+                Keff = K_max
+                qs = np.linspace(0.5, 0.97, max(K_max - 1, 0))
+                cuts = list(np.quantile(ah, qs)) if K_max > 1 else []
 
             KEFF[j] = Keff
             slots = np.maximum(self._embed_slots(cuts, ah), 1e-8)
@@ -304,8 +371,9 @@ class Scalar_GGD_KRegion:
                 cut_str = " ".join(f"{c:.4f}" for c in slots)
                 pi_str = " ".join(f"{p:.1%}" for p in PI[j])
                 a_str = " ".join(f"{a:.2f}" for a in A[j])
-                print(f"[GGD^{K}][ch {j}] Keff={Keff}  cuts=[{cut_str}]  "
-                      f"pi=[{pi_str}]  alpha=[{a_str}]  active={ACT[j].sum()}")
+                print(f"[GGD^{K}][ch {j}] kurt={kurt:7.2f}  Kmax={K_max}  Keff={Keff}  "
+                      f"cuts=[{cut_str}]  pi=[{pi_str}]  alpha=[{a_str}]  "
+                      f"active={ACT[j].sum()}")
 
         dtype = x.dtype if x.is_floating_point() else torch.float32
         dev = x.device
