@@ -544,6 +544,54 @@ class Scalar_GGD_KRegion:
             num_coefficients=self.num_coefficients, K=self.K, J=self.J,
             trans_frac=self.trans_frac, eps_abs=self.eps_abs), filename)
 
+    @classmethod
+    def _logpdf_trunc(cls, xv, alpha, scale, lo, hi, pi):
+        mass = max(cls._ggd_cdf_abs(hi, alpha, scale) - cls._ggd_cdf_abs(lo, alpha, scale), 1e-300)
+        lp = (np.log(alpha) - np.log(2.0) - np.log(scale) - gammaln(1.0 / alpha)
+              - (np.abs(xv) / scale) ** alpha - np.log(mass) + np.log(max(pi, 1e-300)))
+        return np.clip(lp, -500.0, 500.0)
+    
+    def plot_fit(self, x, n_grid=800, log_scale=True, fit_if_needed=True):
+        if fit_if_needed and not self.is_fitted:
+            self.fit_reference(x)
+        self._check_fitted()
+        filters = self.filters.to(x.device)
+        wt = torch.fft.ifft(torch.fft.fft(x) * filters).real
+        A = self.alpha.cpu().numpy(); S = self.scale.cpu().numpy()
+        C = self.cuts.cpu().numpy(); P = self.pi.cpu().numpy()
+        J, K = A.shape
+        colors = plt.cm.viridis(np.linspace(0, 0.9, K))
+        paths = []
+        for j in range(J):
+            h = wt[:, j, :].detach().cpu().flatten().numpy()
+            h = h[np.isfinite(h)]
+            if h.size == 0:
+                continue
+            ah = np.abs(h); xmax = float(ah.max()) * 1.02
+            edges = [0.0] + list(C[j]) + [xmax]
+            fig, ax = plt.subplots(figsize=(9, 4))
+            ax.hist(h, bins=200, density=True, log=log_scale, alpha=0.35,
+                    color="steelblue", label="data")
+            for k in range(K):
+                if P[j, k] < 1e-4:      # collapsed sliver, nothing to draw
+                    continue
+                lo, hi = edges[k], edges[k + 1]
+                xp = np.linspace(max(lo, 1e-6), hi, n_grid)
+                lp = self._logpdf_trunc(xp, A[j, k], S[j, k], lo,
+                                        (np.inf if k == K - 1 else hi), P[j, k])
+                xx = np.concatenate([-xp[::-1], xp])
+                yy = np.exp(np.concatenate([lp[::-1], lp]))
+                ax.plot(xx, yy, lw=2, color=colors[k],
+                        label=f"r{k} a={A[j,k]:.2f} sc={S[j,k]:.3f} pi={P[j,k]:.1%}")
+            for c in C[j]:
+                ax.axvline(c, color="k", ls=":", lw=0.8, alpha=0.4)
+                ax.axvline(-c, color="k", ls=":", lw=0.8, alpha=0.4)
+            ax.set_xlabel("Coefficient value")
+            ax.set_ylabel("Log density" if log_scale else "Density")
+            ax.set_title(f"channel {j}  (Keff={int(self.Keff[j])})")
+            ax.legend(fontsize=7, loc="upper right")
+            plt.show()
+
     # =========================== reporting ============================
     def summary(self):
         self._check_fitted()

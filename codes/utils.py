@@ -80,7 +80,6 @@ def save_results(
     torch.save(dH_t_bound.cpu(), base / 'entropy_bounds' / config)
     torch.save(t.cpu(), base / 'sampling_times' / config)
 
-
 def save_results_theta_reg(
     xt,
     theta_t,
@@ -88,19 +87,26 @@ def save_results_theta_reg(
     t,
     root,
     config,
-    Theta_reg,
+    Theta_reg=None,  # Set to None by default
 ):
     base = root / 'saved_results'
 
+    # 1. Save the core variables first to secure them on disk
     torch.save(xt.cpu(), base / 'samples' / config)
     torch.save(theta_t.cpu(), base / 'lagrange_multipliers' / config)
     torch.save(dH_t_bound.cpu(), base / 'entropy_bounds' / config)
     torch.save(t.cpu(), base / 'sampling_times' / config)
 
-    torch.save(
-        Theta_reg.cpu(),
-        base / 'lagrange_multipliers_regularised' / config
-    )
+    # 2. Safely process Theta_reg only if it was passed in
+    if Theta_reg is not None:
+        try:
+            torch.save(
+                Theta_reg.cpu(),
+                base / 'lagrange_multipliers_regularised' / config
+            )
+        except RuntimeError as e:
+            # Catch the OOM (or any other PyTorch error) so the run doesn't crash entirely
+            print(f"Warning: Failed to save Theta_reg. Error: {e}")
 
 def load_results(root, config):
     base = root / 'saved_results'
@@ -137,6 +143,7 @@ def normalize(Data):
     Data = Data.to(torch.float32)
     return Data
 
+
 def split_periodize_reshape(Data, n1):
     """
     Splits Data into non-overlapping subseries of length n1 along the last axis,
@@ -152,9 +159,10 @@ def split_periodize_reshape(Data, n1):
     a = (last - first) / (n1 - 1)
     b = first
     x = torch.arange(n1, device=Data.device, dtype=Data.dtype)
-    linear = a * x + b 
-    Data_periodized = Data_sub - linear 
-    Data_periodized = Data_periodized + first 
+    linear = a * x + b
+    Data_periodized = Data_sub - linear
+    Data_periodized = Data_periodized + first
 
     batch, channels, _, _ = Data_periodized.shape
     return Data_periodized.reshape(batch * num_subseries, channels, n1)
+

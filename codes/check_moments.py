@@ -70,7 +70,7 @@ class StructureFunctionCache:
 sf_cache = StructureFunctionCache()
 
 
-def spec_plot(Data,synth):
+def spec_plot(Data,synth, save=None):
   """Plot the power spectrum and value histogram, original vs synthesis.
  
   First panel: mean power spectrum (over batch/channel) on log-log axes, keeping
@@ -97,41 +97,60 @@ def spec_plot(Data,synth):
 
   plt.show()
 
-def hist_plot(Data,synth,psi = None):
-  """Plot per-band histograms of wavelet-coefficient magnitudes.
- 
-  Filters both signals with a Morlet band-pass bank ``psi`` (built by default from
-  the signal length), then for each scale ``j`` and quality index ``q`` overlays the
-  histograms of ``|W x|`` for original vs synthesis on a log y-axis.
- 
-  Parameters
-  ----------
-  Data, synth : torch.Tensor
-      Original and synthetic signals, shape (..., T).
-  psi : torch.Tensor, optional
-      Precomputed filter bank in Fourier space. Defaults to a Morlet bank with
-      ``J = log2(M) - 2`` scales and ``Q = 3``.
-  """
+def hist_plot(Data, synth, psi=None, save=None):
+    """
+    Plot per-band histograms of wavelet coefficients.
+    If save is None:
+        show one tall figure (one histogram below another).
+    If save is provided:
+        save the complete figure.
+    """
+    M = Data.shape[-1]
+    J = int(np.log2(M)) - 2
+    Q = 3
+    if psi is None:
+        psi = torch.tensor(
+            init_band_pass(
+                'morlet',
+                M,
+                J=J,
+                Q=Q,
+                high_freq=0.49,
+                wav_norm='l1'
+            )
+        )
+    x = torch.fft.ifft(torch.fft.fft(Data.cpu()) * psi)
+    x_synth = torch.fft.ifft(torch.fft.fft(synth.cpu()) * psi)
 
-  M =Data.shape[-1]
-  if psi is None:
-      psi = torch.tensor(init_band_pass('morlet', M, J=int(np.log2(M))-2, Q=3, high_freq=0.49, wav_norm='l1'))
-  x = torch.fft.ifft(torch.fft.fft(Data.cpu())*psi)
-  x_synth = torch.fft.ifft(torch.fft.fft(synth.cpu())*psi)
+    # One subplot for every (j,q)
+    nplots = J * Q
+    fig, axes = plt.subplots(
+        nplots, 1,
+        figsize=(7, 2.8 * nplots),
+        squeeze=False
+    )
+    axes = axes.ravel()
+    for j in range(J):
+        for q in range(Q):
+            ax = axes[j * Q + q]
+            x_j = x[:, j * Q + q].flatten().real
+            x_j_synth = x_synth[:, j * Q + q].flatten().real
+            ax.hist(x_j, bins=50, density=True, label='Orig')
+            ax.hist(x_j_synth, bins=50, density=True,
+                    alpha=0.7, label='Synth')
+            ax.set_yscale('log')
+            ax.set_title(f'Wavelet coefficients (j={j}, q={q})')
+            if j == 0 and q == 0:
+                ax.legend()
 
-  for j in range(int(np.log2(M))-2):
-    for q in range(3):
-
-      x_j = x[:,j*3+q].flatten().real
-      x_j_synth = x_synth[:,j*3+q].flatten().real
-
-      plt.hist(x_j,bins=50,density=True,label='Orig')
-      plt.hist(x_j_synth,bins=50,density=True,alpha=0.7,label='Synth')
-      plt.legend()
-
-      plt.title('j,q='+str(j)+','+str(q))
-      plt.yscale('log')
-      plt.show()
+    if save is not None:
+        fig.suptitle(save["title"])
+        fig.tight_layout(rect=[0, 0, 1, 0.98])
+        fig.savefig(save["filename"], dpi=200, bbox_inches="tight")
+        plt.close(fig)
+    else:
+        fig.tight_layout()
+        plt.show()
 
 
 def cross_structure_function(data, pq=[(1,1)], max_tau=10):
@@ -170,62 +189,82 @@ def cross_structure_function(data, pq=[(1,1)], max_tau=10):
     return second_order
 
 
-def cross_plot(Data,synth,pq=[(2,1),(2,2),(3,1),(3,2),(3,3)],epsilon = 1e-8):
-  """Plot log cross structure functions and their relative error per ``(p, q)``.
- 
-  For each exponent pair, shows three 2D images on log-log axes: original
-  ``log S_{p,q}``, synthesis ``log S_{p,q}``, and a relative-error map (greyscale).
- 
-  NOTE: the error denominator is ``second_order + second_order`` (i.e. twice the
-  original), not ``second_order + second_order_gen`` -- confirm this is intended.
-  Also ``epsilon`` is added after the log rather than inside it.
- 
-  Parameters
-  ----------
-  Data, synth : torch.Tensor
-      Original and synthetic signals, shape (..., T).
-  pq : list of (int, int)
-      Exponent pairs.
-  epsilon : float
-      Stabilizer for the log / error map.
-  """
+def cross_plot(Data, synth,
+               pq=[(2,1), (2,2), (3,1), (3,2), (3,3)],
+               epsilon=1e-8,
+               save=None):
+    """
+    Plot log cross-structure functions and their relative error.
+    If save is None:
+        show one figure per (p,q) pair (original behaviour).
+    If save is provided:
+        save one large figure containing all (p,q) panels.
+    """
 
-  max_tau = Data.shape[-1]//2
-  second_order = cross_structure_function(Data.cpu().numpy(), pq=pq, max_tau=max_tau) #
-  second_order_gen = cross_structure_function(synth.cpu().numpy(), pq=pq,max_tau=max_tau)
-  log_second_order = np.log(second_order)+epsilon
-  log_second_order_gen = np.log(second_order_gen)+epsilon
-  error = np.abs((second_order-second_order_gen))/(second_order+second_order)
-  vmin,vmax = min(np.min(log_second_order),np.min(log_second_order_gen)), max(np.max(log_second_order),np.max(log_second_order_gen)) 
-  #fig = plt.figure(figsize=(5,5))
-  #ax = fig.add_subplot()
-  #ax.imshow(np.log(second_order[0]+1e-8))
-  for i in range(len(second_order)):
-      print('(p,q)=',pq[i])
-      fig, [ax1,ax2,ax3] = plt.subplots(nrows=1, ncols=3,figsize=(15,5))
-        
-      ax1.imshow(log_second_order[i],vmin=vmin, vmax=vmax)
-      ax1.set_xscale('log')
-      ax1.set_yscale('log')
-      ax1.set_xlim(1e-1,max_tau)
-      ax1.set_ylim(1e-1,max_tau)
+    max_tau = Data.shape[-1] // 2
+    second_order = cross_structure_function(
+        Data.cpu().numpy(), pq=pq, max_tau=max_tau
+    )
+    second_order_gen = cross_structure_function(
+        synth.cpu().numpy(), pq=pq, max_tau=max_tau
+    )
+    log_second_order = np.log(second_order) + epsilon
+    log_second_order_gen = np.log(second_order_gen) + epsilon
+    error = np.abs(second_order - second_order_gen) / (
+        second_order + second_order
+    )
+    vmin = min(log_second_order.min(), log_second_order_gen.min())
+    vmax = max(log_second_order.max(), log_second_order_gen.max())
 
-      im = ax2.imshow(log_second_order_gen[i],vmin=vmin, vmax=vmax)
-      ax2.set_xscale('log')
-      ax2.set_yscale('log')
-      ax2.set_xlim(1e-1,max_tau)
-      ax2.set_ylim(1e-1,max_tau)
-      #cbar_ax = fig.add_axes([0.85, 0.15, 0.05, 0.7])
-      #fig.colorbar(im, cax=cbar_ax)
+    if save is None:
 
-      ax3.imshow(error[i],vmin=0,vmax=1,cmap = 'Greys')
-      ax3.set_xscale('log')
-      ax3.set_yscale('log')
-      ax3.set_xlim(1e-1,max_tau)
-      ax3.set_ylim(1e-1,max_tau)
-     
-    
-      plt.show()
+        # Original behaviour
+        for i, (p, q) in enumerate(pq):
+            fig, axes = plt.subplots(1, 3, figsize=(15, 5))
+            ax1, ax2, ax3 = axes
+            ax1.imshow(log_second_order[i], vmin=vmin, vmax=vmax)
+            ax1.set_title(f'Data ({p},{q})')
+            ax2.imshow(log_second_order_gen[i], vmin=vmin, vmax=vmax)
+            ax2.set_title(f'Synth ({p},{q})')
+            ax3.imshow(error[i], vmin=0, vmax=1, cmap='Greys')
+            ax3.set_title('Relative error')
+            for ax in axes:
+                ax.set_xscale('log')
+                ax.set_yscale('log')
+                ax.set_xlim(1e-1, max_tau)
+                ax.set_ylim(1e-1, max_tau)
+
+            plt.tight_layout()
+            plt.show()
+
+    else:
+
+        # One portable figure
+        fig, axes = plt.subplots(
+            len(pq), 3,
+            figsize=(15, 4 * len(pq)),
+            squeeze=False
+        )
+
+        for i, (p, q) in enumerate(pq):
+            ax1, ax2, ax3 = axes[i]
+            ax1.imshow(log_second_order[i], vmin=vmin, vmax=vmax)
+            ax1.set_title(f'Data (p={p}, q={q})')
+            im = ax2.imshow(log_second_order_gen[i], vmin=vmin, vmax=vmax)
+            ax2.set_title(f'Synth (p={p}, q={q})')
+            ax3.imshow(error[i], vmin=0, vmax=1, cmap='Greys')
+            ax3.set_title('Relative error')
+            for ax in (ax1, ax2, ax3):
+                ax.set_xscale('log')
+                ax.set_yscale('log')
+                ax.set_xlim(1e-1, max_tau)
+                ax.set_ylim(1e-1, max_tau)
+
+        fig.colorbar(im, ax=axes[:, :2], shrink=0.8, label='log S')
+        fig.suptitle(save["title"])
+        fig.tight_layout(rect=[0, 0, 1, 0.97])
+        fig.savefig(save["filename"], dpi=200, bbox_inches="tight")
+        plt.close(fig)
 
 
 def second_order_structure_function(data, p=np.array([2, 4, 6, 8]), max_tau=10):
@@ -252,59 +291,115 @@ def second_order_structure_function(data, p=np.array([2, 4, 6, 8]), max_tau=10):
     taus = np.arange(1, max_tau, 1)
     return sf_cache.get_or_compute(data, p, taus)
 
-def structure_plot(Data,synth):
-  """Plot structure functions ``S_p(tau)`` for ``p in {2,4,6,8}``, original vs gen.
- 
-  First figure: self-similarity ratios ``S_p(tau) / S_2(tau)**(p/2)`` (flat curves
-  indicate scaling). Second figure: the raw ``S_p(tau)``. Both on log-log axes;
-  dashed = original, markers = generated.
- 
-  Parameters
-  ----------
-  Data, synth : torch.Tensor
-      Original and synthetic signals, shape (..., T).
-  """
+def structure_plot(Data, synth, save=None):
+    """
+    Plot structure functions S_p(tau) for p in {2,4,6,8}.
 
-  max_tau = Data.shape[-1]//2
-  # NOTE: pass tensors (not .cpu().numpy()) so sf_cache keys on a stable id()
-  # and gets reused by ratio_flatness_dataset / flatness_ratio_compare below.
-  second_order = second_order_structure_function(Data, p=np.array([2, 4, 6, 8]), max_tau=max_tau)
-  second_order_gen = second_order_structure_function(synth, p=np.array([2, 4, 6, 8]), max_tau=max_tau)
-  fig = plt.figure()
-  ax = fig.add_subplot()
-  ax.plot(second_order[0], 'b--', label='original_2', ms=3)
-  ax.plot(second_order[1]/second_order[0]**(4/2), 'r--', label='original_4', ms=3)
-  ax.plot(second_order[2]/second_order[0]**(6/2), 'g--', label='original_6', ms=3)
-  #ax.plot(second_order[3]/second_order[0]**(8/2), 'b--', label='original_8', ms=3)
+    If save is None:
+        show the two figures as before.
 
-  ax.plot(second_order_gen[0], 'bo', label='gen_2')
-  ax.plot(second_order_gen[1]/second_order_gen[0]**(4/2), 'ro', label='gen_4')
-  ax.plot(second_order_gen[2]/second_order_gen[0]**(6/2), 'go', label='gen_6')
-  #ax.plot(second_order_gen[3]/second_order_gen[0]**(8/2), 'bo', label='gen_8')
-  ax.set_xscale('log')
-  ax.set_yscale('log')
-  ax.set_xlabel('tau')
-  ax.set_ylabel('F_tau_p')
-  ax.legend()
-  plt.show()
+    If save is provided:
+        save both plots into a single figure.
+    """
 
-  fig = plt.figure()
-  ax = fig.add_subplot()
-  ax.plot(second_order[0], 'b--', label='original_2', ms=3)
-  ax.plot(second_order[1], 'r--', label='original_4', ms=3)
-  ax.plot(second_order[2], 'g--', label='original_6', ms=3)
-  #ax.plot(second_order[3], 'b--', label='original_8', ms=3)
+    max_tau = Data.shape[-1] // 2
 
-  ax.plot(second_order_gen[0], 'bo', label='gen_2')
-  ax.plot(second_order_gen[1], 'ro', label='gen_4')
-  ax.plot(second_order_gen[2], 'go', label='gen_6')
-  #ax.plot(second_order_gen[3], 'bo', label='gen_8')
-  ax.set_xscale('log')
-  ax.set_yscale('log')
-  ax.set_xlabel('tau')
-  ax.set_ylabel('S_tau_p')
-  ax.legend()
-  plt.show()
+    second_order = second_order_structure_function(
+        Data, p=np.array([2, 4, 6, 8]), max_tau=max_tau
+    )
+    second_order_gen = second_order_structure_function(
+        synth, p=np.array([2, 4, 6, 8]), max_tau=max_tau
+    )
+
+    if save is None:
+
+        # ---------- Figure 1 : normalized structure functions ----------
+        fig = plt.figure(figsize=(6, 5))
+        ax = fig.add_subplot()
+
+        ax.plot(second_order[0], 'b--', label='original_2', ms=3)
+        ax.plot(second_order[1] / second_order[0] ** 2, 'r--', label='original_4', ms=3)
+        ax.plot(second_order[2] / second_order[0] ** 3, 'g--', label='original_6', ms=3)
+
+        ax.plot(second_order_gen[0], 'bo', label='gen_2')
+        ax.plot(second_order_gen[1] / second_order_gen[0] ** 2, 'ro', label='gen_4')
+        ax.plot(second_order_gen[2] / second_order_gen[0] ** 3, 'go', label='gen_6')
+
+        ax.set_xscale('log')
+        ax.set_yscale('log')
+        ax.set_xlabel('tau')
+        ax.set_ylabel(r'$S_p/S_2^{p/2}$')
+        ax.set_title('Normalized structure functions')
+        ax.legend()
+
+        plt.tight_layout()
+        plt.show()
+
+        # ---------- Figure 2 : raw structure functions ----------
+        fig = plt.figure(figsize=(6, 5))
+        ax = fig.add_subplot()
+
+        ax.plot(second_order[0], 'b--', label='original_2', ms=3)
+        ax.plot(second_order[1], 'r--', label='original_4', ms=3)
+        ax.plot(second_order[2], 'g--', label='original_6', ms=3)
+
+        ax.plot(second_order_gen[0], 'bo', label='gen_2')
+        ax.plot(second_order_gen[1], 'ro', label='gen_4')
+        ax.plot(second_order_gen[2], 'go', label='gen_6')
+
+        ax.set_xscale('log')
+        ax.set_yscale('log')
+        ax.set_xlabel('tau')
+        ax.set_ylabel(r'$S_p(\tau)$')
+        ax.set_title('Structure functions')
+        ax.legend()
+
+        plt.tight_layout()
+        plt.show()
+
+    else:
+
+        fig, (ax1, ax2) = plt.subplots(
+            2, 1,
+            figsize=(7, 10)
+        )
+
+        # ---------- Top panel ----------
+        ax1.plot(second_order[0], 'b--', label='original_2', ms=3)
+        ax1.plot(second_order[1] / second_order[0] ** 2, 'r--', label='original_4', ms=3)
+        ax1.plot(second_order[2] / second_order[0] ** 3, 'g--', label='original_6', ms=3)
+
+        ax1.plot(second_order_gen[0], 'bo', label='gen_2')
+        ax1.plot(second_order_gen[1] / second_order_gen[0] ** 2, 'ro', label='gen_4')
+        ax1.plot(second_order_gen[2] / second_order_gen[0] ** 3, 'go', label='gen_6')
+
+        ax1.set_xscale('log')
+        ax1.set_yscale('log')
+        ax1.set_xlabel('tau')
+        ax1.set_ylabel(r'$S_p/S_2^{p/2}$')
+        ax1.set_title('Normalized structure functions')
+        ax1.legend()
+
+        # ---------- Bottom panel ----------
+        ax2.plot(second_order[0], 'b--', label='original_2', ms=3)
+        ax2.plot(second_order[1], 'r--', label='original_4', ms=3)
+        ax2.plot(second_order[2], 'g--', label='original_6', ms=3)
+
+        ax2.plot(second_order_gen[0], 'bo', label='gen_2')
+        ax2.plot(second_order_gen[1], 'ro', label='gen_4')
+        ax2.plot(second_order_gen[2], 'go', label='gen_6')
+
+        ax2.set_xscale('log')
+        ax2.set_yscale('log')
+        ax2.set_xlabel('tau')
+        ax2.set_ylabel(r'$S_p(\tau)$')
+        ax2.set_title('Structure functions')
+        ax2.legend()
+
+        fig.suptitle(save["title"])
+        fig.tight_layout(rect=[0, 0, 1, 0.97])
+        fig.savefig(save["filename"], dpi=200, bbox_inches="tight")
+        plt.close(fig)
 
 
 def log_spaced_taus(max_tau, num_points=30, min_tau=1):
@@ -385,7 +480,6 @@ def scaling_exponent_ratio_compare(Data, synth, num_points=30):
     plt.show()
 
     return taus, ratio_data, ratio_synth
-
 
 
 # Non periodic structure function. Ne = number of particles = x1.shape[0]
@@ -977,72 +1071,112 @@ def plot_entropy_bound_evolution(dH_t_bound, H_t_bound, H_t_gaussian, t):
     
     plt.show()
 
-def plot_moment_matching(barphi_e, barphi_p, t, threshold):
-    """Plot the relative moment-matching error between interpolant and walkers.
- 
-    Restricts to moments whose final interpolant value exceeds ``threshold``, then
-    plots the mean symmetric relative error
-    ``2 |barphi_e - barphi_p| / (|barphi_e| + |barphi_p|)`` over time and its
-    final-time distribution. Falls back to just the histogram on error.
- 
-    Parameters
-    ----------
-    barphi_e, barphi_p : torch.Tensor
-        Interpolant and walker moment paths, shape (n_t, r).
-    t : torch.Tensor
-        Time grid.
-    threshold : float
-        Minimum final moment magnitude to keep.
+def plot_moment_matching(barphi_e, barphi_p, t, threshold, save=None):
     """
-    # Move everything to CPU once to avoid repetitive .cpu() calls
+    Plot the relative moment-matching error between interpolant and walkers.
+
+    If save is None:
+        show the two figures as before.
+
+    If save is provided:
+        save one figure with two side-by-side panels.
+    """
+
+    # Move everything to CPU once
     barphi_e = barphi_e.cpu()
     barphi_p = barphi_p.cpu()
     t = t.cpu()
-    
-    # 1. Use PyTorch native boolean masking instead of np.where
+
     keep_mask = barphi_e[-1] > threshold
-    
-    # Safety check: If nothing survives the threshold, we can't plot the time series
+
     if not keep_mask.any():
-        print(f"Warning: No moments exceeded the threshold of {threshold}. Plotting fallback histogram.")
-        # Calculate error for all moments just to show the fallback histogram
-        error_last = (2 * (barphi_e - barphi_p).abs() / (barphi_e.abs() + barphi_p.abs()))[-1]
-        plt.hist(error_last, bins=100)
-        plt.title('Distribution of moment matching error (All Moments)')
-        plt.yscale('log')
-        plt.show()
+        print(f"Warning: No moments exceeded threshold {threshold}.")
+
+        error_last = (
+            2 * (barphi_e - barphi_p).abs()
+            / (barphi_e.abs() + barphi_p.abs())
+        )[-1]
+
+        if save is None:
+            plt.figure(figsize=(6, 4))
+            plt.hist(error_last, bins=100)
+            plt.yscale("log")
+            plt.title("Distribution of moment matching error (all moments)")
+            plt.tight_layout()
+            plt.show()
+        else:
+            fig, ax = plt.subplots(figsize=(6, 4))
+            ax.hist(error_last, bins=100)
+            ax.set_yscale("log")
+            ax.set_title("Distribution of moment matching error (all moments)")
+            fig.suptitle(save["title"])
+            fig.tight_layout(rect=[0, 0, 1, 0.95])
+            fig.savefig(save["filename"], dpi=200, bbox_inches="tight")
+            plt.close(fig)
+
         return
 
-    # Filter tensors
+    # Keep only significant moments
     barphi_e = barphi_e[:, keep_mask]
     barphi_p = barphi_p[:, keep_mask]
 
-    # Calculate the symmetric relative error matrix
-    rel_error = 2 * (barphi_e - barphi_p).abs() / (barphi_e.abs() + barphi_p.abs())
-    
-    try:
-        # --- FIX: Align dimensions along the time axis ---
-        # Find the minimum available length between time grid and error steps
-        min_len = min(t.shape[0], rel_error.shape[0])
-        
-        # Force both to share the same length, then apply your [2:-1] slice
-        t_sliced = t[:min_len][2:-1]
-        error_mean_sliced = rel_error.mean(dim=1)[:min_len][2:-1]
-        
-        plt.plot(t_sliced, error_mean_sliced, marker='.')
-        plt.xlabel('t')
-        plt.yscale('log')
-        plt.title('Relative moment matching error')
+    rel_error = (
+        2 * (barphi_e - barphi_p).abs()
+        / (barphi_e.abs() + barphi_p.abs())
+    )
+
+    min_len = min(t.shape[0], rel_error.shape[0])
+    t_sliced = t[:min_len][2:-1]
+    error_mean = rel_error.mean(dim=1)[:min_len][2:-1]
+    error_last = rel_error[-1]
+
+    if save is None:
+
+        # -------- Time evolution --------
+        plt.figure(figsize=(6, 4))
+        plt.plot(t_sliced, error_mean, marker='.')
+        plt.xlabel("t")
+        plt.ylabel("Mean relative error")
+        plt.yscale("log")
+        plt.title("Relative moment matching error")
+        plt.tight_layout()
         plt.show()
-        
-    except Exception as e:
-        print(f"Time-plot failed due to: {e}. Falling back to histogram.")
-    
-    # This will now run regardless of whether the first plot succeeded
-    plt.hist(rel_error[-1], bins=100)
-    plt.title('Distribution of moment matching error')
-    plt.yscale('log')
-    plt.show()
+
+        # -------- Final histogram --------
+        plt.figure(figsize=(6, 4))
+        plt.hist(error_last, bins=100)
+        plt.xlabel("Relative error")
+        plt.ylabel("Count")
+        plt.yscale("log")
+        plt.title("Distribution of moment matching error")
+        plt.tight_layout()
+        plt.show()
+
+    else:
+
+        fig, (ax1, ax2) = plt.subplots(
+            1, 2,
+            figsize=(12, 4)
+        )
+
+        # Left panel
+        ax1.plot(t_sliced, error_mean, marker='.')
+        ax1.set_xlabel("t")
+        ax1.set_ylabel("Mean relative error")
+        ax1.set_yscale("log")
+        ax1.set_title("Time evolution")
+
+        # Right panel
+        ax2.hist(error_last, bins=100)
+        ax2.set_xlabel("Relative error")
+        ax2.set_ylabel("Count")
+        ax2.set_yscale("log")
+        ax2.set_title("Final distribution")
+
+        fig.suptitle(save["title"])
+        fig.tight_layout(rect=[0, 0, 1, 0.95])
+        fig.savefig(save["filename"], dpi=200, bbox_inches="tight")
+        plt.close(fig)
 
 
 
@@ -1086,7 +1220,7 @@ def plot_time_series_row(Data, N):
         axs[i].plot(Data[idx,0].cpu())
     plt.show()
 
-def Compare_time_series_row( Data,Synth ,N):
+def Compare_time_series_row(Data, Synth, N, save=None):
     """Compare the first ``N`` time series, data on top row, synthesis on bottom.
  
     Parameters
@@ -1108,4 +1242,11 @@ def Compare_time_series_row( Data,Synth ,N):
         axs[1,i].plot(Synth[idx,0].cpu(), marker="o", markersize = 3)
     axs[0,0].set_ylabel('Data')
     axs[1,0].set_ylabel('Synth')
-    plt.show()
+
+    if save is not None:
+        plt.suptitle(save["title"])
+        plt.tight_layout()
+        plt.savefig(save["filename"], dpi=200)
+        plt.close(fig)
+    else:
+        plt.show()

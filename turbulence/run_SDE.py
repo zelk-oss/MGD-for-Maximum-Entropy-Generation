@@ -196,30 +196,6 @@ def setup_logging(log_dir: Path, config: str) -> logging.Logger:
     return logger
 
 
-def split_periodize_reshape(Data, n1):
-    """
-    Splits Data into non-overlapping subseries of length n1 along the last axis,
-    discards the end if not divisible, periodizes each subseries, and reshapes
-    the output to [batch * num_subseries, channels, n1].
-    """
-    num_subseries = Data.size(-1) // n1
-    num_subseries = 1
-    Data_sub = Data[:, :, :num_subseries * n1]
-    Data_sub = Data_sub.unfold(-1, n1, n1)
-
-    first = Data_sub[..., 0:1]
-    last = Data_sub[..., -1:]
-    a = (last - first) / (n1 - 1)
-    b = first
-    x = torch.arange(n1, device=Data.device, dtype=Data.dtype)
-    linear = a * x + b
-    Data_periodized = Data_sub - linear
-    Data_periodized = Data_periodized + first
-
-    batch, channels, _, _ = Data_periodized.shape
-    return Data_periodized.reshape(batch * num_subseries, channels, n1)
-
-
 def build_config_name(args, M, coarse_grained):
     terms_hash = hashlib.md5('|'.join(sorted(args.terms)).encode()).hexdigest()[:8]
     parts = [
@@ -317,10 +293,11 @@ def save_all_open_figures(fig_dir, tag, logger, split_panels=True):
 
 
 # ── experiment run / reload ──────────────────────────────────────────────────
-def try_load_experiment(exp_dir, config):
+def try_load_experiment(outdir, config):
     """Try loading saved SDE outputs and auxiliary moment-matching data."""
     try:
-        loaded = load_results(exp_dir, config)
+        # Pass the global outdir so it finds the old shared folders
+        loaded = load_results(outdir, config)
         xt, theta_t, dH_t_bound, t_loaded, Theta_reg = loaded
 
         out = {
@@ -331,7 +308,7 @@ def try_load_experiment(exp_dir, config):
             'Theta_reg': Theta_reg,
             'loaded': True,
         }
-        aux_path = exp_dir / f'{config}_aux_moments.pt'
+        aux_path = outdir / f'{config}_aux_moments.pt'
         if aux_path.exists():
             aux = torch.load(aux_path, map_location=device)
             out.update(aux)
@@ -344,9 +321,9 @@ def try_load_experiment(exp_dir, config):
         return None
 
 
-def run_experiment(args, config, x1, filters, filters_Phi, filters_Q, t, logger, exp_dir):
+def run_experiment(args, config, x1, filters, filters_Phi, filters_Q, t, logger, outdir):
     if not args.force_rerun:
-        loaded = try_load_experiment(exp_dir, config)
+        loaded = try_load_experiment(outdir, config)
         if loaded is not None:
             logger.info('Loaded existing results for %s', config)
             return loaded
@@ -373,12 +350,13 @@ def run_experiment(args, config, x1, filters, filters_Phi, filters_Q, t, logger,
     )
     logger.info('SDE integration finished in %.1f s', timer.time() - t0)
 
-    save_results_theta_reg(xt, theta_t, dH_t_bound, t, exp_dir, config, Theta_reg=Theta_reg)
+    # Pass the global outdir as 'root' so it targets the original global directories
+    save_results_theta_reg(xt, theta_t, dH_t_bound, t, outdir, config, Theta_reg=Theta_reg)
 
     if not args.no_save_aux_moments:
         torch.save(
             {'barphi_e': barphi_e.detach().cpu(), 'barphi_p': barphi_p.detach().cpu()},
-            exp_dir / f'{config}_aux_moments.pt',
+            outdir / f'{config}_aux_moments.pt',
         )
 
     return {
@@ -394,9 +372,7 @@ def save_diagnostics(x1, res, t, args, config, fig_dir, logger):
 
     # 1. moment matching
     if res.get('barphi_e') is not None and res.get('barphi_p') is not None:
-        plot_moment_matching(res['barphi_e'], res['barphi_p'], res['t'], threshold)
-        save_all_open_figures(fig_dir, 'moment_matching', logger)
-        plt.close('all')
+        plot_moment_matching(res['barphi_e'], res['barphi_p'], res['t'], threshold, save=True)
     else:
         logger.warning('No aux moments available (loaded run without saved aux file?); '
                         'skipping moment-matching plot.')
@@ -404,29 +380,20 @@ def save_diagnostics(x1, res, t, args, config, fig_dir, logger):
     # 2. trajectories: true vs synthesized
     n_groups = max(1, min(args.n_traj_groups, x1.shape[0] // 5))
     for i in range(n_groups):
-        Compare_time_series_row(x1[i * 5:i * 5 + 5], res['xt'][i * 5:i * 5 + 5], 5)
-        save_all_open_figures(fig_dir, f'trajectories_group{i}', logger)
-        plt.close('all')
+        Compare_time_series_row(x1[i * 5:i * 5 + 5], res['xt'][i * 5:i * 5 + 5], 5, save=True)
 
     # 3. wavelet histogram collection
     # This is the section that was coming out "superimposed on one canvas".
     # We force every plt.hist() call inside hist_plot to open its own new
     # figure (see isolate_pyplot_calls docstring for the caveat on when this
     # can't help), then save every figure that resulted, individually.
-    with isolate_pyplot_calls('hist'):
-        hist_plot(x1, res['xt'])
-    save_all_open_figures(fig_dir, 'histograms', logger)
-    plt.close('all')
+    hist_plot(x1, res['xt'], save=True)
 
     # 4. power spectrum
-    spec_plot(x1, res['xt'])
-    save_all_open_figures(fig_dir, 'spectrum', logger)
-    plt.close('all')
+    spec_plot(x1, res['xt'], save=True)
 
     # 5. structure functions
-    structure_plot(x1, res['xt'])
-    save_all_open_figures(fig_dir, 'structure_functions', logger)
-    plt.close('all')
+    structure_plot(x1, res['xt'], save=True)
 
     # 6. scaling exponent ratio (zeta4 / zeta2)
     # NOTE: the original notebook compared against an undefined `xt_cg` here;
@@ -543,9 +510,52 @@ def main():
     filters, filters_Phi = return_Filters(M, args.J, 1, device=device, include_phi=True)
     filters_Q = return_Filters(M, args.J, args.Q, device=device)
 
+    # save dataset wavelet histograms 
+    wt = torch.fft.ifft(torch.fft.fft(x1) * filters).real  # (B, J, T)
+    n_wavelets = filters.shape[1]
+    # ------------------------------------------------------------------
+    # 1. Overview grid - Q=1 
+    # ------------------------------------------------------------------
+    ncols = 3
+    nrows = math.ceil(n_wavelets / ncols)
+    fig, axes = plt.subplots(nrows, ncols, figsize=(5 * ncols, 4 * nrows))
+    axes = axes.flatten()
+    for i in range(n_wavelets):
+        vals = wt[:, i, :].detach().cpu().flatten().numpy()
+        axes[i].hist(vals, bins=50, density=True, log=True)
+        axes[i].set_title(f"ch={i}")
+        axes[i].set_xlabel("Coefficient value")
+        axes[i].set_ylabel("Density")
+    for j in range(n_wavelets, len(axes)):
+        axes[j].axis("off")
+    plt.suptitle(f"Wavelet coefficient histograms", fontsize=25)
+    plt.tight_layout()
+    plt.savefig("wavelet_histo_Q=1.png")
+
+    wtQ3 = torch.fft.ifft(torch.fft.fft(x1) * filters_Q).real  # (B, J, T)
+    n_waveletsQ3 = filters_Q.shape[1]
+    # ------------------------------------------------------------------
+    # 1. Overview grid - Q=3 
+    # ------------------------------------------------------------------
+    ncols = 5
+    nrows = math.ceil(n_waveletsQ3 / ncols)
+    fig, axes = plt.subplots(nrows, ncols, figsize=(5 * ncols, 4 * nrows))
+    axes = axes.flatten()
+    for i in range(n_waveletsQ3):
+        vals = wtQ3[:, i, :].detach().cpu().flatten().numpy()
+        axes[i].hist(vals, bins=50, density=True, log=True)
+        axes[i].set_title(f"ch={i}")
+        axes[i].set_xlabel("Coefficient value")
+        axes[i].set_ylabel("Density")
+    for j in range(n_waveletsQ3, len(axes)):
+        axes[j].axis("off")
+    plt.suptitle(f"Wavelet coefficient histograms", fontsize=25)
+    plt.tight_layout()
+    plt.savefig("wavelet_histo_Q=3.png")
+
     t = 1 - (1 - torch.linspace(0, 1, args.nt + 1)) ** args.schedule_exponent
 
-    result = run_experiment(args, config, x1, filters, filters_Phi, filters_Q, t, logger, exp_dir)
+    result = run_experiment(args, config, x1, filters, filters_Phi, filters_Q, t, logger, outdir)
 
     save_diagnostics(x1, result, t, args, config, fig_dir, logger)
 
