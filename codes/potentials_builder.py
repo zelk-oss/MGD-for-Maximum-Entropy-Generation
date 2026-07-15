@@ -90,14 +90,18 @@ def get_1d_potentials(terms, J, filters, Q=1, filters_Q=None, filters_Phi=None,s
     if 'L_2' in terms:
        potentials['L_2'] = L2p_norm(1,filters)
 
+    if 'L_1' in terms: 
+        potentials['L_1'] = L2p1_norm(0,filters)
     if 'L_3' in terms:
         potentials['L_3'] = L2p1_norm(1,filters)
+
     if 'L_4' in terms:
         potentials['L_4'] = L2p_norm(2,filters)
     if 'L_5' in terms:
         potentials['L_5'] = L2p1_norm(2,filters)
     if 'L_6' in terms:
         potentials['L_6'] = L2p_norm(3,filters)
+
     if 'L_7' in terms:
         potentials['L_7'] = L2p1_norm(3,filters)
     if 'L_8' in terms:
@@ -261,13 +265,16 @@ def get_1d_potentials(terms, J, filters, Q=1, filters_Q=None, filters_Phi=None,s
     if 'Scattering_Fourth_Order_Real_Q1' in terms:
         potentials['Scattering_Fourth_Order_Real_Q1'] = Scattering_Fourth_Order_Real_1d(J, 1, filters, filters[:,:-1])
 
+    if 'Scattering_Fourth_Order_Imag' in terms:
+        potentials['Scattering_Fourth_Order_Imag'] = Scattering_Fourth_Order_Imag_1d(J, Q, filters, filters_Q[:,:-1])
+
     if 'Scattering_Fourth_Order_Mod2_Real_Q1' in terms:
         potentials['Scattering_Fourth_Order_Mod2_Real_Q1'] = Scattering_Fourth_Order_Mod2_Real_1d(J, 1, filters, filters[:,:-1])
 
-        
-    if 'Scattering_Fourth_Order_Imag' in terms:
-        pass
-        #potentials['Scattering_Fourth_Order_Imag'] = Scattering_Fourth_Order_Imag_1d(J, Q, filters, filters_Q[:,:-1])
+    
+    if 'Scattering_Fourth_Order_Mod2_Imag_Q1' in terms:
+        potentials['Scattering_Fourth_Order_Mod2_Imag_Q1'] = Scattering_Fourth_Order_Mod2_Imag_1d(J, 1, filters, filters[:,:-1])
+
 
     if parallel:
         for i in range(len(order_terms_potentials)):

@@ -129,6 +129,7 @@ class Scattering_Second_Order_1d(Potential):
         else:
             return (2*output*v[None,:,None]).sum(1)[:,None]/x.shape[-1]
 
+# experiment for lagrangian turbulence 
 class Scattering_Second_Order_Bulk_1d(Potential):
     def __init__(self, filters, bulk_quantile=0.90, trans_quantiles=(0.85, 0.95)):
         super().__init__()
@@ -350,96 +351,7 @@ class Scattering_Fourth_Order_Real_1d(Potential):
         norm_indices = self.norm[:,None]*self.norm[None,:] 
         norm_indices = norm_indices.repeat((1,1,self.J+1))
         self.norm_indices =  norm_indices[indices[0], indices[1], indices[2]] #(n_pot)
-
-
-# FOURTH ORDER WITH SQUARE 
-class Scattering_Fourth_Order_Mod2_Real_1d(Potential):
-    def __init__(self, J,Q,filters,filters_Q,include_diag = False,lite=True):
-        super().__init__()
-        self.J = J
-        self.Q = Q
-        self.filters = filters
-        self.filters_Q = filters_Q
-        if include_diag is True:
-            offset = 0
-        else:
-            offset = 1
-        self.indices = indices_fourth_order_Q(self.J, self.Q,offset,lite)
-        self.norm = 1
-        self.norm_indices = torch.ones((len(self.indices[0]),))
-        
-        self.num_coefficients = len(self.indices[0])
-        
-    def forward(self, x):
-        filters = self.filters.to(x.device)
-        filters_Q = self.filters_Q.to(x.device)
-        x_filtered = torch.fft.ifft(filters_Q*torch.fft.fft(x)) #(B,JQ,T) first wavelet transform 
-        
-        #Normalize micro
-        x_filtered = x_filtered/self.norm
-        
-        x_filtered_abs2 = abs_eps(x_filtered)**2 #(B,JQ,T)
-        
-        W_Wx = torch.fft.ifft(filters[:, :, None] * torch.fft.fft(x_filtered_abs2)[:, None]) #(B,JQ,J+1,T) second wavelet transform
-        output = torch.real(W_Wx[:, :, :, None] * W_Wx[:, :, None].conj()) #(B,JQ,J+1,J+1,T)
-        output = output.mean(-1) #(B,JQ,J+1,J+1)
-        output = output.permute(0, 3, 2, 1) #(B,J+1,J+1,JQ)
-        
-        indices = self.indices.long()
-        
-        output = output[:, indices[0], indices[1], indices[2]]
-        
-        output = output.reshape(x.shape[0], indices.shape[1])
-        return output
-
-    def grad(self, x,  v=None, means=None):
-        filters = self.filters.to(x.device)
-        filters_Q = self.filters_Q.to(x.device)
-        number_filters = filters.shape[1]
-        number_filters_Q = filters_Q.shape[1]
-
-        
-        x_filtered_no_LF = torch.fft.ifft(filters_Q*torch.fft.fft(x)) # (B,J*Q,M,N)
-        x_filtered_abs2_no_LF = abs_eps(x_filtered_no_LF)**2 # (B,J*L,M,N)
-        x_filtered_grad = 2 * x_filtered_no_LF
-
-        
-
-        x_filtered_abs2_no_LF_filtered_2 = torch.fft.ifft(
-            (torch.fft.fft(x_filtered_abs2_no_LF)[:,:,None] * filters**2)
-        )        
-        indices = self.indices
-
-        if v != None:
-            m = torch.zeros((number_filters_Q, number_filters_Q, number_filters)).to(x.device)
-            m[indices[0], indices[1], indices[2]] = v / self.norm_indices.to(v.device).to(v.dtype)
-            m = m+torch.transpose(m,0,1) 
-    
-            intermediate_output = x_filtered_grad*torch.einsum('ijk, ajkb -> aib', m, torch.real(x_filtered_abs2_no_LF_filtered_2))
-            return torch.fft.ifft(filters_Q*torch.fft.fft(intermediate_output)).real.sum(1)[:,None]/x.shape[-1]
-            
-        intermediate_output = x_filtered_grad[:,:,None,None]*torch.real(x_filtered_abs2_no_LF_filtered_2)[:,None] #x_filtered_over_abs_no_LF
-        output = torch.fft.ifft(filters_Q[:,:,None,None]*torch.fft.fft(intermediate_output)).real
-
-        output = output + torch.transpose(output, 1,2)      
-        output = output[:, indices[0], indices[1], indices[2]].reshape(x.shape[0], indices.shape[1], x.shape[-1])/x.shape[-1]
-
-        
-        return output / self.norm_indices[:,None].to(x.device).to(x.dtype)
-        
-    def fit_micro(self,x):
-        filters_Q = self.filters_Q.to(x.device)
-        x_filtered = torch.fft.ifft(filters_Q*torch.fft.fft(x))
-        x_filtered = x_filtered.abs()**2
-        #Normalize_micro
-        self.norm = x_filtered.mean((0,2))[:,None]**(-1/4)
-        #self.norm = x_filtered.mean((0,2))[:,None]**0.5
-        
-        indices = self.indices
-        norm_indices = self.norm[:,None]*self.norm[None,:] 
-        norm_indices = norm_indices.repeat((1,1,self.J+1))
-        self.norm_indices =  norm_indices[indices[0], indices[1], indices[2]] #(n_pot)
-
+     
 class Scattering_Fourth_Order_Imag_1d(Potential):
     def __init__(self, J,Q,filters,filters_Q):
         super().__init__()
@@ -561,7 +473,207 @@ class Scattering_Fourth_Order_Imag_1d(Potential):
         # ----- Scalar potentials -----
 
 
+# FOURTH ORDER WITH SQUARE 
+class Scattering_Fourth_Order_Mod2_Real_1d(Potential):
+    def __init__(self, J,Q,filters,filters_Q,include_diag = False,lite=True):
+        super().__init__()
+        self.J = J
+        self.Q = Q
+        self.filters = filters
+        self.filters_Q = filters_Q
+        if include_diag is True:
+            offset = 0
+        else:
+            offset = 1
+        self.indices = indices_fourth_order_Q(self.J, self.Q,offset,lite)
+        self.norm = 1
+        self.norm_indices = torch.ones((len(self.indices[0]),))
+        
+        self.num_coefficients = len(self.indices[0])
+        
+    def forward(self, x):
+        filters = self.filters.to(x.device)
+        filters_Q = self.filters_Q.to(x.device)
+        x_filtered = torch.fft.ifft(filters_Q*torch.fft.fft(x)) #(B,JQ,T) first wavelet transform 
+        
+        #Normalize micro
+        x_filtered = x_filtered/self.norm
+        
+        x_filtered_abs2 = abs_eps(x_filtered)**2 #(B,JQ,T)
+        
+        W_Wx = torch.fft.ifft(filters[:, :, None] * torch.fft.fft(x_filtered_abs2)[:, None]) #(B,JQ,J+1,T) second wavelet transform
+        output = torch.real(W_Wx[:, :, :, None] * W_Wx[:, :, None].conj()) #(B,JQ,J+1,J+1,T)
+        output = output.mean(-1) #(B,JQ,J+1,J+1)
+        output = output.permute(0, 3, 2, 1) #(B,J+1,J+1,JQ)
+        
+        indices = self.indices.long()
+        
+        output = output[:, indices[0], indices[1], indices[2]]
+        
+        output = output.reshape(x.shape[0], indices.shape[1])
+        return output
 
+    def grad(self, x,  v=None, means=None):
+        filters = self.filters.to(x.device)
+        filters_Q = self.filters_Q.to(x.device)
+        number_filters = filters.shape[1]
+        number_filters_Q = filters_Q.shape[1]
+
+        
+        x_filtered_no_LF = torch.fft.ifft(filters_Q*torch.fft.fft(x)) # (B,J*Q,M,N)
+        x_filtered_abs2_no_LF = abs_eps(x_filtered_no_LF)**2 # (B,J*L,M,N)
+        x_filtered_grad = 2 * x_filtered_no_LF
+
+        
+
+        x_filtered_abs2_no_LF_filtered_2 = torch.fft.ifft(
+            (torch.fft.fft(x_filtered_abs2_no_LF)[:,:,None] * filters**2)
+        )        
+        indices = self.indices
+
+        if v != None:
+            m = torch.zeros((number_filters_Q, number_filters_Q, number_filters)).to(x.device)
+            m[indices[0], indices[1], indices[2]] = v / self.norm_indices.to(v.device).to(v.dtype)
+            m = m+torch.transpose(m,0,1) 
+    
+            intermediate_output = x_filtered_grad*torch.einsum('ijk, ajkb -> aib', m, torch.real(x_filtered_abs2_no_LF_filtered_2))
+            return torch.fft.ifft(filters_Q*torch.fft.fft(intermediate_output)).real.sum(1)[:,None]/x.shape[-1]
+            
+        intermediate_output = x_filtered_grad[:,:,None,None]*torch.real(x_filtered_abs2_no_LF_filtered_2)[:,None] #x_filtered_over_abs_no_LF
+        output = torch.fft.ifft(filters_Q[:,:,None,None]*torch.fft.fft(intermediate_output)).real
+
+        output = output + torch.transpose(output, 1,2)      
+        output = output[:, indices[0], indices[1], indices[2]].reshape(x.shape[0], indices.shape[1], x.shape[-1])/x.shape[-1]
+
+        
+        return output / self.norm_indices[:,None].to(x.device).to(x.dtype)
+        
+    def fit_micro(self,x):
+        filters_Q = self.filters_Q.to(x.device)
+        x_filtered = torch.fft.ifft(filters_Q*torch.fft.fft(x))
+        x_filtered = x_filtered.abs()**2
+        #Normalize_micro
+        self.norm = x_filtered.mean((0,2))[:,None]**(-1/4)
+        #self.norm = x_filtered.mean((0,2))[:,None]**0.5
+        
+        indices = self.indices
+        norm_indices = self.norm[:,None]*self.norm[None,:] 
+        norm_indices = norm_indices.repeat((1,1,self.J+1))
+        self.norm_indices =  norm_indices[indices[0], indices[1], indices[2]] #(n_pot)
+
+class Scattering_Fourth_Order_Mod2_Imag_1d(Potential):
+    def __init__(self, J,Q,filters,filters_Q):
+        super().__init__()
+        self.J = J
+        self.Q = Q
+        self.filters = filters
+        self.filters_Q = filters_Q
+        self.indices = indices_fourth_order_Q(self.J, Q,offset = 1,lite=True,include_lowpass = False)
+
+        self.norm_indices = torch.ones((len(self.indices[0]),))
+        self.norm = 1
+
+        self.num_coefficients = len(self.indices[0])
+
+    def forward(self, x):
+        filters = self.filters.to(x.device)
+        filters_Q = self.filters_Q.to(x.device)
+
+        x_filtered = torch.fft.ifft(filters_Q*torch.fft.fft(x)) #(B,JQ,T)
+
+        #Normalize micro
+        x_filtered = x_filtered/self.norm
+
+        x_filtered_abs2 = abs_eps(x_filtered)**2 #(B,JQ,T)  <-- mod2
+
+        W_Wx = torch.fft.ifft(filters[:, :, None] * torch.fft.fft(x_filtered_abs2)[:, None]) #(B,JQ,J+1,T)
+        output = torch.imag(W_Wx[:, :, :, None] * W_Wx[:, :, None].conj()) #(B,JQ,J+1,J+1,T)
+        output = output.mean(-1) #(B,JQ,J+1,J+1)
+        output = output.permute(0, 3, 2, 1) #(B,J+1,J+1,JQ)
+
+        indices = self.indices.long()
+        output = output[:, indices[0], indices[1], indices[2]]
+        output = output.reshape(x.shape[0], indices.shape[1])
+        return output
+
+    def grad(self, x,  v=None, means=None):
+        filters = self.filters.to(x.device)
+        filters_tilde = torch.fft.fft(torch.fft.ifft(filters).conj()).conj()
+        filters_Q = self.filters_Q.to(x.device)
+        filters_Q_tilde = torch.fft.fft(torch.fft.ifft(filters_Q).conj()).conj()
+        number_filters = filters.shape[1]
+        number_filters_Q = filters_Q.shape[1]
+
+        x_filtered_no_LF = torch.fft.ifft(filters_Q*torch.fft.fft(x)) # (B,J*Q,M,N)
+        x_filtered_abs2_no_LF = abs_eps(x_filtered_no_LF)**2 # (B,J*L,M,N)  <-- mod2
+        x_filtered_grad = 2 * x_filtered_no_LF                            # <-- chain-rule term for |y|^2
+
+        x_filtered_abs2_no_LF_filtered_2 = torch.fft.ifft(
+            (torch.fft.fft(x_filtered_abs2_no_LF)[:,:,None]*filters.abs()**2))
+        x_filtered_abs2_no_LF_filtered_2_tilde = torch.fft.ifft(
+            (torch.fft.fft(x_filtered_abs2_no_LF)[:,:,None]*filters_tilde.abs()**2))
+
+        indices = self.indices
+
+        if v != None:
+            m = torch.zeros((number_filters_Q, number_filters_Q, number_filters)).to(x.device)+0*1j
+            m[indices[0], indices[1], indices[2]] = v / self.norm_indices.to(v.device).to(v.dtype) +0*1j
+            m_transpose = m.transpose(0,1)
+
+            intermediate_output = 0.5*x_filtered_grad*torch.einsum('ijk, ajkb -> aib', m, x_filtered_abs2_no_LF_filtered_2)
+            intermediate_output_conj = 0.5*x_filtered_grad.conj()*torch.einsum('ijk, ajkb -> aib', m, x_filtered_abs2_no_LF_filtered_2)
+
+            intermediate_output = torch.fft.ifft(filters_Q*torch.fft.fft(intermediate_output)).sum(1)[:,None]/x.shape[-1]
+            intermediate_output_conj = torch.fft.ifft(filters_Q_tilde*torch.fft.fft(intermediate_output_conj)).sum(1)[:,None]/x.shape[-1]
+
+            output = intermediate_output + intermediate_output_conj
+
+            intermediate_output = 0.5*x_filtered_grad*torch.einsum('ijk, ajkb -> aib', m_transpose, x_filtered_abs2_no_LF_filtered_2_tilde)
+            intermediate_output_conj = 0.5*x_filtered_grad.conj()*torch.einsum('ijk, ajkb -> aib', m_transpose, x_filtered_abs2_no_LF_filtered_2_tilde)
+
+            intermediate_output = torch.fft.ifft(filters_Q*torch.fft.fft(intermediate_output)).sum(1)[:,None]/x.shape[-1]
+            intermediate_output_conj = torch.fft.ifft(filters_Q_tilde*torch.fft.fft(intermediate_output_conj)).sum(1)[:,None]/x.shape[-1]
+
+            output_transpose = intermediate_output + intermediate_output_conj
+
+            output = output + output_transpose
+            return output.imag
+
+        intermediate_output = 0.5*x_filtered_grad[:,:,None,None]*x_filtered_abs2_no_LF_filtered_2[:,None]
+        intermediate_output_conj = 0.5*x_filtered_grad[:,:,None,None].conj()*x_filtered_abs2_no_LF_filtered_2[:,None]
+
+        intermediate_output = torch.fft.ifft(filters_Q[:,:,None,None]*torch.fft.fft(intermediate_output))
+        intermediate_output_conj = torch.fft.ifft(filters_Q_tilde[:,:,None,None].conj()*torch.fft.fft(intermediate_output_conj))
+
+        output = intermediate_output + intermediate_output_conj
+
+        intermediate_output = 0.5*x_filtered_grad[:,:,None,None]*x_filtered_abs2_no_LF_filtered_2_tilde[:,None]
+        intermediate_output_conj = 0.5*x_filtered_grad[:,:,None,None].conj()*x_filtered_abs2_no_LF_filtered_2_tilde[:,None]
+
+        intermediate_output = torch.fft.ifft(filters_Q[:,:,None,None]*torch.fft.fft(intermediate_output))
+        intermediate_output_conj = torch.fft.ifft(filters_Q_tilde[:,:,None,None].conj()*torch.fft.fft(intermediate_output_conj))
+
+        output_transpose = intermediate_output + intermediate_output_conj
+
+        output = output + torch.transpose(output_transpose, 1,2)
+
+        output = output[:, indices[0], indices[1], indices[2]].reshape(x.shape[0], indices.shape[1], x.shape[-1])/x.shape[-1]
+
+        return output.imag / self.norm_indices[:,None].to(x.device).to(x.dtype)
+
+    def fit_micro(self,x):
+        filters_Q = self.filters_Q.to(x.device)
+        x_filtered = torch.fft.ifft(filters_Q*torch.fft.fft(x))
+        x_filtered = x_filtered.abs()**2
+        #Normalize_micro
+        self.norm = x_filtered.mean((0,2))[:,None]**0.5   # matches Imag_1d convention (not the -1/4 used by the Real classes)
+
+        indices = self.indices
+        norm_indices = self.norm[:,None]*self.norm[None,:]
+        norm_indices = norm_indices.repeat((1,1,self.J+1))
+        self.norm_indices =  norm_indices[indices[0], indices[1], indices[2]] #(n_pot)
+
+   
 class Scalar(Potential):
     def __init__(self,filters, scalar_param =None,quantiles = True,confine=True):
         """ Build num_potentials windows in [-domain, domain] whose

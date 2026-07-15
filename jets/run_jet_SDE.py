@@ -21,11 +21,10 @@ NOTE on output layout: every run now gets its own self-contained folder,
       logs/run.log
       figures/*.png
   instead of dumping everything with config-name-prefixed filenames into a
-  shared saved_results/ directory. See main() below.
+  shared saved_results/ directory. See build_config_name / main() below.
 """
 import argparse
 import contextlib
-import hashlib
 import json
 import logging
 import sys
@@ -41,8 +40,8 @@ from scipy import stats, ndimage
 
 
 # ── sys.path setup ──────────────────────────────────────────────────────────
-# Script lives in .../conditional_mgd/turbulence/; 'codes' and 'data' live in
-# the parent folder .../conditional_mgd/, not alongside this script.
+# Script lives in .../MGD.../turbulence/; 'codes' and 'data' live in
+# the parent folder .../MGD.../, not alongside this script.
 root = Path(__file__).resolve().parent
 project_root = root.parent
  
@@ -55,24 +54,24 @@ def _extend_syspath(root: Path, project_root: Path):
     # Add the 'codes' directory itself to sys.path
     # This is the "magic" that lets 'from potentials...' work
     codes_path = project_root / 'codes'
+    print("codes path:", codes_path)
     if codes_path.is_dir() and str(codes_path) not in sys.path:
         sys.path.insert(0, str(codes_path))
  
     data_path = project_root / 'data'
+    print("data path:", data_path)
     if data_path.is_dir() and str(data_path) not in sys.path:
         sys.path.insert(0, str(data_path))
  
 _extend_syspath(root, project_root)
  
 from codes.sde_routines import *      # noqa: E402
+from codes.sde_routines import SDE
 from codes.utils import *             # noqa: E402
 from codes.utils_experiment import * 
 from codes.check_moments import *     # noqa: E402
 from codes.ortho_wavelet.ReadyToUseWavelets import *
 from data.data_loader import *        # noqa: E402
-from data_loader import *             # noqa: E402
-
-root = Path.cwd() 
 
 device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 
@@ -84,6 +83,8 @@ def parse_args():
     p.add_argument('--timestamp', type=str, default=None, help='Timestamp for the run')
 
     # Data
+    p.add_argument('--Re_number', type=int, default=929, 
+                    help="Load time series with this Reynolds number. It can be = {89, 208, 463, 703, 929}.")
     p.add_argument('--n1', type=int, default=3000,
                     help='Dataset size: number of samples kept from the '
                          'preprocessed data, i.e. Data[:n1] (replaces the '
@@ -95,7 +96,7 @@ def parse_args():
 
     # Wavelet scattering
     p.add_argument('--J', type=int, default=7, help='Number of wavelet scales')
-    p.add_argument('--Q', type=int, default=3, help='Wavelets per octave')
+    p.add_argument('--Q', type=int, default=1, help='Wavelets per octave')
     p.add_argument('--terms', nargs='+', type=str,
                     default=[
                         'L_2_lowpass',
@@ -134,10 +135,8 @@ def parse_args():
                     help='Threshold used in plot_moment_matching')
 
     # Experiment / bookkeeping
-    p.add_argument('--outdir', type=str, default='saved_results',
-                    help='Base directory. Each run gets its own subfolder at '
-                         '<outdir>/experiments/<config>/ containing config.json, '
-                         'logs/ and figures/.')
+    p.add_argument('--outdir', type=str, default=None,
+                help='Base directory. Defaults to <script_dir>/saved_results.')
     p.add_argument('--label', type=str, default=None,
                     help='Optional extra label appended to the config name')
     p.add_argument('--force_rerun', action='store_true',
@@ -195,11 +194,6 @@ def save_diagnostics(x1, res, t, args, config, fig_dir, logger):
         save={"filename": fig_dir / "wavelet_histo_Q1.png", "title": config}
     ) 
     
-    plot_wavelet_coeff_histograms(
-        x1, args.J, 3, config, fig_dir, logger,
-        save={"filename": fig_dir / "wavelet_histo_Q3.png", "title": config}
-    )
-    
     threshold = args.moment_threshold
 
     # 1. moment matching
@@ -217,7 +211,6 @@ def save_diagnostics(x1, res, t, args, config, fig_dir, logger):
     # 3. wavelet histogram collection
     # This is the section that was coming out "superimposed on one canvas".
     # We force every plt.hist() call inside hist_plot to open its own new
-    # figure (see isolate_pyplot_calls docstring for the caveat on when this
     # can't help), then save every figure that resulted, individually.
     hist_plot(x1, res['xt'], save={"filename": fig_dir / "histograms.png","title": config})
 
@@ -285,34 +278,38 @@ def main():
     torch.manual_seed(args.seed)
     np.random.seed(args.seed)
 
-    # `root` = this script's own directory (turbulence/), set at the top of
-    # the file. Only fall back to root/'saved_results' if --outdir wasn't
-    # given — never rely on a bare relative string.
     outdir = Path(args.outdir) if args.outdir else root / 'saved_results'
     outdir.mkdir(parents=True, exist_ok=True)
 
     # ---- data ----
     W = DefineWavelet('Db', m=3, device=device)
-    raw_data = load_turbulence_1d()
-    data_tensor = split_periodize_reshape(raw_data, args.subseries_len)
+    raw_data = load_reynolds_torch(args.Re_number, device=device) 
+
+    data_tensor = split_periodize_reshape(raw_data, args.subseries_len)    
     B, C, pre_len = data_tensor.shape
 
+    # 2. Dynamically calculate required wavelet scales
     coarse_grained = False
     scales_needed = 0
-    if pre_len > args.target_len:
-        scales_needed = int(np.log2(pre_len / args.target_len))
-        for _ in range(scales_needed):
-            data_tensor = W.decompose(data_tensor)[1]
-        coarse_grained = scales_needed > 0
-    else:
-        print(f'-- Current length {pre_len} <= target_len {args.target_len}; skipping coarse graining.')
 
+    if pre_len > args.target_len:
+            # Calculates how many power-of-2 divisions are needed
+            scales_needed = int(np.log2(pre_len / args.target_len))
+            
+            for _ in range(scales_needed):
+                data_tensor = W.decompose(data_tensor)[1]
+                
+            coarse_grained = scales_needed > 0
+    else:
+            print(f'-- Current length {pre_len} <= target_len {args.target_len}; skipping coarse graining.')
+
+    # 3. Slice and normalize using the correctly transformed tensor
     x1 = normalize(data_tensor[:args.n1]).to(device)
-    B, channels, M = x1.shape
+    B, channels, M = x1.shape  # M will now perfectly match your target_len (e.g., 128)
 
     config = build_config_name(args, M, coarse_grained)
-    config_prefix = build_config_name(args, M, coarse_grained, include_timestamp=False)
 
+    # ---- per-experiment folder: outdir/experiments/<config>/ ----
     exp_dir = outdir / 'experiments' / config
     fig_dir = exp_dir / 'figures'
     log_dir = exp_dir / 'logs'
@@ -327,23 +324,28 @@ def main():
     logger.info('Calculated scales applied: %d', scales_needed)
     logger.info('x1 final shape: %s (coarse_grained=%s)', tuple(x1.shape), coarse_grained)
 
+    # Dump the full config (every user-chosen parameter + a few derived ones)
+    # so the run can be reloaded later without guessing what was used.
     config_dict = dict(vars(args))
     config_dict.update({
-        'config_name': config, 'M': M, 'B': B, 'channels': channels,
-        'coarse_grained': coarse_grained, 'pre_coarse_grain_length': pre_len,
+        'config_name': config,
+        'M': M,
+        'B': B,
+        'channels': channels,
+        'coarse_grained': coarse_grained,
+        'pre_coarse_grain_length': pre_len,
     })
     with open(exp_dir / 'config.json', 'w') as f:
         json.dump(config_dict, f, indent=2, default=str)
 
     filters, filters_Phi = return_Filters(M, args.J, 1, device=device, include_phi=True)
-    filters_Q = return_Filters(M, args.J, args.Q, device=device)  # unused downstream — see note below
 
     t = 1 - (1 - torch.linspace(0, 1, args.nt + 1)) ** args.schedule_exponent
 
-    result = run_experiment(args, M, config, x1, filters, t, logger, outdir, device,
-                             config_prefix=config_prefix)
+    result = run_experiment(args, M, config, x1, filters, t, logger, outdir, device)
 
     save_diagnostics(x1, result, t, args, config, fig_dir, logger)
+
     logger.info('Done.')
 
 

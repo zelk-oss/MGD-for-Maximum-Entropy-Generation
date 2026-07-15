@@ -6,13 +6,17 @@ import torch
 from scipy.special import gammaln, gammainc
 from scipy.optimize import minimize
 
-import numpy as np
-import matplotlib
-matplotlib.use("Agg")
-import matplotlib.pyplot as plt
-import torch
-from scipy.special import gammaln, gammainc
-from scipy.optimize import minimize
+import sys
+from pathlib import Path
+# Get the absolute path of the directory 3 levels up from this file
+# (from potentials_classes -> potentials -> codes)
+project_root = Path(__file__).resolve().parents[2]
+# Target the filters directory absolutely
+filters_path = project_root / 'filters'
+if str(filters_path) not in sys.path:
+    sys.path.insert(0, str(filters_path))
+from filters_1d import init_band_pass
+
 
 
 class Scalar_GGD_KRegion:
@@ -325,21 +329,17 @@ class Scalar_GGD_KRegion:
         for j in range(J):
             h = z[:, j, :].reshape(-1); h = h[np.isfinite(h)]; ah = np.abs(h); N = h.size
 
-            kurt = self._channel_kurtosis(h)
-            K_max = self._kurtosis_Kmax(kurt)
-
             if boundary_method == "auto":
-                Keff, cuts = self._select_model_order(h, seed=0, K_max=K_max)
+                Keff, cuts = self._select_model_order(h, seed=0)
             elif boundary_method == "likelihood":
-                Keff = K_max
+                Keff = K
                 cuts = self._fit_boundaries_k(
-                    h, K_max, self.alpha_bounds, n_grid=self.boundary_search_grid,
+                    h, K, self.alpha_bounds, n_grid=self.boundary_search_grid,
                     n_iters=self.boundary_search_iters,
                     subsample=self.boundary_search_subsample)
             else:
-                Keff = K_max
-                qs = np.linspace(0.5, 0.97, max(K_max - 1, 0))
-                cuts = list(np.quantile(ah, qs)) if K_max > 1 else []
+                qs = np.linspace(0.5, 0.97, K - 1); Keff = K
+                cuts = list(np.quantile(ah, qs))
 
             KEFF[j] = Keff
             slots = np.maximum(self._embed_slots(cuts, ah), 1e-8)
@@ -371,9 +371,8 @@ class Scalar_GGD_KRegion:
                 cut_str = " ".join(f"{c:.4f}" for c in slots)
                 pi_str = " ".join(f"{p:.1%}" for p in PI[j])
                 a_str = " ".join(f"{a:.2f}" for a in A[j])
-                print(f"[GGD^{K}][ch {j}] kurt={kurt:7.2f}  Kmax={K_max}  Keff={Keff}  "
-                      f"cuts=[{cut_str}]  pi=[{pi_str}]  alpha=[{a_str}]  "
-                      f"active={ACT[j].sum()}")
+                print(f"[GGD^{K}][ch {j}] Keff={Keff}  cuts=[{cut_str}]  "
+                      f"pi=[{pi_str}]  alpha=[{a_str}]  active={ACT[j].sum()}")
 
         dtype = x.dtype if x.is_floating_point() else torch.float32
         dev = x.device
@@ -638,7 +637,7 @@ class Scalar_GGD_KRegion:
             ah = np.abs(h); xmax = float(ah.max()) * 1.02
             edges = [0.0] + list(C[j]) + [xmax]
             fig, ax = plt.subplots(figsize=(9, 4))
-            ax.hist(h, bins=200, density=True, log=log_scale, alpha=0.35,
+            ax.hist(h, bins=100, density=True, log=log_scale, alpha=0.5,
                     color="steelblue", label="data")
             for k in range(K):
                 if P[j, k] < 1e-4:      # collapsed sliver, nothing to draw
@@ -660,6 +659,105 @@ class Scalar_GGD_KRegion:
             ax.legend(fontsize=7, loc="upper right")
             plt.show()
 
+    # ===================== analytical shape extraction ================
+    def analytical_regions(self, j, pi_floor=1e-4):
+        """Active density regions defining p_j(z). Each: k, alpha, scale, lo, hi, pi
+        (pi renormalised over kept regions)."""
+        self._check_fitted()
+        A = self.alpha[j].detach().cpu().numpy(); S = self.scale[j].detach().cpu().numpy()
+        C = self.cuts[j].detach().cpu().numpy();  P = self.pi[j].detach().cpu().numpy()
+        edges = np.concatenate([[0.0], C, [np.inf]])
+        regs = [dict(k=int(k), alpha=float(A[k]), scale=float(S[k]),
+                     lo=float(edges[k]), hi=float(edges[k + 1]), pi=float(P[k]))
+                for k in range(self.K) if P[k] >= pi_floor]
+        tot = sum(r["pi"] for r in regs) or 1.0
+        for r in regs:
+            r["pi"] /= tot
+        return regs
+
+    def analytical_pdf(self, xv, j, pi_floor=1e-4):
+        """Evaluate the fitted composite density p_j(z) at signed points xv."""
+        xv = np.asarray(xv, dtype=float); axv = np.abs(xv); out = np.zeros_like(xv)
+        for r in self.analytical_regions(j, pi_floor):
+            m = (axv >= r["lo"]) & (axv < r["hi"])
+            if m.any():
+                out[m] = np.exp(self._logpdf_trunc(
+                    xv[m], r["alpha"], r["scale"], r["lo"], r["hi"], r["pi"]))
+        return out
+
+    def analytical_shape(self, x=None, j=None, n_grid=1000, pi_floor=1e-4):
+        """Per-channel {regions, grid, pdf}. j=None -> dict over all channels.
+        If x given, grid spans that channel's observed |z| range."""
+        self._check_fitted()
+        wt = None
+        if x is not None:
+            wt = torch.fft.ifft(self.filters.to(x.device) * torch.fft.fft(x)).real
+            wt = wt.detach().cpu().numpy()
+        def zmax_of(jj):
+            if wt is not None:
+                h = wt[:, jj, :].reshape(-1); h = h[np.isfinite(h)]
+                return float(np.abs(h).max()) * 1.02 if h.size else 1.0
+            regs = self.analytical_regions(jj, pi_floor)
+            fin = [r["hi"] for r in regs if np.isfinite(r["hi"])]
+            return max(fin + [8.0 * max((r["scale"] for r in regs), default=1.0)])
+        def one(jj):
+            zmax = zmax_of(jj); grid = np.linspace(-zmax, zmax, n_grid)
+            return dict(regions=self.analytical_regions(jj, pi_floor),
+                        grid=grid, pdf=self.analytical_pdf(grid, jj, pi_floor))
+        return one(j) if j is not None else {jj: one(jj) for jj in range(self.J)}
+    
+
+    # ===================== sampling from the fitted density ===========
+    def sample_channel(self, n, j, pi_floor=1e-4, seed=None):
+        """n i.i.d. samples from p_j(z): region ~ Multinomial(pi), |z| via
+        inverse-CDF of the truncated GGD, random +/- sign."""
+        from scipy.special import gammaincinv
+        regs = self.analytical_regions(j, pi_floor)
+        if not regs:
+            return np.zeros(0)
+        rng = np.random.default_rng(seed)
+        counts = rng.multinomial(n, [r["pi"] for r in regs]); chunks = []
+        for r, c in zip(regs, counts):
+            if c == 0:
+                continue
+            a, s, lo, hi = r["alpha"], r["scale"], r["lo"], r["hi"]
+            Flo = self._ggd_cdf_abs(lo, a, s); Fhi = self._ggd_cdf_abs(hi, a, s)  # 1.0 if inf
+            F = np.clip(Flo + rng.uniform(size=c) * (Fhi - Flo), 0.0, 1.0 - 1e-15)
+            mag = s * gammaincinv(1.0 / a, F) ** (1.0 / a)
+            chunks.append(rng.choice((-1.0, 1.0), size=c) * mag)
+        out = np.concatenate(chunks); rng.shuffle(out)
+        return out
+
+    def sample_all_channels(self, n_per_channel, pi_floor=1e-4, seed=0):
+        self._check_fitted()
+        return {j: self.sample_channel(n_per_channel, j, pi_floor, seed + j)
+                for j in range(self.J)}
+
+    def compare_channel(self, x, j, n_samples=None, bins=200, log_scale=True,
+                        pi_floor=1e-4, seed=0):
+        """Overlay real-coeff histogram, generated-coeff histogram, and analytic pdf."""
+        self._check_fitted()
+        wt = torch.fft.ifft(self.filters.to(x.device) * torch.fft.fft(x)).real
+        h = wt[:, j, :].detach().cpu().reshape(-1).numpy(); h = h[np.isfinite(h)]
+        n_samples = h.size if n_samples is None else n_samples
+        g = self.sample_channel(n_samples, j, pi_floor, seed)
+        xmax = float(np.abs(h).max()) * 1.02
+        edges = np.linspace(-xmax, xmax, bins + 1); grid = np.linspace(-xmax, xmax, 1000)
+        fig, ax = plt.subplots(figsize=(9, 4))
+        ax.hist(h, bins=edges, density=True, log=log_scale, alpha=0.5,
+                color="steelblue", label="data (real)")
+        ax.hist(g, bins=edges, density=True, log=log_scale, histtype="step",
+                lw=1.6, color="crimson", label="generated")
+        ax.plot(grid, np.clip(self.analytical_pdf(grid, j, pi_floor), 1e-12, None),
+                "k-", lw=1.2, label="analytic pdf")
+        for r in self.analytical_regions(j, pi_floor):
+            if np.isfinite(r["hi"]):
+                ax.axvline(r["hi"], color="k", ls=":", lw=0.7, alpha=0.4)
+                ax.axvline(-r["hi"], color="k", ls=":", lw=0.7, alpha=0.4)
+        ax.set_xlabel("coefficient value"); ax.set_ylabel("density")
+        ax.set_title(f"channel {j}: data vs generated vs analytic"); ax.legend(fontsize=8)
+        plt.show(); return fig, ax
+    
     # =========================== reporting ============================
     def summary(self):
         self._check_fitted()
@@ -673,6 +771,14 @@ class Scalar_GGD_KRegion:
             cells = " ".join(
                 f"{'*' if AC[j,k] else ' '}{A[j,k]:.2f}({P[j,k]:.0%})" for k in range(K))
             print(f"{j:>3d} {Ke[j]:>4d} {AC[j].sum():>3d} | {cells}")
+
+
+
+
+
+
+
+
 
 
 class Scalar_GGD_KRegion_Fixed(Scalar_GGD_KRegion):

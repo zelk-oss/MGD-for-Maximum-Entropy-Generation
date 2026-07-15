@@ -135,9 +135,9 @@ def hist_plot(Data, synth, psi=None, save=None):
             ax = axes[j * Q + q]
             x_j = x[:, j * Q + q].flatten().real
             x_j_synth = x_synth[:, j * Q + q].flatten().real
-            ax.hist(x_j, bins=50, density=True, label='Orig')
-            ax.hist(x_j_synth, bins=50, density=True,
-                    alpha=0.7, label='Synth')
+            ax.hist(x_j, bins=100, density=True, alpha = 0.5, color="steelblue", label='Orig')
+            ax.hist(x_j_synth, bins=100, density=True,
+                    alpha=0.5, color="orange", label='Synth')
             ax.set_yscale('log')
             ax.set_title(f'Wavelet coefficients (j={j}, q={q})')
             if j == 0 and q == 0:
@@ -360,8 +360,8 @@ def structure_plot(Data, synth, save=None):
     else:
 
         fig, (ax1, ax2) = plt.subplots(
-            2, 1,
-            figsize=(7, 10)
+            1, 2,
+            figsize=(12, 4)
         )
 
         # ---------- Top panel ----------

@@ -192,6 +192,24 @@ class SDE(torch.nn.Module):
     # Initialization
     # ------------------------------------------------------------------------------------------------------------------
 
+    def _print_memory(self, msg):
+        import gc
+        import psutil
+        import os
+
+        process = psutil.Process(os.getpid())
+        rss = process.memory_info().rss / 1024**3
+
+        if torch.cuda.is_available():
+            allocated = torch.cuda.memory_allocated() / 1024**3
+            reserved  = torch.cuda.memory_reserved() / 1024**3
+            print(f"{msg}: CPU={rss:.2f} GB | GPU alloc={allocated:.2f} GB | GPU reserved={reserved:.2f} GB")
+        else:
+            print(f"{msg}: CPU={rss:.2f} GB")
+
+        gc.collect()
+
+
     def init_interpolants_and_workers(self,):
         """
         Initialize the interpolant endpoints and the walker ensemble.
@@ -319,14 +337,60 @@ class SDE(torch.nn.Module):
         barphi_e.append(self.compute_moments(I_k).mean(0))
         barphi_p.append(self.compute_moments(self.x_k).mean(0))
 
+        print("Finished time integration")
+        self._print_memory("After loop")
+
+        print("Stacking barphi_e")
+        barphi_e = torch.stack(barphi_e)
+        self._print_memory("After stacking barphi_e")
+
+        print("Stacking barphi_p")
+        barphi_p = torch.stack(barphi_p)
+        self._print_memory("After stacking barphi_p")
+
+        print("Stacking eta")
+        eta_k_list = torch.stack(eta_k_list)
+        self._print_memory("After stacking eta")
+
+        print("Stacking theta")
+        theta_k_list = torch.stack(theta_k_list)
+        self._print_memory("After stacking theta")
+
+        print("Concatenating dH")
+        dH_k_list = torch.cat(dH_k_list)
+        self._print_memory("After concatenating dH")
+
+        print("Returning outputs")
+
         return (
             self.x_k,
-            torch.stack(barphi_e),
-            torch.stack(barphi_p),
-            torch.stack(eta_k_list),
-            torch.stack(theta_k_list),
-            torch.cat(dH_k_list),
+            barphi_e,
+            barphi_p,
+            eta_k_list,
+            theta_k_list,
+            dH_k_list,
         )
+
+    def _cut_close_time_nodes(self, t, M, Gf, bb, cc, min_dt=None):
+        """
+        Greedily keep only nodes at least min_dt apart (checked against the last
+        KEPT node, not the previous raw node — a plain np.diff(t) > tol mask
+        fails on runs of many close points because it doesn't re-check spacing
+        after dropping). Points that violate the tolerance are simply cut.
+        """
+        t = np.asarray(t, dtype=np.float64)  # keep full precision, no float32 cast
+        if min_dt is None:
+            span = t[-1] - t[0] if len(t) > 1 else 1.0
+            min_dt = max(span * 1e-5, 1e-6)
+
+        keep = [0]
+        for i in range(1, len(t)):
+            if t[i] - t[keep[-1]] >= min_dt:
+                keep.append(i)
+
+        keep = np.asarray(keep)
+        return (t[keep], [M[i] for i in keep], [Gf[i] for i in keep],
+                [bb[i] for i in keep], [cc[i] for i in keep])
 
     def forward_regularised(self, lam=1.0, n_subsample=1, param_storage_frequency=1):
         """
@@ -371,7 +435,7 @@ class SDE(torch.nn.Module):
             ak = np.pi * t_node / 2.0
             cos_k, sin_k, tan_k = np.cos(ak), np.sin(ak), np.tan(ak)
 
-            if sin_k > eps:                # skip t = 0 (sin = 0), t = 1 (cos = 0)
+            if sin_k > eps and cos_k > eps:                # skip t = 0 (sin = 0), t = 1 (cos = 0)
                 Xt    = y_k                                           # predicted walkers at target time
                 mom   = self.compute_moments(Xt)                       # phi(y_k)              (B, r)
                 Mk    = self.compute_G(Xt)                             # raw Gram at y_k
@@ -405,12 +469,45 @@ class SDE(torch.nn.Module):
             M.append(accM / cnt); Gf.append(accG / cnt)
             bb.append(accb / cnt); cc.append(accc / cnt)
 
-        Theta_reg = self._solve_regularised(t_used[1:], M[1:], Gf[1:], bb[1:], cc[1:], lam)
         #Theta_reg_thomas = self._solve_regularised_thomas(t_used[1:], M[1:], Gf[1:], bb[1:], cc[1:], lam)
+
+        print("Loop finished")
+        self._print_memory("After loop")
+
+        print("Preparing regularised solve")
+        self._print_memory("Before _solve_regularised")
+
+        t_reg, M_reg, Gf_reg, bb_reg, cc_reg = self._cut_close_time_nodes(
+            t_used[1:], M[1:], Gf[1:], bb[1:], cc[1:]
+        )
+
+        print("Dropped close-in-time nodes:", len(t_used) - 1 - len(t_reg))
+        print("Last times:", t_reg[-5:])
+        print("Last dt:", np.diff(t_reg[-5:]))
+
+        Theta_reg = self._solve_regularised(t_reg, M_reg, Gf_reg, bb_reg, cc_reg, lam)
+
+        self._print_memory("After _solve_regularised")
+
+        print("Stacking outputs")
+
+        barphi_e = torch.stack(barphi_e)[1:]
+        barphi_p = torch.stack(barphi_p)[1:]
+        eta_k_list = torch.stack(eta_k_list)[1:]
+        theta_k_list = torch.stack(theta_k_list)[1:]
+        dH_k_list = torch.cat(dH_k_list)[1:]
+
+        self._print_memory("Everything stacked")
+
+        print("Returning")
+
         return (
             self.x_k,
-            torch.stack(barphi_e)[1:], torch.stack(barphi_p)[1:],
-            torch.stack(eta_k_list)[1:], torch.stack(theta_k_list)[1:], torch.cat(dH_k_list)[1:],
+            barphi_e,
+            barphi_p,
+            eta_k_list,
+            theta_k_list,
+            dH_k_list,
             Theta_reg[1:],
         )
 
@@ -441,8 +538,15 @@ class SDE(torch.nn.Module):
         f_flat = f_flat / S
         if self.regularization:
             A_flat = A_flat + self.regularization * torch.eye(n * r, device=dev, dtype=A_flat.dtype)
+        
+        print("Calling torch.linalg.solve")
+        self._print_memory("Before solve")
 
         z = torch.linalg.solve(A_flat, f_flat)
+
+        print("Solve finished")
+        self._print_memory("After solve")
+
         return (z / S).reshape(n, r) 
     
     def _solve_regularised_thomas(self, t, M, Gf, bb, cc, lam, eps_reg_theta=1e-6):
