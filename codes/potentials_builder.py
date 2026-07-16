@@ -144,15 +144,8 @@ def get_1d_potentials(terms, J, filters, Q=1, filters_Q=None, filters_Phi=None,s
     if 'Scalar_psi_quantile_confine' in terms:
         potentials['Scalar_psi_quantile_confine'] =Scalar(filters_Q,scalar_param=scalar_param,quantiles = True,confine=True)
 
-    # gaussian 
-    if 'Scalar_psi_generalized_gaussian' in terms:
-        potentials['Scalar_psi_generalized_gaussian'] = Scalar_generalized_gaussian(filters_Q)
-
-    if 'Scalar_morlet_generalized_gaussian' in terms:
-        potentials['Scalar_morlet_generalized_gaussian'] = Scalar_generalized_gaussian(filters)
-
+    # potential to fit wavelet coefficients histogram 
     # generalized gaussian k regions 
-    
     if 'Scalar_psi_gaussianK' in terms:
         potentials['Scalar_psi_gaussianK'] = Scalar_GGD_KRegion(filters_Q)
 
@@ -160,74 +153,21 @@ def get_1d_potentials(terms, J, filters, Q=1, filters_Q=None, filters_Phi=None,s
         potentials['Scalar_morlet_gaussianK'] = Scalar_GGD_KRegion(filters)
 
 
-    # generalized gaussian k regions fixed 
-    from pathlib import Path
 
-    PARAM_DIR = Path("/lustre/fswork/projects/rech/wbg/ukv59en/MGD-for-Maximum-Entropy-Generation/fixed_potentials")
-    
-    if 'Scalar_psi_gaussianK_fixed' in terms:
-        potentials['Scalar_psi_gaussianK_fixed'] = Scalar_GGD_KRegion_Fixed(
-            filters_Q,
-            PARAM_DIR / "Scalar_psi_gaussianK.pt",
-        )
-
-    if 'Scalar_morlet_gaussianK_fixed' in terms:
-        potentials['Scalar_morlet_gaussianK_fixed'] = Scalar_GGD_KRegion_Fixed(
-            filters,
-            PARAM_DIR / "Scalar_morlet_gaussianK.pt",
-        )
-
-
-        
-    # Coshgt
-    if 'Scalar_psi_coshgt' in terms: 
-        potentials['Scalar_psi_coshgt'] = Scalar_coshgt(filters_Q)
-
-    if 'Scalar_morlet_coshgt' in terms: 
-        potentials['Scalar_morlet_coshgt'] = Scalar_coshgt(filters)
-
-    # Coshgt whole
-    if 'Scalar_psi_coshgt_whole' in terms: 
-        potentials['Scalar_psi_coshgt_whole'] = Scalar_coshgt_old(filters_Q)
-
-    if 'Scalar_morlet_coshgt_whole' in terms: 
-        potentials['Scalar_morlet_coshgt_whole'] = Scalar_coshgt_old(filters)
-
-    # Coshgt imag 
-    if 'Scalar_psi_coshgt_imag' in terms: 
-        potentials['Scalar_psi_coshgt_imag'] = Scalar_coshgt_imag(filters_Q[:,:1,:])
-
-    if 'Scalar_morlet_coshgt_imag' in terms: 
-        potentials['Scalar_morlet_coshgt_imag'] = Scalar_coshgt(filters[:,:1,:])
-
-    # Coshgt 3 regions 
-    if 'Scalar_psi_coshgt3regions' in terms: 
-        potentials['Scalar_psi_coshgt3regions'] = Scalar_coshgt_3region(filters_Q)
-
-    if 'Scalar_morlet_coshgt3regions' in terms: 
-        potentials['Scalar_morlet_coshgt3regions'] = Scalar_coshgt_3region(filters)
-
-    # Coshgt 4 regions 
-    if 'Scalar_psi_coshgt4regions' in terms: 
-        potentials['Scalar_psi_coshgt4regions'] = Scalar_coshgt_4region(filters_Q)
-
-    if 'Scalar_morlet_coshgt4regions' in terms: 
-        potentials['Scalar_morlet_coshgt4regions'] = Scalar_coshgt_4region(filters)
-
-    # Gaussian and Power Law tails! 
+    """
+    # Gaussian and Power Law tails 
     if 'Scalar_psi_windows' in terms: 
         potentials['Scalar_psi_windows'] = Scalar_GGD_GGD_Pow(filters_Q)
 
     if 'Scalar_morlet_windows' in terms: 
         potentials['Scalar_morlet_windows'] = Scalar_GGD_GGD_Pow(filters)
 
-    # GenGamma and Gaussian: great fit! 
+    # GenGamma and Gaussian:
     if 'Scalar_psi_GenGamma' in terms: 
         potentials['Scalar_psi_GenGamma'] = Scalar_GGD_GenGamma(filters_Q)
 
     if 'Scalar_morlet_GenGamma' in terms: 
         potentials['Scalar_morlet_GenGamma'] = Scalar_GGD_GenGamma(filters)
-
 
     # three gen gaussians 
     if 'Scalar_psi_GGG' in terms: 
@@ -235,6 +175,12 @@ def get_1d_potentials(terms, J, filters, Q=1, filters_Q=None, filters_Phi=None,s
 
     if 'Scalar_morlet_GGG' in terms: 
         potentials['Scalar_morlet_GGG'] = Scalar_GGD_GGD_GGD(filters)
+
+    """ 
+
+
+
+
 
     # scattering 
     if 'Scattering_First_Order' in terms:
@@ -249,6 +195,7 @@ def get_1d_potentials(terms, J, filters, Q=1, filters_Q=None, filters_Phi=None,s
 
     if 'Scattering_Third_Order_Real' in terms:
         potentials['Scattering_Third_Order_Real'] = Scattering_Third_Order_Real_1d(J, filters_Q)
+
     if 'Scattering_Third_Order_Imag' in terms:
         pass
         #potentials['Scattering_Third_Order_Imag'] = Scattering_Third_Order_Imag_1d(J, filters_Q)
@@ -271,7 +218,9 @@ def get_1d_potentials(terms, J, filters, Q=1, filters_Q=None, filters_Phi=None,s
     if 'Scattering_Fourth_Order_Mod2_Real_Q1' in terms:
         potentials['Scattering_Fourth_Order_Mod2_Real_Q1'] = Scattering_Fourth_Order_Mod2_Real_1d(J, 1, filters, filters[:,:-1])
 
-    
+
+    if 'Scattering_Fourth_Order_Imag_Q1' in terms:
+        potentials['Scattering_Fourth_Order_Imag_Q1'] = Scattering_Fourth_Order_Imag_1d(J, 1, filters, filters[:,:-1])
     if 'Scattering_Fourth_Order_Mod2_Imag_Q1' in terms:
         potentials['Scattering_Fourth_Order_Mod2_Imag_Q1'] = Scattering_Fourth_Order_Mod2_Imag_1d(J, 1, filters, filters[:,:-1])
 

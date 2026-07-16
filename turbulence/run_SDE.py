@@ -41,8 +41,8 @@ from scipy import stats, ndimage
 
 
 # ── sys.path setup ──────────────────────────────────────────────────────────
-# Script lives in .../conditional_mgd/turbulence/; 'codes' and 'data' live in
-# the parent folder .../conditional_mgd/, not alongside this script.
+# Script lives in .../MGD.../turbulence/; 'codes' and 'data' live in
+# the parent folder .../MGD.../, not alongside this script.
 root = Path(__file__).resolve().parent
 project_root = root.parent
  
@@ -311,7 +311,6 @@ def main():
     B, channels, M = x1.shape
 
     config = build_config_name(args, M, coarse_grained)
-    config_prefix = build_config_name(args, M, coarse_grained, include_timestamp=False)
 
     exp_dir = outdir / 'experiments' / config
     fig_dir = exp_dir / 'figures'
@@ -340,8 +339,7 @@ def main():
 
     t = 1 - (1 - torch.linspace(0, 1, args.nt + 1)) ** args.schedule_exponent
 
-    result = run_experiment(args, M, config, x1, filters, t, logger, outdir, device,
-                             config_prefix=config_prefix)
+    result = run_experiment(args, M, config, x1, filters, t[:-180], logger, outdir, device)
 
     save_diagnostics(x1, result, t, args, config, fig_dir, logger)
     logger.info('Done.')

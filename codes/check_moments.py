@@ -455,7 +455,7 @@ def scaling_exponent_ratio(data, taus=None, num_points=30):
     return taus, ratio
 
 
-def scaling_exponent_ratio_compare(Data, synth, num_points=30):
+def scaling_exponent_ratio_compare(Data, synth, num_points=30, kill_points=0):
     """Compare d(log S4)/d(log S2) of Data vs synth on shared log-spaced lags.
 
     Reproduces Buzzicotti et al. 2016 (NJP 18 113047) figure 4: log-lin plot of
@@ -467,6 +467,12 @@ def scaling_exponent_ratio_compare(Data, synth, num_points=30):
 
     _, ratio_data = scaling_exponent_ratio(Data, taus=taus)
     _, ratio_synth = scaling_exponent_ratio(synth, taus=taus)
+
+    # Cleanly drop the messy edge points if kill_points > 0
+    if kill_points > 0:
+        taus = taus[:-kill_points]
+        ratio_data = ratio_data[:-kill_points]
+        ratio_synth = ratio_synth[:-kill_points]
 
     fig, ax = plt.subplots(figsize=(6, 4))
     ax.plot(taus, ratio_data, 'ko-', ms=4, label='Data')
@@ -771,19 +777,470 @@ def cross_plot_1d_normalized(Data, synth, fixed_tau=1, fix_axis=0, epsilon=1e-8)
     plt.tight_layout()
     plt.show()
 
+
+
+def apply_exp_kernel(x, beta, ksize):
+    """Causal exponential smoothing: x_tilde(t) = sum_{k=0}^{ksize-1} beta**k x(t-k),
+    weights normalized to sum to 1. beta=None or ksize<=1 -> no-op (returns x)."""
+    if beta is None or ksize is None or ksize <= 1:
+        return x
+    w = beta ** np.arange(ksize)
+    w = w / w.sum()
+    pad = [(0, 0)] * (x.ndim - 1) + [(ksize - 1, 0)]
+    x_pad = np.pad(x, pad)
+    x_tilde = np.zeros_like(x, dtype=float)
+    for k in range(ksize):
+        x_tilde += w[k] * x_pad[..., ksize - 1 - k: ksize - 1 - k + x.shape[-1]]
+    return x_tilde
+
+def leverage_correlation(data, p=2.0, scale=1, max_tau=50, beta=None, ksize=1):
+    """
+    Parity-even leverage correlation:
+        L(tau) = < |X(t-tau-2^j) - X(t-tau)| * |X(t-2^j) - X(t)|^p >_t,  2^j = scale
+    tau in [-(max_tau-1), max_tau-1].
+
+    Built entirely from |.|, so unlike the finance leverage
+    L(tau) = <dX(t-tau)|dX(t)|^p> (odd under x -> -x, hence identically zero
+    for parity-symmetric turbulence), this survives parity and instead probes
+    time-reversal symmetry directly: L(tau) = L(-tau) iff the (scale-2^j)
+    activity process is time-reversible.
+
+    Computed independently per element of the leading (batch/channel) dims,
+    then averaged over those dims with error bars.
+
+    Parameters
+    ----------
+    data : torch.Tensor or numpy.ndarray, shape (..., T), e.g. (B, C, T)
+    p : float
+        Power on the "current" side, e(t)^p. Use p != 1 (p=2 is the finance
+        convention) so L(tau) != L(-tau) is a nontrivial test.
+    scale : int
+        The scale 2^j (in samples) defining e(s) = |X(s) - X(s-scale)|.
+    max_tau : int
+        Lags run over -(max_tau-1) .. max_tau-1, capped at T - scale.
+    beta : float or None
+        Exponential smoothing rate applied to e(t)^p before correlating
+        (denoising only; None -> no smoothing).
+    ksize : int
+        Smoothing kernel length in samples.
+
+    Returns
+    -------
+    taus : (2*max_tau_eff - 1,) ndarray
+    L_mean : ndarray, same shape as taus
+        Mean of L(tau) over all leading (batch/channel/...) elements.
+    L_err : ndarray, same shape as taus
+        Standard error of the mean over those elements.
+    """
+    x = data.cpu().numpy() if hasattr(data, 'cpu') else np.asarray(data)
+    T = x.shape[-1]
+    if scale >= T:
+        raise ValueError(f"scale={scale} must be < T={T}")
+
+    lead_shape = x.shape[:-1]
+    x2 = x.reshape(-1, T)               # (N, T), N = product of leading dims
+    N = x2.shape[0]
+
+    # activity signal e(t) = |X(t) - X(t-scale)|, defined for t = scale..T-1;
+    # store as e[:, k] with k = t - scale, so k runs 0..T-scale-1
+    e = np.abs(x2[:, scale:] - x2[:, :-scale])
+    e_p = e ** p
+    if beta is not None and ksize is not None and ksize > 1:
+        e_p = apply_exp_kernel(e_p, beta, ksize)
+
+    Te = e.shape[-1]
+    max_tau = int(min(max_tau, Te))
+
+    taus = np.arange(-(max_tau - 1), max_tau)
+    L_samples = np.empty((N, len(taus)))
+
+    for i, tau in enumerate(taus):
+        if tau >= 0:
+            a = e[:, :Te - tau] if tau > 0 else e          # e(t-tau)
+            b = e_p[:, tau:]    if tau > 0 else e_p         # e(t)^p
+        else:
+            m = -tau
+            a = e[:, m:]                                    # e(t-tau) = e(t+m)
+            b = e_p[:, :Te - m]                              # e(t)^p
+        L_samples[:, i] = (a * b).mean(axis=-1)
+
+    L_samples = L_samples.reshape(*lead_shape, len(taus)).reshape(-1, len(taus))
+    L_mean = L_samples.mean(axis=0)
+    L_err = L_samples.std(axis=0, ddof=1) / np.sqrt(L_samples.shape[0])
+
+    return taus, L_mean, L_err
+
+
+def leverage_plot(Data, synth, p=2.0, scale=1, max_tau=50, beta=None, ksize=1,
+                   save=None):
+    """Plot parity-even leverage correlation L(tau) +/- SEM, Data vs Synth.
+    See leverage_correlation for the definition."""
+    tau, L_data,  err_data  = leverage_correlation(Data,  p=p, scale=scale, max_tau=max_tau, beta=beta, ksize=ksize)
+    _,   L_synth, err_synth = leverage_correlation(synth, p=p, scale=scale, max_tau=max_tau, beta=beta, ksize=ksize)
+
+    fig, ax = plt.subplots(figsize=(6, 5))
+    ax.axhline(0, color='black', linewidth=0.5)
+    ax.axvline(0, color='black', linewidth=0.5)
+
+    ax.plot(tau, L_data, 'k-', label='Data')
+    ax.fill_between(tau, L_data - err_data, L_data + err_data, color='k', alpha=0.2)
+
+    ax.plot(tau, L_synth, 'r--', label='Synth')
+    ax.fill_between(tau, L_synth - err_synth, L_synth + err_synth, color='r', alpha=0.2)
+
+    ax.set_xlabel(r'$\tau$')
+    ax.set_ylabel(rf'$\langle |X(t{{-}}\tau{{-}}2^j){{-}}X(t{{-}}\tau)|\,|X(t{{-}}2^j){{-}}X(t)|^{{{p:g}}}\rangle$')
+    ax.set_title(rf'Parity-even leverage, scale $2^j={scale}$ (mean $\pm$ SEM over batch)')
+    ax.grid(True, alpha=0.3)
+    ax.legend()
+
+    if save is not None:
+        fig.suptitle(save["title"])
+        fig.tight_layout(rect=[0, 0, 1, 0.95])
+        fig.savefig(save["filename"], dpi=200, bbox_inches="tight")
+        plt.close(fig)
+    else:
+        plt.tight_layout()
+        plt.show()
+
+    return tau, L_data, err_data, L_synth, err_synth
+
+def C_p_q(data, p=2.0, tau_star=1, max_tau=50, beta=None, ksize=1,
+          normalize=True, epsilon=1e-12):
+    """
+    Structure-function-normalized, parity-even leverage-type correlation:
+
+        L(tau) = < |X(t-tau-tau*) - X(t-tau)| * |X(t-tau*) - X(t)|^p >_t
+                 -------------------------------------------------------
+                              S_1(tau*) * S_p(tau*)
+
+    tau in [-(max_tau-1), max_tau-1]. S_n(tau*) is the n-th order structure
+    function at fixed scale tau*, computed via second_order_structure_function
+    (reuses the module-level sf_cache).
+
+    e(s) = |X(s) - X(s - tau*)| is a parity-even activity signal at fixed
+    scale tau* (unchanged under x -> -x, unlike a raw signed increment).
+    The numerator is <e(t-tau) e(t)^p>_t; tau>0 correlates current activity
+    e(t)^p with PAST activity e(t-tau), tau<0 with FUTURE activity. A
+    turbulence signal with no time-reversal asymmetry has L(tau) = L(-tau);
+    departures from that are the signature you're after (the analog of the
+    finance-leverage asymmetry, but immune to x -> -x parity).
+
+    NOTE on the denominator: second_order_structure_function returns
+    S_n(tau) = |mean(du^n)| (abs of the SIGNED mean), which equals
+    mean(|du|^n) only for even n. For odd p this is a different, and
+    possibly much smaller/noisier, quantity than <e^p> = mean(|du|^p). If
+    that matters for your choice of p, either set normalize=False, or
+    comment out the block marked below and supply your own denominator
+    (e.g. built from mean(|du|^p) directly, as in the SF() helper).
+
+    Computed per element of the leading (batch/channel) dims for the
+    numerator, averaged with error bars; the denominator (structure
+    functions) is a single population-level value, not resampled per
+    batch element.
+
+    Parameters
+    ----------
+    data : torch.Tensor or numpy.ndarray, shape (..., T), e.g. (B, C, T)
+    p : float
+        Power on the e(t)^p term. Free choice.
+    tau_star : int
+        Fixed scale tau* (samples) defining e(s) = |X(s) - X(s-tau*)|.
+        Free choice.
+    max_tau : int
+        Lags run over -(max_tau-1) .. max_tau-1.
+    beta, ksize : optional
+        Exponential smoothing on e(t)^p before correlating (denoising only).
+        None/1 -> no-op.
+    normalize : bool
+        Toggle for the structure-function normalization (see block below).
+    epsilon : float
+
+    Returns
+    -------
+    taus : (2*max_tau_eff - 1,) ndarray
+    L_mean, L_err : ndarray, same shape as taus
+        Mean and SEM over batch/channel elements.
+    """
+    x = data.cpu().numpy() if hasattr(data, 'cpu') else np.asarray(data)
+    T = x.shape[-1]
+    if tau_star >= T:
+        raise ValueError(f"tau_star={tau_star} must be < T={T}")
+
+    lead_shape = x.shape[:-1]
+    x2 = x.reshape(-1, T)                                   # (N, T)
+
+    # activity signal e(s) = |X(s) - X(s - tau_star)|, s = tau_star .. T-1
+    e = np.abs(x2[:, tau_star:] - x2[:, :-tau_star])         # (N, T - tau_star)
+    e_p = e ** p
+    if beta is not None and ksize is not None and ksize > 1:
+        e_p = apply_exp_kernel(e_p, beta, ksize)
+
+    Te = e.shape[-1]
+    max_tau_eff = int(min(max_tau, Te))
+    taus = np.arange(-(max_tau_eff - 1), max_tau_eff)
+
+    num_samples = np.empty((x2.shape[0], len(taus)))
+    for i, tau in enumerate(taus):
+        if tau >= 0:
+            a = e[:, :Te - tau] if tau > 0 else e            # e(t-tau)
+            b = e_p[:, tau:]    if tau > 0 else e_p           # e(t)^p
+        else:
+            m = -tau
+            a = e[:, m:]                                      # e(t-tau) = e(t+m)
+            b = e_p[:, :Te - m]
+        num_samples[:, i] = (a * b).mean(axis=-1)
+
+    # ---------------- normalization block: comment out / set normalize=False to disable ----------------
+    if normalize:
+        S = second_order_structure_function(x, p=np.array([1.0, p]), max_tau=tau_star + 1)
+        denom = np.abs(S[0, -1]) * np.abs(S[1, -1]) + epsilon   # S_1(tau*) * S_p(tau*)
+        num_samples = num_samples / denom
+    # -------------------------------------------------------------------------------------------------
+
+    num_samples = num_samples.reshape(*lead_shape, len(taus)).reshape(-1, len(taus))
+    L_mean = num_samples.mean(axis=0)
+    L_err = num_samples.std(axis=0, ddof=1) / np.sqrt(num_samples.shape[0])
+
+    return taus, L_mean, L_err
+
+
+def C_pq_plot(Data, synth, p=2.0, tau_star=1, max_tau=50, beta=None, ksize=1,
+              normalize=True, save=None):
+    """Plot L(tau) +/- SEM, Data vs Synth. See C_p_q for the definition."""
+    tau, L_data,  err_data  = C_p_q(Data,  p=p, tau_star=tau_star, max_tau=max_tau,
+                                     beta=beta, ksize=ksize, normalize=normalize)
+    _,   L_synth, err_synth = C_p_q(synth, p=p, tau_star=tau_star, max_tau=max_tau,
+                                     beta=beta, ksize=ksize, normalize=normalize)
+
+    fig, ax = plt.subplots(figsize=(6, 5))
+    ax.axhline(0, color='black', linewidth=0.5)
+    ax.axvline(0, color='black', linewidth=0.5)
+
+    ax.plot(tau, L_data, 'k-', label='Data')
+    ax.fill_between(tau, L_data - err_data, L_data + err_data, color='k', alpha=0.2)
+
+    ax.plot(tau, L_synth, 'r--', label='Synth')
+    ax.fill_between(tau, L_synth - err_synth, L_synth + err_synth, color='r', alpha=0.2)
+
+    ax.set_xlabel(r'$\tau$')
+    ylabel = (rf'$L(\tau)$, normalized by $S_1(\tau^\star) S_{{{p:g}}}(\tau^\star)$'
+              if normalize else rf'$L(\tau)$ (unnormalized)')
+    ax.set_ylabel(ylabel)
+    ax.set_title(rf'$\tau^\star={tau_star}$, $p={p:g}$ (mean $\pm$ SEM over batch)')
+    ax.grid(True, alpha=0.3)
+    ax.legend()
+
+    if save is not None:
+        fig.suptitle(save["title"])
+        fig.tight_layout(rect=[0, 0, 1, 0.95])
+        fig.savefig(save["filename"], dpi=200, bbox_inches="tight")
+        plt.close(fig)
+    else:
+        plt.tight_layout()
+        plt.show()
+
+    return tau, L_data, err_data, L_synth, err_synth
+
+
+
+# time irreversibility measures 
+"""
+Energy-increment statistics: PDFs, tail-folding, skewness(tau).
+Assumptions (flagged):
+- v: torch tensor, shape (B, C, T). Energy = 0.5*sum_C v^2 (per-particle KE).
+- W(tau) = E(t+tau) - E(t), tau > 0 only for PDFs (folding needs a well-defined
+  right tail).
+- mode='power' (default) -> delta_v * v_present, summed over C. Matches your
+  original snippet; use this unless you specifically want the exact KE increment.
+  mode='exact' -> true energy increment 0.5*(v_future^2 - v_present^2).sum(C).
+- PDFs normalized by std(W(tau)).
+"""
+import torch
+import numpy as np
+import matplotlib.pyplot as plt
+
+
+def _increment(v, tau, mode="power"):
+    # v: (B, C, T) -> returns W(tau): (B, T-|tau|). tau can be + or -.
+    if tau == 0:
+        raise ValueError("tau must be nonzero")
+    if tau > 0:
+        v_future, v_present = v[:, :, tau:], v[:, :, :-tau]
+    else:
+        v_future, v_present = v[:, :, :tau], v[:, :, -tau:]
+
+    if mode == "exact":
+        E_future = 0.5 * (v_future ** 2).sum(dim=1)
+        E_present = 0.5 * (v_present ** 2).sum(dim=1)
+        return E_future - E_present
+    elif mode == "power":
+        delta_v = v_future - v_present
+        return (delta_v * v_present).sum(dim=1)
+    else:
+        raise ValueError("mode must be 'exact' or 'power'")
+
+
+def logspaced_taus(T, start_tau=1, num_points=45, two_sided=False):
+    """Same construction as your snippet: log10-spaced floats -> unique ints.
+    end_tau adapts to the signal length: min(T-1, 1024)."""
+    end_tau = min(T - 1, 1024)
+    taus_float = torch.logspace(
+        start=torch.log10(torch.tensor(start_tau, dtype=torch.float32)),
+        end=torch.log10(torch.tensor(end_tau, dtype=torch.float32)),
+        steps=num_points,
+        base=10.0,
+    )
+    pos_taus = torch.unique(taus_float.long()).tolist()
+    if two_sided:
+        return [-t for t in reversed(pos_taus)] + pos_taus
+    return pos_taus
+
+
+def pdf_energy_increments(v, taus, mode="power", nbins=100, bin_range=(-20, 20)):
+    """taus should be POSITIVE only. Returns {tau: (bin_centers, pdf)},
+    W(tau) normalized by its own std."""
+    assert all(t > 0 for t in taus), "pass positive taus only"
+    out = {}
+    for tau in taus:
+        W = _increment(v, tau, mode=mode).flatten().cpu().numpy()
+        Wn = W / W.std()
+        counts, edges = np.histogram(Wn, bins=nbins, range=bin_range, density=True)
+        centers = 0.5 * (edges[:-1] + edges[1:])
+        out[tau] = (centers, counts)
+    return out
+
+
+def plot_pdf_panel(pdf_dict, ax=None, title=None, cmap="tab10"):
+    """One semilog PDF curve per tau. Keep num taus small (<=6) or this gets messy."""
+    ax = ax or plt.gca()
+    taus = sorted(pdf_dict.keys())
+    colors = plt.colormaps.get_cmap(cmap)
+    for i, tau in enumerate(taus):
+        c, p = pdf_dict[tau]
+        mask = p > 0
+        ax.semilogy(c[mask], p[mask], color=colors(i % 10), label=f"τ={tau}")
+    ax.set_xlabel(r"$W(\tau)/\sigma_{W(\tau)}$")
+    ax.set_ylabel("PDF")
+    ax.legend(fontsize=7)
+    if title:
+        ax.set_title(title)
+    return ax
+
+
+def _right_and_folded_left(c, p):
+    right, left = c >= 0, c <= 0
+    mr, ml = p[right] > 0, p[left] > 0
+    x_r, y_r = c[right][mr], p[right][mr]
+    x_l = (-c[left][::-1])[ml[::-1]]
+    y_l = (p[left][::-1])[ml[::-1]]
+    return x_r, y_r, x_l, y_l
+
+
+def plot_pdf_folded_grid(pdf_data, pdf_synth, ncols=3, figsize_per=(3.0, 2.6),
+                          title=None, color_data="#1f77b4", color_synth="#e0592a"):
+    """One subplot PER tau, data and synth superimposed: solid = right tail P(x),
+    dashed = folded left tail P(-x). One color per dataset, one shared legend."""
+    taus = sorted(set(pdf_data.keys()) & set(pdf_synth.keys()))
+    n = len(taus)
+    ncols = min(ncols, n)
+    nrows = int(np.ceil(n / ncols))
+    fig, axes = plt.subplots(nrows, ncols, figsize=(figsize_per[0] * ncols,
+                                                      figsize_per[1] * nrows),
+                              squeeze=False)
+    for i, tau in enumerate(taus):
+        ax = axes[i // ncols, i % ncols]
+        xr, yr, xl, yl = _right_and_folded_left(*pdf_data[tau])
+        ax.semilogy(xr, yr, color=color_data, lw=1.6)
+        ax.semilogy(xl, yl, color=color_data, lw=1.3, linestyle="--")
+        xr, yr, xl, yl = _right_and_folded_left(*pdf_synth[tau])
+        ax.semilogy(xr, yr, color=color_synth, lw=1.6)
+        ax.semilogy(xl, yl, color=color_synth, lw=1.3, linestyle="--")
+        ax.set_title(f"τ={tau}", fontsize=9)
+        ax.grid(alpha=0.25)
+    for j in range(n, nrows * ncols):
+        axes[j // ncols, j % ncols].axis("off")
+
+    from matplotlib.lines import Line2D
+    handles = [
+        Line2D([0], [0], color=color_data, lw=1.6, label="data  P(x)"),
+        Line2D([0], [0], color=color_data, lw=1.3, ls="--", label="data  P(-x)"),
+        Line2D([0], [0], color=color_synth, lw=1.6, label="synth P(x)"),
+        Line2D([0], [0], color=color_synth, lw=1.3, ls="--", label="synth P(-x)"),
+    ]
+    fig.legend(handles=handles, loc="upper center", ncol=4, fontsize=8,
+               frameon=False, bbox_to_anchor=(0.5, 1.02))
+    if title:
+        fig.suptitle(title, y=1.08)
+    fig.tight_layout()
+    return fig, axes
+
+
+def skewness_vs_tau(v, taus, mode="power"):
+    skews = np.empty(len(taus))
+    for i, tau in enumerate(taus):
+        W = _increment(v, tau, mode=mode).flatten()
+        Wc = W - W.mean()
+        skews[i] = (Wc ** 3).mean() / (Wc ** 2).mean() ** 1.5
+    return np.array(taus), skews
+
+
+def plot_skewness_comparison(v_data, v_synth, taus=None, mode="power", ax=None,
+                              color_data="#1f77b4", color_synth="#e0592a"):
+    """taus defaults to positive-only log-spaced sampling (start_tau=1,
+    end_tau=min(T-1,1024), num_points=45), plotted on a log-x axis."""
+    ax = ax or plt.gca()
+    if taus is None:
+        T = v_data.shape[-1]
+        taus = logspaced_taus(T, num_points=45, two_sided=False)
+    t_d, s_d = skewness_vs_tau(v_data, taus, mode=mode)
+    t_s, s_s = skewness_vs_tau(v_synth, taus, mode=mode)
+    ax.plot(t_d[:-1], s_d[:-1], label="data", color=color_data, marker="o", ms=3)
+    ax.plot(t_s[:-1], s_s[:-1], label="synth", color=color_synth, marker="x", ms=3, linestyle="--")
+    ax.axhline(0, color="k", lw=0.5)
+    ax.set_xscale("log")
+    ax.set_xlabel(r"$\tau$")
+    ax.set_ylabel("Skewness")
+    ax.legend()
+    return ax
+
+
+# ---------------------------------------------------------------------------
+# Example usage:
+#
+# T = x1.shape[-1]
+# taus = logspaced_taus(T, num_points=6)              # positive only, for PDFs
+# pdf_data  = pdf_energy_increments(x1, taus, mode="power")
+# pdf_synth = pdf_energy_increments(result["xt"], taus, mode="power")
+#
+# fig, axes = plt.subplots(1, 2, figsize=(10, 4))
+# plot_pdf_panel(pdf_data, ax=axes[0], title="data")
+# plot_pdf_panel(pdf_synth, ax=axes[1], title="synth")
+#
+# plot_pdf_folded_grid(pdf_data, pdf_synth, title="right P(x) vs folded-left P(-x)")
+#
+# fig2, ax2 = plt.subplots()
+# plot_skewness_comparison(x1, result["xt"], ax=ax2)   # positive-only log-x taus by default
+# ---------------------------------------------------------------------------
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 import numpy as np
 import matplotlib.pyplot as plt
 from matplotlib.colors import to_rgb
 from scipy.ndimage import gaussian_filter1d
-from mpl_toolkits.axes_grid1.inset_locator import inset_axes, mark_inset
 
-
-
-
-import numpy as np
-import matplotlib.pyplot as plt
-from matplotlib.colors import to_rgb
-from scipy.ndimage import gaussian_filter1d
 
 C_ORIG  = 'tab:blue'   # original
 C_SYNTH = 'tab:red'    # synthesis

@@ -907,17 +907,12 @@ def compute_z(x, filters):
 # z0 = compute_z(x, filters) --> in the notebook 
 
 
-from potentials.potentials_classes.coshGt import Scalar_coshgt
-
-from potentials.potentials_classes.generalized_gauss_gamma import Scalar_GGD_GenGamma
-
-from potentials.potentials_classes.generalized_gaussian_pow import Scalar_GGD_GGD_Pow
-
-from potentials.potentials_classes.generalized_gaussianx3 import Scalar_GGD_GGD_GGD
+#from potentials.potentials_classes.coshGt import Scalar_coshgt
+#from potentials.potentials_classes.generalized_gauss_gamma import Scalar_GGD_GenGamma
+#from potentials.potentials_classes.generalized_gaussian_pow import Scalar_GGD_GGD_Pow
+#from potentials.potentials_classes.generalized_gaussianx3 import Scalar_GGD_GGD_GGD
 
 from potentials.potentials_classes.generalized_gauss_Kregions import Scalar_GGD_KRegion 
-
-from potentials.potentials_classes.generalized_gauss_Kregions import Scalar_GGD_KRegion_Fixed
 
 from potentials.potentials_classes.hermite_norm import Hermite_norm 
 

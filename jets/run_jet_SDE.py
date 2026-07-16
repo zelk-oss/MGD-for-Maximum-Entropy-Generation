@@ -91,7 +91,7 @@ def parse_args():
                          'hardcoded 3000 slice)')
 
     # Coarse-graining
-    p.add_argument('--subseries_len', type=int, default=1024, help='Base length after reshaping')
+    p.add_argument('--subseries_len', type=int, default=512, help='Base length after reshaping')
     p.add_argument('--target_len', type=int, default=128, help='Target signal length after coarse-graining')
 
     # Wavelet scattering
@@ -283,7 +283,11 @@ def main():
 
     # ---- data ----
     W = DefineWavelet('Db', m=3, device=device)
-    raw_data = load_reynolds_torch(args.Re_number, device=device) 
+    from scipy.io import loadmat
+
+    data = loadmat("../data/data_files/helium_jets/Vit_Modane95.mat")
+    raw_data = data["Vit"].squeeze(1) 
+    raw_data = torch.from_numpy(raw_data[None,None,:]).float()
 
     data_tensor = split_periodize_reshape(raw_data, args.subseries_len)    
     B, C, pre_len = data_tensor.shape
@@ -342,7 +346,7 @@ def main():
 
     t = 1 - (1 - torch.linspace(0, 1, args.nt + 1)) ** args.schedule_exponent
 
-    result = run_experiment(args, M, config, x1, filters, t, logger, outdir, device)
+    result = run_experiment(args, M, config, x1, filters, t[:-130], logger, outdir, device)
 
     save_diagnostics(x1, result, t, args, config, fig_dir, logger)
 

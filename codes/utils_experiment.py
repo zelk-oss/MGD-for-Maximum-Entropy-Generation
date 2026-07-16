@@ -82,6 +82,7 @@ def build_config_name(args, M, coarse_grained=False, include_timestamp=True):
         f'nt{args.nt}',
         f'n1_{args.n1}',
         f'lam{args.lam}',
+        f'seed_{args.seed}',
         f'terms{terms_hash}',
     ]
     if args.label:
