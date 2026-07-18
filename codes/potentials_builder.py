@@ -102,6 +102,9 @@ def get_1d_potentials(terms, J, filters, Q=1, filters_Q=None, filters_Phi=None,s
     if 'L_6' in terms:
         potentials['L_6'] = L2p_norm(3,filters)
 
+    if 'L_6_psi' in terms:
+        potentials['L_6_psi'] = L2p_norm(3,filters_Q)
+
     if 'L_7' in terms:
         potentials['L_7'] = L2p1_norm(3,filters)
     if 'L_8' in terms:

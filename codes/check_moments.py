@@ -1225,7 +1225,73 @@ def plot_skewness_comparison(v_data, v_synth, taus=None, mode="power", ax=None,
 
 
 
+# C_pq structure 
+def _abs_moment(x, tau, n):
+    """S_n(tau) = mean(|X(t+tau)-X(t)|^n), single-lag marginal moment."""
+    d = np.abs(x[..., tau:] - x[..., :-tau])
+    return np.mean(np.power(d.reshape(-1), n))
 
+
+def C_pq_structure(x, p, q, tau_star, max_tau=None, epsilon=1e-8):
+    """C_{p,q}(tau, tau*) = E[|du_tau*|^p |du_tau|^q] / (S_p(tau*) S_q(tau)).
+
+    C_{p,p} = C_2p in the paper's notation (e.g. p=q=2 -> "C_4").
+    x : np.ndarray, shape (..., T)
+    """
+    T = x.shape[-1]
+    if max_tau is None:
+        max_tau = T // 2
+    taus = np.arange(1, max_tau)
+    Sp_star = _abs_moment(x, tau_star, p)
+
+    ratio = np.zeros(len(taus))
+    for i, t in enumerate(taus):
+        L = min(x.shape[-1] - tau_star, x.shape[-1] - t)
+        du_star = np.abs(x[..., tau_star:tau_star + L] - x[..., :L])
+        du_t    = np.abs(x[..., t:t + L]                - x[..., :L])
+        num = np.mean((du_star ** p * du_t ** q).reshape(-1))
+        Sq_t = _abs_moment(x, t, q)
+        ratio[i] = num / (Sp_star * Sq_t + epsilon)
+    return taus, ratio
+
+
+def C_pq_structure_plot(Data, synth, p, q, tau_star, max_tau=None, save=None):
+    """Data vs synth comparison of C_pq_structure."""
+    data_np  = Data.cpu().numpy()
+    synth_np = synth.cpu().numpy()
+    taus, r_o = C_pq_structure(data_np,  p, q, tau_star, max_tau)
+    _,    r_s = C_pq_structure(synth_np, p, q, tau_star, max_tau)
+
+    fig, ax = plt.subplots(figsize=(6, 5))
+    ax.plot(taus, r_o, 'o-', color=C_ORIG,  lw=3, ms=5, label='Original')
+    ax.plot(taus, r_s, 's-', color=C_SYNTH, lw=3, ms=5, label='Synthesis')
+    ax.axvline(tau_star, color='grey', ls=':', lw=1.5)
+    ax.set_xscale('log')
+    ax.set_xlabel(r'$\tau$')
+    ax.set_ylabel(rf'$C_{{{p},{q}}}(\tau,\tau^\star={tau_star})$')
+    ax.grid(True, ls=':', alpha=0.5)
+    ax.legend(frameon=False)
+
+    if save is not None:
+        fig.suptitle(save["title"])
+        fig.tight_layout(rect=[0, 0, 1, 0.95])
+        fig.savefig(save["filename"], dpi=200, bbox_inches="tight")
+        plt.close(fig)
+    else:
+        plt.tight_layout()
+        plt.show()
+    return taus, r_o, r_s
+
+
+# convenience wrappers, following C_{p,p} = C_2p naming
+def C4_plot(Data, synth, tau_star, max_tau=None, save=None):
+    return C_pq_structure_plot(Data, synth, 2, 2, tau_star, max_tau, save)
+
+def C6_plot(Data, synth, tau_star, max_tau=None, save=None):
+    return C_pq_structure_plot(Data, synth, 3, 3, tau_star, max_tau, save)
+
+def C42_plot(Data, synth, tau_star=20, max_tau=None, save=None):
+    return C_pq_structure_plot(Data, synth, 4, 2, tau_star, max_tau, save)
 
 
 
@@ -1354,18 +1420,8 @@ def visual_comparison(Data, synth,
     if not (1 <= c4_fixed_tau < max_tau):
         raise ValueError(f"c4_fixed_tau={c4_fixed_tau} must be in [1, {max_tau-1}]")
 
-    def s22_over_s4(x, t_star):
-        ratio = np.zeros(len(taus_arr))
-        for i, t in enumerate(taus_arr):
-            L = min(x.shape[-1] - t_star, x.shape[-1] - t)
-            du_star = np.abs(x[..., t_star:t_star + L] - x[..., :L])
-            du_t    = np.abs(x[..., t:t + L]           - x[..., :L])
-            s22 = np.mean((du_star ** 2 * du_t ** 2).reshape(-1))
-            s4  = np.mean((du_t ** 4).reshape(-1))
-            ratio[i] = s22 / (s4 + epsilon)
-        return ratio
-    r_o = s22_over_s4(data_np,  c4_fixed_tau)
-    r_s = s22_over_s4(synth_np, c4_fixed_tau)
+    _, r_o = C_pq_structure(data_np,  2, 2, c4_fixed_tau, max_tau=max_tau, epsilon=epsilon)
+    _, r_s = C_pq_structure(synth_np, 2, 2, c4_fixed_tau, max_tau=max_tau, epsilon=epsilon)
     axE.plot(taus_arr, r_o, 'o-', color=C_ORIG,  lw=LW, ms=5)
     axE.plot(taus_arr, r_s, 's-', color=C_SYNTH, lw=LW, ms=5)
     axE.set_xscale('log')
@@ -1429,8 +1485,6 @@ def visual_comparison(Data, synth,
 
     plt.show()
     ## ----------------------------------------------------- Display funtions -----------------------------------------------------    
-
-
 
 def plot_SD_results(x0, x1, xt, barphi_e, barphi_p, t, sigma, nt, terms):
     """Summarize an SDE run: final distributions and moment evolution.

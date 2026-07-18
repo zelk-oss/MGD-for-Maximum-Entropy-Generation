@@ -178,7 +178,9 @@ class SDE(torch.nn.Module):
 
         self.init_interpolants_and_workers()
 
-        self.fit(self.x_1)              # <-- moved up: potentials are pruned by now
+        for name, pot in self.potentials.items():
+            if hasattr(pot, "fit"):
+                pot.fit(self.x_1)
         self._sync_potential_dims()     # <-- reads post-prune sizes
         print(f'The model has {self.num_potentials} potentials.')
 
@@ -1091,19 +1093,14 @@ class SDE(torch.nn.Module):
     # ------------------------------------------------------------------------------------------------------------------
     # Optional
     # ------------------------------------------------------------------------------------------------------------------
-    
+    """
     def fit(self,x_k):
-        """
-        Refit any potentials that implement ``fit`` on the current samples.
- 
-        Calls ``potential.fit(x_k)`` on every potential, silently skipping those that
-        do not implement (or raise inside) ``fit``.
- 
-        Parameters
-        ----------
-        x_k : torch.Tensor
-            Current samples to refit on.
-        """
+        #Refit any potentials that implement ``fit`` on the current samples.
+        #Calls ``potential.fit(x_k)`` on every potential, silently skipping those that
+        #do not implement (or raise inside) ``fit``.
+        #Parameters
+        #x_k : torch.Tensor
+        #    Current samples to refit on.
 
         coshgt_x0 = None
         morlet_coshgt_x0 = None
@@ -1139,3 +1136,4 @@ class SDE(torch.nn.Module):
                     pot.fit(x_k)
                 except:
                     pass
+    """

@@ -293,7 +293,7 @@ def main():
 
     # ---- data ----
     W = DefineWavelet('Db', m=3, device=device)
-    raw_data = load_turbulence_1d()
+    raw_data = load_turbulence_1d().to(device)
     data_tensor = split_periodize_reshape(raw_data, args.subseries_len)
     B, C, pre_len = data_tensor.shape
 
@@ -339,7 +339,7 @@ def main():
 
     t = 1 - (1 - torch.linspace(0, 1, args.nt + 1)) ** args.schedule_exponent
 
-    result = run_experiment(args, M, config, x1, filters, t[:-180], logger, outdir, device)
+    result = run_experiment(args, M, config, x1, filters, t[:-295], logger, outdir, device, filters_Q=filters_Q, filters_Phi=filters_Phi)
 
     save_diagnostics(x1, result, t, args, config, fig_dir, logger)
     logger.info('Done.')

@@ -841,22 +841,18 @@ def plot_visual_comparison(
         axD.legend(frameon=False, fontsize=10)
         axD.grid(True, which="both", ls=":", alpha=0.5)
 
-        # (e) C4 coefficient
-        def s22_over_s4(x, t_star):
-            ratio = np.zeros(len(taus_arr))
-            for i, t in enumerate(taus_arr):
-                L = min(x.shape[-1] - t_star, x.shape[-1] - t)
-                du_star = np.abs(x[..., t_star:t_star + L] - x[..., :L])
-                du_t    = np.abs(x[..., t:t + L]           - x[..., :L])
-                ratio[i] = (du_star ** 2 * du_t ** 2).mean() / (du_t ** 4).mean()
-            return ratio
-        axE.semilogx(taus_arr, s22_over_s4(ref_np, c4_fixed_tau),
-                     "o-", color=C_ORIG,  lw=LW, ms=4)
-        axE.semilogx(taus_arr, s22_over_s4(gen_np, c4_fixed_tau),
-                     "s-", color=C_SYNTH, lw=LW, ms=4)
-        axE.set_xlabel("τ")
-        axE.set_ylabel(r"$C_4(\tau,\tau^\star)$")
-        axE.grid(True, ls=":", alpha=0.5)
+        # ----- (e) C_4 coefficient -----
+        if not (1 <= c4_fixed_tau < max_tau):
+            raise ValueError(f"c4_fixed_tau={c4_fixed_tau} must be in [1, {max_tau-1}]")
+        epsilon=1e-8
+        _, r_o = C_pq_structure(ref_np,  2, 2, c4_fixed_tau, max_tau=max_tau, epsilon=epsilon)
+        _, r_s = C_pq_structure(gen_np, 2, 2, c4_fixed_tau, max_tau=max_tau, epsilon=epsilon)
+        axE.plot(taus_arr, r_o, 'o-', color=C_ORIG,  lw=LW, ms=5)
+        axE.plot(taus_arr, r_s, 's-', color=C_SYNTH, lw=LW, ms=5)
+        axE.set_xscale('log')
+        axE.set_xlabel(r'$\tau$')
+        axE.set_ylabel(r'$C_4(\tau,\tau^\star)$')
+        axE.grid(True, ls=':', alpha=0.5)
 
         # (c) increment PDFs waterfall
         taus_list = list(pdf_taus)
@@ -901,6 +897,7 @@ def run_diagnostics(
     cross_pq: list = ((2, 1), (2, 2), (3, 1), (3, 3)),
     show_wavelet_histograms: bool = False,
     complex_wavelet_histograms: bool = False,
+    show_cross_plots: bool = False,
     show_visual_comparison: bool = True,
     show_metrics_table: bool = True,
     show_entropy_detail: bool = False,
@@ -937,8 +934,9 @@ def run_diagnostics(
     print(sep); print("Increment PDFs"); print(sep)
     plot_increment_pdf_overlay(x_ref, results, taus=pdf_taus)
 
-    print(sep); print("Cross structure functions"); print(sep)
-    plot_cross_structure_overlay(x_ref, results, pq=cross_pq)
+    if show_cross_plots: 
+        print(sep); print("Cross structure functions"); print(sep)
+        plot_cross_structure_overlay(x_ref, results, pq=cross_pq)
 
     print(sep); print("Entropy bound"); print(sep)
     plot_entropy_curves(x_ref, results, interpolant, nt)

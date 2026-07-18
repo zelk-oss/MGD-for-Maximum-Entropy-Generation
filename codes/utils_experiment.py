@@ -141,7 +141,7 @@ def try_load_experiment(outdir, config, device):
         return None
 
 
-def run_experiment(args, M, config, x1, filters, t, logger, outdir, device):
+def run_experiment(args, M, config, x1, filters, t, logger, outdir, device, filters_Q=None, filters_Phi=None):
     if not args.force_rerun:
         config_prefix = build_config_name(args, M=M, include_timestamp=False)  # see note below
         resolved = resolve_config_for_loading(outdir, config_prefix)
@@ -155,7 +155,7 @@ def run_experiment(args, M, config, x1, filters, t, logger, outdir, device):
     logger.info('terms: %s', args.terms)
 
     potentials = get_1d_potentials(
-        args.terms, args.J, filters, args.Q, filters_Q=None, filters_Phi=None,
+        args.terms, args.J, filters, args.Q, filters_Q=filters_Q, filters_Phi=filters_Phi,
         scalar_param=None, parallel=False,
     )
 
