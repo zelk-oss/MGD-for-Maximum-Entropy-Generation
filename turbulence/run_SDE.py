@@ -315,8 +315,10 @@ def main():
     exp_dir = outdir / 'experiments' / config
     fig_dir = exp_dir / 'figures'
     log_dir = exp_dir / 'logs'
+    potentials_dir = exp_dir / 'fitted_potentials'   # <-- NEW
     exp_dir.mkdir(parents=True, exist_ok=True)
     fig_dir.mkdir(parents=True, exist_ok=True)
+    potentials_dir.mkdir(parents=True, exist_ok=True)
 
     logger = setup_logging(log_dir, config)
     logger.info('Config: %s', config)
@@ -339,7 +341,11 @@ def main():
 
     t = 1 - (1 - torch.linspace(0, 1, args.nt + 1)) ** args.schedule_exponent
 
-    result = run_experiment(args, M, config, x1, filters, t[:-295], logger, outdir, device, filters_Q=filters_Q, filters_Phi=filters_Phi)
+    result = run_experiment(args, M, config, x1, filters, 
+                            t[:-430], logger, outdir, device, 
+                            filters_Q=filters_Q, filters_Phi=filters_Phi, 
+                            potentials_save_dir=potentials_dir,
+                            )
 
     save_diagnostics(x1, result, t, args, config, fig_dir, logger)
     logger.info('Done.')
