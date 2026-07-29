@@ -141,7 +141,10 @@ def try_load_experiment(outdir, config, device):
         return None
 
 
-def run_experiment(args, M, config, x1, filters, t, logger, outdir, device, filters_Q=None, filters_Phi=None):
+def run_experiment(args, M, config, x1, filters, t, logger, outdir, device, 
+                   filters_Q=None, filters_Phi=None, 
+                   potentials_save_dir=None,
+                   ):
     if not args.force_rerun:
         config_prefix = build_config_name(args, M=M, include_timestamp=False)  # see note below
         resolved = resolve_config_for_loading(outdir, config_prefix)
@@ -168,6 +171,7 @@ def run_experiment(args, M, config, x1, filters, t, logger, outdir, device, filt
     Solver = SDE(
         x1, nb_workers, nb_interpolants, t, args.sigma, potentials, batch_size,
         device=device, regularization=args.regularization, interpolant=args.interpolant,
+        potentials_save_dir=potentials_save_dir,
     )
     xt, barphi_e, barphi_p, eta_t, theta_t, dH_t_bound, Theta_reg = Solver.forward_regularised(
         lam=args.lam, n_subsample=args.n_subsample,

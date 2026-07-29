@@ -1731,33 +1731,57 @@ def plot_time_series_row(Data, N):
         axs[i].plot(Data[idx,0].cpu())
     plt.show()
 
+
+import numpy as np
+import matplotlib.pyplot as plt
+
 def Compare_time_series_row(Data, Synth, N, save=None):
-    """Compare the first ``N`` time series, data on top row, synthesis on bottom.
- 
-    Parameters
-    ----------
-    Data, Synth : torch.Tensor
-        Original and synthetic signals, shape (B, C, T).
-    N : int
-        Number of series per row.
-    """
+    """Compare the first N time series: data (top) vs synthesis (bottom)."""
 
-    random_indexes = np.arange(N)
+    fig, axs = plt.subplots(
+        2, N,
+        figsize=(3.2 * N, 5),
+        sharex=True,
+        sharey=False,
+        constrained_layout=True,
+    )
 
-    fig, axs = plt.subplots(2, N, figsize=(20, 8))
-    for i in range(N):
-        idx = random_indexes[i]
-        axs[0,i].get_xaxis().set_visible(False)
-        axs[0,i].plot(Data[idx,0].cpu(), marker="o", markersize = 3)
-        axs[1,i].get_xaxis().set_visible(False)
-        axs[1,i].plot(Synth[idx,0].cpu(), marker="o", markersize = 3)
-    axs[0,0].set_ylabel('Data')
-    axs[1,0].set_ylabel('Synth')
+    colors = ["tab:blue", "tab:orange"]
+    labels = ["Data", "MGD synthesis"]
+    datasets = [Data, Synth]
+
+    x = np.arange(Data.shape[-1])
+
+    for row, (dataset, color, label) in enumerate(zip(datasets, colors, labels)):
+        for col in range(N):
+            ax = axs[row, col]
+            y = dataset[col, 0].cpu()
+
+            ax.plot(
+                x, y,
+                color=color,
+                lw=1.8,
+                marker="o",
+                ms=2,
+                mfc="white",
+                mec=color,
+                mew=0.6,
+            )
+
+            ax.grid(alpha=0.15)
+            ax.spines["top"].set_visible(False)
+            ax.spines["right"].set_visible(False)
+
+            if col > 0:
+                ax.set_yticklabels([])
+
+            ax.tick_params(labelsize=9)
+
+        axs[row, 0].set_ylabel(label, fontsize=11)
 
     if save is not None:
-        plt.suptitle(save["title"])
-        plt.tight_layout()
-        plt.savefig(save["filename"], dpi=200)
+        fig.suptitle(save["title"], fontsize=13)
+        fig.savefig(save["filename"], dpi=300, bbox_inches="tight")
         plt.close(fig)
     else:
         plt.show()

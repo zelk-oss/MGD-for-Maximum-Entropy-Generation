@@ -1265,6 +1265,7 @@ class Scalar_GGD_KRegion():
             self.prune_collinear(x, cond_tol=self.cond_tol,
                                  max_cols=self.prune_max_cols, verbose=self.verbose)
         self._compute_stat_scale(x)
+        self.plot_fit(x)
         return self
 
     def _compute_stat_scale(self, x, max_cols=None):
@@ -1396,23 +1397,77 @@ class Scalar_GGD_KRegion():
         M = M / (M.norm(dim=0, keepdim=True) + 1e-30)
         return M.double().cpu().numpy()
 
-    def prune_collinear(self, x, cond_tol=1e-6, max_cols=20000, verbose=True):
+    
+    def prune_collinear(self, x, cond_tol=1e-6, max_cols=20000, verbose=True,
+                        block_by_channel=True, diagnose=True):
+        
         from scipy.linalg import qr
         self._check_fitted()
-        M = self._active_gradient_matrix(x, max_rows=max_cols)
-        _, R, P = qr(M, mode="economic", pivoting=True)
-        absdiag = np.abs(np.diag(R))
-        thr = np.sqrt(cond_tol) * (absdiag[0] if absdiag.size else 0.0)
-        keep = np.sort(P[absdiag > thr])
-
         old_flat = self.active_flat.cpu().numpy()
-        new_flat = old_flat[keep]
-        dropped = len(old_flat) - len(new_flat)
+        J = self.J
 
-        J, K = self.J, self.K
-        act = np.zeros((J, K), dtype=bool)
+        if block_by_channel:
+            # Two-stage pruning: first remove near-duplicate *regions within
+            # the same channel* (legitimate — two GGD regions that ended up
+            # fitting almost the same shape). Cross-channel collinearity is
+            # handled separately with a much looser tolerance, since in
+            # turbulence it's largely an artifact of intermittent extreme
+            # events co-occurring across scales, not genuine redundancy of
+            # the underlying potentials, and shouldn't be allowed to wipe
+            # out distinct channels.
+            M_full = self._active_gradient_matrix(x, max_rows=max_cols)
+            keep_mask = np.zeros(len(old_flat), dtype=bool)
+
+            for j in range(J):
+                col_idx = np.where(old_flat % J == j)[0]
+                if col_idx.size == 0:
+                    continue
+                if col_idx.size == 1:
+                    keep_mask[col_idx] = True
+                    continue
+                Mj = M_full[:, col_idx]
+                _, Rj, Pj = qr(Mj, mode="economic", pivoting=True)
+                adj = np.abs(np.diag(Rj))
+                thrj = np.sqrt(cond_tol) * (adj[0] if adj.size else 0.0)
+                kept_local = Pj[adj > thrj]
+                keep_mask[col_idx[kept_local]] = True
+
+            surviving_idx = np.where(keep_mask)[0]
+            M = M_full[:, surviving_idx]
+
+            # Loose second pass across channels: only drop columns that are
+            # essentially exact duplicates, not merely correlated because of
+            # shared extreme events.
+            cross_cond_tol = min(cond_tol, 1e-10)
+            _, R, P = qr(M, mode="economic", pivoting=True)
+            absdiag = np.abs(np.diag(R))
+            if diagnose and absdiag.size:
+                ratios = absdiag / absdiag[0]
+                print(f"[prune-diagnostic] R-diagonal ratios (sorted desc), "
+                    f"first 10 / last 10:\n  head={np.round(ratios[:10], 4)}\n"
+                    f"  tail={np.round(ratios[-10:], 8)}")
+            thr = np.sqrt(cross_cond_tol) * (absdiag[0] if absdiag.size else 0.0)
+            keep = np.sort(surviving_idx[P[absdiag > thr]])
+        else:
+            M = self._active_gradient_matrix(x, max_rows=max_cols)
+            _, R, P = qr(M, mode="economic", pivoting=True)
+            absdiag = np.abs(np.diag(R))
+            if diagnose and absdiag.size:
+                ratios = absdiag / absdiag[0]
+                print(f"[prune-diagnostic] R-diagonal ratios (sorted desc), "
+                    f"first 10 / last 10:\n  head={np.round(ratios[:10], 4)}\n"
+                    f"  tail={np.round(ratios[-10:], 8)}")
+            thr = np.sqrt(cond_tol) * (absdiag[0] if absdiag.size else 0.0)
+            keep = np.sort(P[absdiag > thr])
+
+        old_flat_arr = self.active_flat.cpu().numpy()
+        new_flat = old_flat_arr[keep]
+        dropped = len(old_flat_arr) - len(new_flat)
+
+        Jn, K = self.J, self.K
+        act = np.zeros((Jn, K), dtype=bool)
         for f in new_flat:
-            act[int(f % J), int(f // J)] = True
+            act[int(f % Jn), int(f // Jn)] = True
         dev = self.active_flat.device
         self.active = torch.tensor(act, device=dev)
         self.active_flat = torch.tensor(np.sort(new_flat), dtype=torch.long, device=dev)
@@ -1421,9 +1476,10 @@ class Scalar_GGD_KRegion():
         self._compute_stat_scale(x, max_cols=max_cols)
         if verbose:
             print(f"[prune] dropped {dropped} near-collinear statistic(s); "
-                  f"{self.num_coefficients} remain")
+                f"{self.num_coefficients} remain")
         self._last_prune_absdiag = absdiag
         return self
+
 
     def report_conditioning(self, x, max_cols=20000):
         self._check_fitted()

@@ -57,6 +57,9 @@ from filters_bank import *
 from utils import *
 from utils_entropy import*
 
+from pathlib import Path
+current = Path.cwd()
+MGD_project_folder = current.parent
 
 
 
@@ -146,6 +149,7 @@ class SDE(torch.nn.Module):
         x_0=None,
         x_k=None,
         use_coshgt_s0=True,
+        potentials_save_dir=None,  
     ):
         super().__init__()
 
@@ -177,10 +181,38 @@ class SDE(torch.nn.Module):
         self.use_coshgt_s0   = use_coshgt_s0
 
         self.init_interpolants_and_workers()
+        
+        # 1. Resolve where fitted-potential state gets saved for THIS run.
+        if potentials_save_dir is not None:
+            saved_results_dir = Path(potentials_save_dir)
+        else:
+            saved_results_dir = MGD_project_folder / "turbulence/saved_results"
+            print(f"[SDE] WARNING: no potentials_save_dir given — falling back to the "
+                f"shared global path {saved_results_dir}. This WILL be overwritten by "
+                f"other/concurrent runs. Pass potentials_save_dir=<exp_dir>/'fitted_potentials'.")
+
+        saved_results_dir.mkdir(parents=True, exist_ok=True)
 
         for name, pot in self.potentials.items():
-            if hasattr(pot, "fit"):
-                pot.fit(self.x_1)
+            if not hasattr(pot, "fit"):
+                continue
+            state_path = saved_results_dir / f"{name}.pt"
+
+            # load a previously fitted/pruned state instead of refitting, if present
+            if hasattr(pot, "is_fitted") and hasattr(pot, "load_fixed_parameters") and state_path.exists():
+                own_filters = pot.filters
+                loaded = type(pot).load_fixed_parameters(state_path, own_filters, map_location=device)
+                loaded.to(device)
+                self.potentials[name] = loaded
+                print(f"[SDE] loaded fitted state for '{name}' from {state_path} "
+                    f"({loaded.num_coefficients} active statistics)")
+                continue
+
+            pot.fit(self.x_1)
+            if hasattr(pot, "is_fitted"):
+                pot.save_fixed_parameters(state_path)
+                print(f"Fixed parameters for '{name}' have been saved in: {state_path}")
+
         self._sync_potential_dims()     # <-- reads post-prune sizes
         print(f'The model has {self.num_potentials} potentials.')
 
