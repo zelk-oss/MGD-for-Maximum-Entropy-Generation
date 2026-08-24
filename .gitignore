@@ -1,0 +1,48 @@
+# --- Editor / OS junk ---
+.ipynb_checkpoints/
+.DS_Store
+__pycache__/
+*.pyc
+
+# --- Secrets ---
+.env
+*.pem
+*.key
+
+# --- Logs ---
+*.log
+slurm_outputs/
+
+# --- Per-run experiment output (regenerable; config.json/job_info.txt kept for provenance) ---
+**/experiments/*/figures/
+**/experiments/*/logs/
+turbulence/figures/
+**/saved_results/lagrange_multipliers/
+**/saved_results/lagrange_multipliers_regularised/
+**/saved_results/sampling_times/
+**/saved_results/entropy_bounds/
+**/saved_results/samples/
+
+# --- Heavy binary artifacts (data, weights, results) ---
+*.ckpt
+*.pt
+*.pth
+*.pkl
+*.npy
+*.npz
+*.h5
+*.zarr
+*.tar
+*.zip
+data/
+data_dir/
+datadir/
+models/
+checkpoints*/
+samples/
+outputs/
+venv/
+
+# --- Experiment tracking, if ever used ---
+wandb/
+events.out.tfevents.*
