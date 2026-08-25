@@ -136,7 +136,11 @@ def parse_args():
 
     # Experiment / bookkeeping
     p.add_argument('--outdir', type=str, default=None,
-                help='Base directory. Defaults to <script_dir>/saved_results.')
+                help='Base directory. Defaults to this script\'s own '
+                     'directory (matching the notebook workflow, which '
+                     'always uses its own cwd as outdir with no '
+                     'saved_results/ nesting — the two must agree, or runs '
+                     'launched each way never see each other as duplicates).')
     p.add_argument('--label', type=str, default=None,
                     help='Optional extra label appended to the config name')
     p.add_argument('--force_rerun', action='store_true',
@@ -278,7 +282,10 @@ def main():
     torch.manual_seed(args.seed)
     np.random.seed(args.seed)
 
-    outdir = Path(args.outdir) if args.outdir else root / 'saved_results'
+    # Default outdir to root itself (no saved_results/ nesting) — must match
+    # the notebook workflow's outdir exactly, or the two can never see each
+    # other's runs as duplicates via resolve_config_for_loading.
+    outdir = Path(args.outdir) if args.outdir else root
     outdir.mkdir(parents=True, exist_ok=True)
 
     # ---- data ----
