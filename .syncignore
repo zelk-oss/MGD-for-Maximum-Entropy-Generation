@@ -1,0 +1,25 @@
+# Project-specific additions to the generic pull/push exclude lists in
+# ~/scripts (sync_common.sh, pull, push). Both pull and push honor this
+# file automatically; pull_results does not, since it exists specifically
+# to fetch what this file and the generic lists skip.
+#
+# Patterns use rsync's wildcard syntax: a bare name (no slash) matches at
+# any depth, "**/" crosses directories, a single "*" does not.
+
+# Per-run diagnostic figures generated for every experiment run (wavelet
+# histograms, moment-matching plots, structure functions, etc.) — cheap
+# individually but numerous, and not needed to judge run health at a
+# glance the way the log/config already are. Deliberately does NOT match
+# the top-level figures/ directory, which holds the actual paper figures.
+**/experiments/*/figures/
+turbulence/figures/
+
+# Heavy numeric run-output (Lagrange multiplier arrays, sampling-time
+# records, entropy-bound sweeps). These are written with no file
+# extension, so none of the generic extension-based excludes in `pull`
+# can match them. A bare name (no slash) matches at any depth, same as
+# "samples" already does in the generic list.
+lagrange_multipliers
+lagrange_multipliers_regularised
+sampling_times
+entropy_bounds

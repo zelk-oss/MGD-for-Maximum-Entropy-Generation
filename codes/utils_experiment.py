@@ -99,7 +99,14 @@ def resolve_config_for_loading(outdir, config_prefix):
     if not samples_dir.exists():
         return None
 
-    matches = sorted(p.name for p in samples_dir.glob(f'{config_prefix}*'))
+    # Results are now saved as '<config>.pt'; strip that suffix so the
+    # returned string is the plain config identifier either way — the same
+    # thing callers (aux_moments lookup, load_results, logging) expect,
+    # whether the match is a current .pt file or a legacy extensionless one.
+    matches = sorted(
+        p.stem if p.suffix == '.pt' else p.name
+        for p in samples_dir.glob(f'{config_prefix}*')
+    )
     if not matches:
         return None
     if len(matches) == 1:

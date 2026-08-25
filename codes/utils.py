@@ -102,10 +102,10 @@ def save_results(
 ):
     base = root / 'saved_results'
 
-    torch.save(xt.cpu(), base / 'samples' / config)
-    torch.save(theta_t.cpu(), base / 'lagrange_multipliers' / config)
-    torch.save(dH_t_bound.cpu(), base / 'entropy_bounds' / config)
-    torch.save(t.cpu(), base / 'sampling_times' / config)
+    torch.save(xt.cpu(), base / 'samples' / f'{config}.pt')
+    torch.save(theta_t.cpu(), base / 'lagrange_multipliers' / f'{config}.pt')
+    torch.save(dH_t_bound.cpu(), base / 'entropy_bounds' / f'{config}.pt')
+    torch.save(t.cpu(), base / 'sampling_times' / f'{config}.pt')
 
 def save_results_theta_reg(
     xt,
@@ -119,37 +119,47 @@ def save_results_theta_reg(
     base = root / 'saved_results'
 
     # 1. Save the core variables first to secure them on disk
-    torch.save(xt.cpu(), base / 'samples' / config)
-    torch.save(theta_t.cpu(), base / 'lagrange_multipliers' / config)
-    torch.save(dH_t_bound.cpu(), base / 'entropy_bounds' / config)
-    torch.save(t.cpu(), base / 'sampling_times' / config)
+    torch.save(xt.cpu(), base / 'samples' / f'{config}.pt')
+    torch.save(theta_t.cpu(), base / 'lagrange_multipliers' / f'{config}.pt')
+    torch.save(dH_t_bound.cpu(), base / 'entropy_bounds' / f'{config}.pt')
+    torch.save(t.cpu(), base / 'sampling_times' / f'{config}.pt')
 
     # 2. Safely process Theta_reg only if it was passed in
     if Theta_reg is not None:
         try:
             torch.save(
                 Theta_reg.cpu(),
-                base / 'lagrange_multipliers_regularised' / config
+                base / 'lagrange_multipliers_regularised' / f'{config}.pt'
             )
         except RuntimeError as e:
             # Catch the OOM (or any other PyTorch error) so the run doesn't crash entirely
             print(f"Warning: Failed to save Theta_reg. Error: {e}")
 
+def _load_tensor(path_no_ext: Path):
+    """Load a tensor saved under `path_no_ext`'s name, preferring the current
+    '<name>.pt' file but falling back to the legacy extensionless file so
+    results saved before the .pt convention still load."""
+    pt_path = path_no_ext.with_name(path_no_ext.name + '.pt')
+    return torch.load(pt_path if pt_path.exists() else path_no_ext)
+
 def load_results(root: Path, exact_config: str) -> Tuple[Any, Any, Any, Any, Any]:
     base = root / 'saved_results'
 
-    x_t = torch.load(base / 'samples' / exact_config)
-    theta_t = torch.load(base / 'lagrange_multipliers' / exact_config)
-    dH_t_bound = torch.load(base / 'entropy_bounds' / exact_config)
-    t = torch.load(base / 'sampling_times' / exact_config)
+    x_t = _load_tensor(base / 'samples' / exact_config)
+    theta_t = _load_tensor(base / 'lagrange_multipliers' / exact_config)
+    dH_t_bound = _load_tensor(base / 'entropy_bounds' / exact_config)
+    t = _load_tensor(base / 'sampling_times' / exact_config)
 
     path_theta_reg = base / 'lagrange_multipliers_regularised' / exact_config
+    path_theta_reg_pt = path_theta_reg.with_name(path_theta_reg.name + '.pt')
 
-    if path_theta_reg.exists():
+    if path_theta_reg_pt.exists():
+        Theta_reg = torch.load(path_theta_reg_pt)
+    elif path_theta_reg.exists():
         Theta_reg = torch.load(path_theta_reg)
-    else: 
+    else:
         Theta_reg = None # Always return 5 items to prevent unpacking crashes
-        
+
     return (x_t, theta_t, dH_t_bound, t, Theta_reg)
 
 def normalize(Data):
