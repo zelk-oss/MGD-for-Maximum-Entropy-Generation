@@ -933,6 +933,7 @@ filters_path = project_root / 'filters'
 if str(filters_path) not in sys.path:
     sys.path.insert(0, str(filters_path))
 from filters_1d import init_band_pass
+from filters_bank import return_Filters
 
 
 
@@ -1543,46 +1544,70 @@ class Scalar_GGD_KRegion():
               - (np.abs(xv) / scale) ** alpha - np.log(mass) + np.log(max(pi, 1e-300)))
         return np.clip(lp, -500.0, 500.0)
     
-    def plot_fit(self, x, n_grid=800, log_scale=True, fit_if_needed=True):
+    def _draw_fitted_windows(self, ax, j, xmax, n_grid=800):
+        """Draw the per-region fitted density curves ('windows') for channel
+        j onto an existing Axes, over the range [-xmax, xmax]. Shared by
+        plot_fit and compare_channel so both draw identical region curves
+        instead of each keeping their own copy of this logic."""
+        A = self.alpha.cpu().numpy(); S = self.scale.cpu().numpy()
+        C = self.cuts.cpu().numpy(); P = self.pi.cpu().numpy()
+        K = A.shape[1]
+        colors = plt.cm.viridis(np.linspace(0, 0.9, K))
+        edges = [0.0] + list(C[j]) + [xmax]
+        for k in range(K):
+            if P[j, k] < 1e-4:      # collapsed sliver, nothing to draw
+                continue
+            lo, hi = edges[k], edges[k + 1]
+            xp = np.linspace(max(lo, 1e-6), hi, n_grid)
+            lp = self._logpdf_trunc(xp, A[j, k], S[j, k], lo,
+                                    (np.inf if k == K - 1 else hi), P[j, k])
+            xx = np.concatenate([-xp[::-1], xp])
+            yy = np.exp(np.concatenate([lp[::-1], lp]))
+            ax.plot(xx, yy, lw=2, color=colors[k],
+                    label=f"r{k} a={A[j,k]:.2f} sc={S[j,k]:.3f} pi={P[j,k]:.1%}")
+        for c in C[j]:
+            ax.axvline(c, color="k", ls=":", lw=0.8, alpha=0.4)
+            ax.axvline(-c, color="k", ls=":", lw=0.8, alpha=0.4)
+
+    def plot_fit(self, x, n_grid=800, log_scale=True, fit_if_needed=True, j=None, ax=None):
+        """Plot the fitted density regions ('windows') over the real
+        histogram, per channel.
+
+        With no `j`, behaves exactly as before: every channel, each in its
+        own new figure, shown automatically. Pass `j` to restrict to one
+        channel; combine with `ax` to draw into an existing Axes (e.g. one
+        cell of a caller-built subplot grid) instead of creating a new
+        figure — `ax` requires `j` since one Axes can't hold multiple
+        channels.
+        """
+        if ax is not None and j is None:
+            raise ValueError("ax can only be used together with a specific j")
         if fit_if_needed and not self.is_fitted:
             self.fit_reference(x)
         self._check_fitted()
         filters = self.filters.to(x.device)
         wt = torch.fft.ifft(torch.fft.fft(x) * filters).real
-        A = self.alpha.cpu().numpy(); S = self.scale.cpu().numpy()
-        C = self.cuts.cpu().numpy(); P = self.pi.cpu().numpy()
-        J, K = A.shape
-        colors = plt.cm.viridis(np.linspace(0, 0.9, K))
-        paths = []
-        for j in range(J):
-            h = wt[:, j, :].detach().cpu().flatten().numpy()
+        J = self.alpha.shape[0]
+        channels = range(J) if j is None else [j]
+        for jj in channels:
+            h = wt[:, jj, :].detach().cpu().flatten().numpy()
             h = h[np.isfinite(h)]
             if h.size == 0:
                 continue
-            ah = np.abs(h); xmax = float(ah.max()) * 1.02
-            edges = [0.0] + list(C[j]) + [xmax]
-            fig, ax = plt.subplots(figsize=(9, 4))
-            ax.hist(h, bins=100, density=True, log=log_scale, alpha=0.5,
+            xmax = float(np.abs(h).max()) * 1.02
+            fig = None
+            this_ax = ax
+            if this_ax is None:
+                fig, this_ax = plt.subplots(figsize=(9, 4))
+            this_ax.hist(h, bins=100, density=True, log=log_scale, alpha=0.5,
                     color="steelblue", label="data")
-            for k in range(K):
-                if P[j, k] < 1e-4:      # collapsed sliver, nothing to draw
-                    continue
-                lo, hi = edges[k], edges[k + 1]
-                xp = np.linspace(max(lo, 1e-6), hi, n_grid)
-                lp = self._logpdf_trunc(xp, A[j, k], S[j, k], lo,
-                                        (np.inf if k == K - 1 else hi), P[j, k])
-                xx = np.concatenate([-xp[::-1], xp])
-                yy = np.exp(np.concatenate([lp[::-1], lp]))
-                ax.plot(xx, yy, lw=2, color=colors[k],
-                        label=f"r{k} a={A[j,k]:.2f} sc={S[j,k]:.3f} pi={P[j,k]:.1%}")
-            for c in C[j]:
-                ax.axvline(c, color="k", ls=":", lw=0.8, alpha=0.4)
-                ax.axvline(-c, color="k", ls=":", lw=0.8, alpha=0.4)
-            ax.set_xlabel("Coefficient value")
-            ax.set_ylabel("Log density" if log_scale else "Density")
-            ax.set_title(f"channel {j}  (Keff={int(self.Keff[j])})")
-            ax.legend(fontsize=7, loc="upper right")
-            plt.show()
+            self._draw_fitted_windows(this_ax, jj, xmax, n_grid)
+            this_ax.set_xlabel("Coefficient value")
+            this_ax.set_ylabel("Log density" if log_scale else "Density")
+            this_ax.set_title(f"channel {jj}  (Keff={int(self.Keff[jj])})")
+            this_ax.legend(fontsize=7, loc="upper right")
+            if fig is not None:
+                plt.show()
     # ===================== analytical shape extraction ================
     def analytical_regions(self, j, pi_floor=1e-4):
         """Active density regions defining p_j(z). Each: k, alpha, scale, lo, hi, pi
@@ -1653,16 +1678,26 @@ class Scalar_GGD_KRegion():
         return {j: self.sample_channel(n_per_channel, j, pi_floor, seed + j)
                 for j in range(self.J)}
     def compare_channel(self, x, j, n_samples=None, bins=200, log_scale=True,
-                        pi_floor=1e-4, seed=0):
-        """Overlay real-coeff histogram, generated-coeff histogram, and analytic pdf."""
+                        pi_floor=1e-4, seed=0, ax=None, n_grid=1000):
+        """Overlay real-coeff histogram, generated-coeff histogram (data
+        sampled from the fit, in a different color from the real data), and
+        the single composite analytical-shape curve (the fitted density,
+        summed across regions — not the per-region 'windows'; see plot_fit
+        for those).
+
+        Pass `ax` to draw into an existing Axes (e.g. one cell of a
+        caller-built subplot grid) instead of creating a new figure.
+        """
         self._check_fitted()
         wt = torch.fft.ifft(self.filters.to(x.device) * torch.fft.fft(x)).real
         h = wt[:, j, :].detach().cpu().reshape(-1).numpy(); h = h[np.isfinite(h)]
         n_samples = h.size if n_samples is None else n_samples
         g = self.sample_channel(n_samples, j, pi_floor, seed)
         xmax = float(np.abs(h).max()) * 1.02
-        edges = np.linspace(-xmax, xmax, bins + 1); grid = np.linspace(-xmax, xmax, 1000)
-        fig, ax = plt.subplots(figsize=(9, 4))
+        edges = np.linspace(-xmax, xmax, bins + 1); grid = np.linspace(-xmax, xmax, n_grid)
+        fig = None
+        if ax is None:
+            fig, ax = plt.subplots(figsize=(9, 4))
         ax.hist(h, bins=edges, density=True, log=log_scale, alpha=0.5,
                 color="steelblue", label="data (real)")
         ax.hist(g, bins=edges, density=True, log=log_scale, histtype="step",
@@ -1674,9 +1709,34 @@ class Scalar_GGD_KRegion():
                 ax.axvline(r["hi"], color="k", ls=":", lw=0.7, alpha=0.4)
                 ax.axvline(-r["hi"], color="k", ls=":", lw=0.7, alpha=0.4)
         ax.set_xlabel("coefficient value"); ax.set_ylabel("density")
-        ax.set_title(f"channel {j}: data vs generated vs analytic"); ax.legend(fontsize=8)
-        plt.show(); return fig, ax
-    
+        ax.set_title(f"channel {j}: data vs generated vs analytic shape")
+        ax.legend(fontsize=7, loc="upper right")
+        if fig is not None:
+            plt.show()
+        return fig, ax
+
+    @classmethod
+    def fit_and_compare(cls, x, M, J, Q, device, ncols=4):
+        """Build filters for (M, J, Q), fit a fresh instance against x, and
+        show every channel's real-vs-generated-vs-analytic-shape comparison
+        in one grid. Returns the fitted model.
+        """
+        filters = return_Filters(M, J, Q, device=device, include_phi=False)
+        model = cls(filters)
+        model.fit_reference(x)
+        n_ch = filters.shape[1]
+        nrows = math.ceil(n_ch / ncols)
+        fig, axes = plt.subplots(nrows, ncols, figsize=(5 * ncols, 4 * nrows))
+        axes = axes.flatten()
+        for i in range(n_ch):
+            model.compare_channel(x, j=i, ax=axes[i])
+        for j in range(n_ch, len(axes)):
+            axes[j].axis("off")
+        plt.suptitle(f"Q={Q}: fit vs generated vs analytic shape", fontsize=20)
+        plt.tight_layout()
+        plt.show()
+        return model
+
     # =========================== reporting ============================
 
     def summary(self):

@@ -329,7 +329,12 @@ def main():
 
     t = 1 - (1 - torch.linspace(0, 1, args.nt + 1)) ** args.schedule_exponent
 
-    result = run_experiment(args, M, config, x1, filters, t[:-130], logger, outdir, device)
+    t_rounded = torch.round(t, decimals=4)
+    t_final = int((t_rounded == 1.0).nonzero(as_tuple=True)[0][0]) 
+    logger.info(f"t_final = {t_final}/{len(t)} (last t = {t[t_final-1].item():.6f}, "
+        f"dropping {len(t) - t_final} redundant trailing points at 1.0000)")
+    
+    result = run_experiment(args, M, config, x1, filters, t[:t_final], logger, outdir, device)
 
     save_diagnostics(x1, result, t, args, config, fig_dir, logger)
 
