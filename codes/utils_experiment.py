@@ -6,8 +6,9 @@ from pathlib import Path
 import numpy as np
 import torch
 from typing import Dict, Any, Tuple
-import sys 
+import sys
 import logging
+import json
 import time as timer
 from pathlib import Path
 
@@ -60,6 +61,49 @@ def setup_logging(log_dir: Path, config: str) -> logging.Logger:
     logger.addHandler(sh)
 
     return logger
+
+
+# ── experiment output setup ─────────────────────────────────────────────────
+def setup_experiment_output(outdir: Path, config: str, args, extra_metadata: dict = None,
+                             include_potentials_dir: bool = False):
+    """Create a run's output directory tree, start its logger, and write
+    config.json — the provenance record every entry point (CLI scripts,
+    notebooks) should produce identically, so a run's parameters stay
+    recoverable from disk however it was launched.
+
+    `args` must support vars(args) (argparse.Namespace / SimpleNamespace).
+    `extra_metadata` is merged into config.json on top of vars(args) — use
+    it for derived values (M, coarse_grained, etc.) that aren't CLI args.
+    `include_potentials_dir` creates exp_dir/fitted_potentials/ (turbulence
+    needs this for Solver's potentials_save_dir; jets doesn't use it).
+
+    Returns (exp_dir, fig_dir, potentials_dir, logger). potentials_dir is
+    None when include_potentials_dir is False.
+    """
+    exp_dir = outdir / 'experiments' / config
+    fig_dir = exp_dir / 'figures'
+    log_dir = exp_dir / 'logs'
+    exp_dir.mkdir(parents=True, exist_ok=True)
+    fig_dir.mkdir(parents=True, exist_ok=True)
+
+    potentials_dir = None
+    if include_potentials_dir:
+        potentials_dir = exp_dir / 'fitted_potentials'
+        potentials_dir.mkdir(parents=True, exist_ok=True)
+
+    logger = setup_logging(log_dir, config)
+    logger.info('Config: %s', config)
+    logger.info('Experiment folder: %s', exp_dir)
+    logger.info('Arguments: %s', vars(args))
+
+    config_dict = dict(vars(args))
+    config_dict['config_name'] = config
+    if extra_metadata:
+        config_dict.update(extra_metadata)
+    with open(exp_dir / 'config.json', 'w') as f:
+        json.dump(config_dict, f, indent=2, default=str)
+
+    return exp_dir, fig_dir, potentials_dir, logger
 
 
 def build_config_name(args, M, coarse_grained=False, include_timestamp=True):

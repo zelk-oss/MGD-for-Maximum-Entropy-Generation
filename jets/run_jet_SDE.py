@@ -314,33 +314,16 @@ def main():
     config = build_config_name(args, M, coarse_grained)
 
     # ---- per-experiment folder: outdir/experiments/<config>/ ----
-    exp_dir = outdir / 'experiments' / config
-    fig_dir = exp_dir / 'figures'
-    log_dir = exp_dir / 'logs'
-    exp_dir.mkdir(parents=True, exist_ok=True)
-    fig_dir.mkdir(parents=True, exist_ok=True)
-
-    logger = setup_logging(log_dir, config)
-    logger.info('Config: %s', config)
-    logger.info('Experiment folder: %s', exp_dir)
-    logger.info('Arguments: %s', vars(args))
+    exp_dir, fig_dir, _potentials_dir, logger = setup_experiment_output(
+        outdir, config, args,
+        extra_metadata={
+            'M': M, 'B': B, 'channels': channels,
+            'coarse_grained': coarse_grained, 'pre_coarse_grain_length': pre_len,
+        },
+    )
     logger.info('Data original shape: %s', raw_data.shape)
     logger.info('Calculated scales applied: %d', scales_needed)
     logger.info('x1 final shape: %s (coarse_grained=%s)', tuple(x1.shape), coarse_grained)
-
-    # Dump the full config (every user-chosen parameter + a few derived ones)
-    # so the run can be reloaded later without guessing what was used.
-    config_dict = dict(vars(args))
-    config_dict.update({
-        'config_name': config,
-        'M': M,
-        'B': B,
-        'channels': channels,
-        'coarse_grained': coarse_grained,
-        'pre_coarse_grain_length': pre_len,
-    })
-    with open(exp_dir / 'config.json', 'w') as f:
-        json.dump(config_dict, f, indent=2, default=str)
 
     filters, filters_Phi = return_Filters(M, args.J, 1, device=device, include_phi=True)
 
