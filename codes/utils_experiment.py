@@ -192,7 +192,48 @@ def try_load_experiment(outdir, config, device):
         return None
 
 
-def run_experiment(args, M, config, x1, filters, t, logger, outdir, device, 
+def resolve_or_setup_experiment_output(outdir, args, M, device, coarse_grained=False,
+                                        extra_metadata=None, include_potentials_dir=False):
+    """Check whether a matching experiment already exists before creating a
+    new output folder — the counterpart to calling setup_experiment_output()
+    unconditionally, which creates a fresh experiments/<config>/ folder
+    (with a brand-new timestamp) on every call, even when the exact same
+    parameters were already run and would just get loaded from disk a
+    moment later inside run_experiment()'s own duplicate check.
+
+    Returns (config, exp_dir, fig_dir, potentials_dir, logger, loaded).
+    `loaded` is the previously-saved result dict if a match was found (no
+    new folder was created — call run_experiment() only if you want to
+    force a re-run instead). `loaded` is None for a genuinely new run (a
+    fresh folder was created via setup_experiment_output; proceed to call
+    run_experiment() with the returned config/exp_dir/etc.).
+    """
+    config_prefix = build_config_name(args, M, coarse_grained, include_timestamp=False)
+    resolved = None if args.force_rerun else resolve_config_for_loading(outdir, config_prefix)
+
+    if resolved is not None:
+        loaded = try_load_experiment(outdir, resolved, device)
+        if loaded is not None:
+            exp_dir = outdir / 'experiments' / resolved
+            fig_dir = exp_dir / 'figures'
+            potentials_dir = exp_dir / 'fitted_potentials' if include_potentials_dir else None
+            exp_dir.mkdir(parents=True, exist_ok=True)
+            fig_dir.mkdir(parents=True, exist_ok=True)
+            if potentials_dir is not None:
+                potentials_dir.mkdir(parents=True, exist_ok=True)
+            logger = setup_logging(exp_dir / 'logs', resolved)
+            logger.info('Reusing existing experiment: %s (no new folder created)', resolved)
+            return resolved, exp_dir, fig_dir, potentials_dir, logger, loaded
+
+    config = build_config_name(args, M, coarse_grained, include_timestamp=True)
+    exp_dir, fig_dir, potentials_dir, logger = setup_experiment_output(
+        outdir, config, args, extra_metadata=extra_metadata,
+        include_potentials_dir=include_potentials_dir,
+    )
+    return config, exp_dir, fig_dir, potentials_dir, logger, None
+
+
+def run_experiment(args, M, config, x1, filters, t, logger, outdir, device,
                    filters_Q=None, filters_Phi=None, 
                    potentials_save_dir=None,
                    ):

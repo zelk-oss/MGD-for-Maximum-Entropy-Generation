@@ -1738,49 +1738,65 @@ import matplotlib.pyplot as plt
 def Compare_time_series_row(Data, Synth, N, save=None):
     """Compare the first N time series: data (top) vs synthesis (bottom)."""
 
+    if Data.shape[0] == 0 or Synth.shape[0] == 0:
+        # A caller sliced past the end of the batch (e.g. a fixed-size loop
+        # over more groups than there are samples) — nothing to plot.
+        print(f"Compare_time_series_row: empty batch (Data={tuple(Data.shape)}, "
+              f"Synth={tuple(Synth.shape)}) — skipping.")
+        return
+
+    # Increased figure height slightly to accommodate larger labels without overlapping
     fig, axs = plt.subplots(
-        2, N,
-        figsize=(3.2 * N, 5),
+        2,
+        N,
+        figsize=(3.5 * N, 5.5),
         sharex=True,
         sharey=False,
         constrained_layout=True,
     )
 
-    colors = ["tab:blue", "tab:orange"]
-    labels = ["Data", "MGD synthesis"]
-    datasets = [Data, Synth]
+    # Handle N=1 edge case where axs is 1D array instead of 2D
+    if N == 1:
+        axs = axs[:, np.newaxis]
 
     x = np.arange(Data.shape[-1])
 
-    for row, (dataset, color, label) in enumerate(zip(datasets, colors, labels)):
-        for col in range(N):
-            ax = axs[row, col]
-            y = dataset[col, 0].cpu()
+    for row, (dataset, color, ylabel) in enumerate(
+        zip((Data, Synth), ("tab:blue", "navy"), ("Data", "MGD synthesis"))
+    ):
 
+        # Row / Axis Title Font Size (16pt)
+        axs[row, 0].set_ylabel(
+            ylabel, fontsize=16, fontweight="bold", labelpad=8
+        )
+
+        for col, ax in enumerate(axs[row]):
+            y = dataset[col, 0].cpu()
             ax.plot(
-                x, y,
+                x,
+                y,
                 color=color,
-                lw=1.8,
+                lw=2.2,  # Thicker line for paper clarity
                 marker="o",
-                ms=2,
+                ms=3,  # Slightly larger marker
                 mfc="white",
                 mec=color,
-                mew=0.6,
+                mew=1.0,
             )
 
-            ax.grid(alpha=0.15)
-            ax.spines["top"].set_visible(False)
-            ax.spines["right"].set_visible(False)
+            ax.grid(alpha=0.2)
+            ax.spines[["top", "right"]].set_visible(False)
 
-            if col > 0:
+            if col:
                 ax.set_yticklabels([])
 
-            ax.tick_params(labelsize=9)
+            # Axis Tick Label Font Size (14pt)
+            ax.tick_params(axis="both", which="major", labelsize=14)
 
-        axs[row, 0].set_ylabel(label, fontsize=11)
-
-    if save is not None:
-        fig.suptitle(save["title"], fontsize=13)
+    if save:
+        if "title" in save:
+            # Figure Title Font Size (18pt)
+            fig.suptitle(save["title"], fontsize=18, fontweight="bold")
         fig.savefig(save["filename"], dpi=300, bbox_inches="tight")
         plt.close(fig)
     else:

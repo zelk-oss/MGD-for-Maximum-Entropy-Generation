@@ -311,11 +311,9 @@ def main():
     x1 = normalize(data_tensor[:args.n1]).to(device)
     B, channels, M = x1.shape  # M will now perfectly match your target_len (e.g., 128)
 
-    config = build_config_name(args, M, coarse_grained)
-
     # ---- per-experiment folder: outdir/experiments/<config>/ ----
-    exp_dir, fig_dir, _potentials_dir, logger = setup_experiment_output(
-        outdir, config, args,
+    config, exp_dir, fig_dir, _potentials_dir, logger, loaded = resolve_or_setup_experiment_output(
+        outdir, args, M, device, coarse_grained=coarse_grained,
         extra_metadata={
             'M': M, 'B': B, 'channels': channels,
             'coarse_grained': coarse_grained, 'pre_coarse_grain_length': pre_len,
@@ -330,11 +328,14 @@ def main():
     t = 1 - (1 - torch.linspace(0, 1, args.nt + 1)) ** args.schedule_exponent
 
     t_rounded = torch.round(t, decimals=4)
-    t_final = int((t_rounded == 1.0).nonzero(as_tuple=True)[0][0]) 
+    t_final = int((t_rounded == 1.0).nonzero(as_tuple=True)[0][0])
     logger.info(f"t_final = {t_final}/{len(t)} (last t = {t[t_final-1].item():.6f}, "
         f"dropping {len(t) - t_final} redundant trailing points at 1.0000)")
-    
-    result = run_experiment(args, M, config, x1, filters, t[:t_final], logger, outdir, device)
+
+    if loaded is not None:
+        result = loaded
+    else:
+        result = run_experiment(args, M, config, x1, filters, t[:t_final], logger, outdir, device)
 
     save_diagnostics(x1, result, t, args, config, fig_dir, logger)
 
