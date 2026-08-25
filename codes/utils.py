@@ -263,16 +263,15 @@ def expand_imag_to_real_indices(pot_im, pot_re, theta_im, verbose=False, index_c
     happen to collide under the wrong symmetry grouping (e.g. a genuine
     real 'diagonal' entry, which should get imaginary part exactly 0,
     picking up an unrelated surviving imaginary coefficient's value
-    instead). Two conventions are supported:
-        'mod2' (default) -- pair = (col[0], col[1]), singleton = col[2].
-            Verified against Scattering_Fourth_Order_Mod2_{Real,Imag}_1d's
-            actual forward()/fit_micro tensor shapes (col[0],col[1] are the
-            fine, first-layer s1,s2; col[2] is the coarse, second-layer
-            j2) -- this is what that potential family actually needs.
-        'jab' -- pair = (col[1], col[2]), singleton = col[0]. This is
-            decode_jab's assumed convention, for OTHER scattering
-            potentials that might genuinely have that (different) index
-            structure -- do NOT use this for the Mod2 potentials.
+    instead). Both 'mod2' and 'jab' now map to the SAME grouping -- pair =
+    (col[0], col[1]), singleton = col[2] -- verified against every
+    Scattering_Fourth_Order_{Real,Imag,Mod2_Real,Mod2_Imag}_1d potential's
+    actual forward()/fit_micro tensor shapes (col[0],col[1] are the fine,
+    first-layer s1,s2; col[2] is the coarse, second-layer j) -- see
+    _decode_scattering_jsk. 'jab' used to assume a different, WRONG
+    grouping (pair = (col[1], col[2]), singleton = col[0]) matching
+    decode_jab's old (also wrong) index model; it's kept only as a
+    backward-compatible alias for callers that still pass it explicitly.
 
     Parameters
     ----------
@@ -300,14 +299,9 @@ def expand_imag_to_real_indices(pot_im, pot_re, theta_im, verbose=False, index_c
             f"not one already sliced/expanded to the real potential's size."
         )
 
-    if index_convention == 'mod2':
+    if index_convention in ('mod2', 'jab'):
         def _key(col):
             s1, s2, shared = int(col[0]), int(col[1]), int(col[2])
-            lo, hi = (s1, s2) if s1 <= s2 else (s2, s1)
-            return (shared, lo, hi)
-    elif index_convention == 'jab':
-        def _key(col):
-            shared, s1, s2 = int(col[0]), int(col[1]), int(col[2])
             lo, hi = (s1, s2) if s1 <= s2 else (s2, s1)
             return (shared, lo, hi)
     else:
@@ -475,95 +469,111 @@ def load_theta_for_potential(theta_final, potentials, target_key, known_dims=Non
 
 
 # ---------------------------------------------------------------------
-# 3. Decode (j, a, b) indices for a 4th-order potential
+# 3. Decode (j, s1, s2) indices for a 4th-order scattering potential
 # ---------------------------------------------------------------------
-def decode_jab(potential, j_row=None, verbose=False):
+def _decode_scattering_jsk(potential, verbose=False):
     """
-    potential.indices is (3, n_coeff): one row is the shared first-layer
-    scale j, the other two are absolute second-layer scales s1,s2. Detect
-    which row is j via the combinatorial fingerprint for offset=1, lite=True,
-    no-diag: #pairs at fixed j == C(J-j, 2). Pass j_row explicitly to skip
-    detection / override a bad guess.
-    Returns j, a, b, s1, s2 (np.ndarray, a=min(s)-j < b=max(s)-j), j_row.
-    """
-    idx = potential.indices.long().detach().cpu()
-    J = potential.J
+    Shared decoder for Scattering_Fourth_Order_{Real,Imag,Mod2_Real,
+    Mod2_Imag}_1d potentials' raw (3, n_coeff) `.indices`. ALL FOUR classes
+    build `.indices` via the exact same call,
+    indices_fourth_order_Q(J, Q, offset, lite, include_lowpass) (see
+    codes/potentials/utils_potentials.py), so they all share the same
+    per-column layout regardless of which class produced them:
 
-    if j_row is None:
-        expected = {j: math.comb(J - j, 2) for j in range(J)}
-        expected = {j: c for j, c in expected.items() if c > 0}
-        row_vc = []
-        for r in range(3):
-            vals = idx[r].numpy()
-            uniq, counts = np.unique(vals, return_counts=True)
-            row_vc.append(dict(zip(uniq.tolist(), counts.tolist())))
-        j_row = next((r for r in range(3) if row_vc[r] == expected), None)
-        if j_row is None:
-            def mismatch(vc):
-                ks = set(vc) | set(expected)
-                return sum(abs(vc.get(k, 0) - expected.get(k, 0)) for k in ks)
-            scores = [mismatch(vc) for vc in row_vc]
-            j_row = int(np.argmin(scores))
-            if verbose:
-                print(f"WARNING: no exact fingerprint match, best guess j_row={j_row} "
-                      f"(mismatch scores {scores}); pass j_row= explicitly if this is wrong.")
-        elif verbose:
-            print(f"-> detected j_row={j_row} from combinatorial fingerprint.")
-
-    other = [r for r in range(3) if r != j_row]
-    j = idx[j_row].numpy()
-    s1_raw, s2_raw = idx[other[0]].numpy(), idx[other[1]].numpy()
-    lo, hi = np.minimum(s1_raw, s2_raw), np.maximum(s1_raw, s2_raw)
-    a, b = lo - j, hi - j
-
-    if verbose and not ((a >= 1).all() and (b > a).all()):
-        print(f"WARNING: offset/lite assumptions violated: {(a < 1).sum()} entries a<1, "
-              f"{(b <= a).sum()} entries b<=a. j_row={j_row} may be wrong -- check manually.")
-    return j, a, b, lo, hi, j_row
-
-
-def decode_mod2_stq(potential, verbose=False):
-    """
-    Decode the ACTUAL index structure of
-    Scattering_Fourth_Order_Mod2_{Real,Imag}_1d potentials -- verified by
-    tracing the tensor shapes through forward(): the outer-product tensor
-    just before indexing has shape (B, J*Q, J*Q, J+1), NOT (B, J+1, J+1,
-    J*Q) as that class's own inline comments claim. So
-    output[:, indices[0], indices[1], indices[2]] means:
-
-        indices[0], indices[1] -- a PAIRED, symmetric pair of FINE,
-            first-layer scale indices s1, s2, each in [0, J*Q) -- which two
+        col[0], col[1] -- a PAIRED, symmetric pair of FINE, first-layer
+            scale indices s1, s2, each in [0, J*Q) -- which two
             (Q-oversampled, sub-octave) first-layer channels' envelope
-            fluctuations are being correlated. fit_micro's own
-            norm_indices = self.norm[:,None]*self.norm[None,:] (an outer
-            product over a length-J*Q vector, then merely broadcast --
-            not varied -- across J+1) independently confirms this.
-        indices[2] -- the SHARED, single COARSE second-layer scale j2, in
-            [0, J] (J+1 values, including low-pass) -- the resolution at
-            which that correlation is evaluated.
+            fluctuations are being correlated.
+        col[2] -- the SHARED, single COARSE second-layer scale j, in
+            [0, num_filters) (num_filters = J+1 if that potential's second
+            layer includes the low-pass channel, J otherwise) -- the
+            resolution at which the s1/s2 correlation is evaluated.
 
-    This is a DIFFERENT axis structure from decode_jab, which assumes the
-    shared axis is a small-range "first-layer j" and the paired axes are
-    two "second-layer scales s1,s2 > j" living in the SAME space as j.
-    Applying decode_jab here mislabels the axes: j2 and s1/s2 live in
-    non-comparable spaces (J+1 vs J*Q), so decode_jab's a=s-j, b=s-j
-    subtracts a coarse index from a fine one -- not a real scale
-    separation. That's the likely cause of |theta| appearing to GROW with
-    "k" instead of decay: k wasn't measuring scale separation at all.
+    Verified two independent ways:
+      1. Every one of the four classes' fit_micro builds norm_indices as
+         self.norm[:,None]*self.norm[None,:] (an outer product over the
+         length-J*Q self.norm vector) merely repeated -- NOT varied --
+         across a trailing num_filters axis, then indexed with
+         indices[0],indices[1],indices[2]. Only col[0]/col[1] can be valid
+         indices into that J*Q-sized array (checked below), so those two
+         -- not col[2] -- are the fine pair.
+      2. Independently confirmed for the Mod2 classes by tracing actual
+         forward() tensor shapes (this used to be documented here as
+         decode_mod2_stq's own separate finding; it's the same layout).
 
-    Returns (j2, s1, s2): j2 shape (n_coeff,) in [0, J]; s1, s2 shape
-    (n_coeff,), sorted (s1 <= s2), both in [0, J*Q).
+    A previous version of this decoder (formerly named decode_jab)
+    ASSUMED a different layout instead of deriving it: one column was
+    guessed to be a shared "first-layer" j, the other two a "second-layer"
+    pair s1,s2 > j living in the SAME value range as j. Which column was j
+    was picked via a combinatorial coefficient-count fingerprint
+    (count(j) == comb(J-j, 2)). That fingerprint is a coincidental
+    property of how the (col0,col1,col2) triples happen to enumerate when
+    Q=1 (J*Q == J, so the fine and coarse ranges collapse to nearly the
+    same size, and grouping any {a<b<c} triple by its minimum trivially
+    reproduces that count regardless of which axis is physically shared)
+    -- it is not diagnostic of which axis actually broadcasts. Concretely
+    this mislabeled every coefficient even at Q=1 (col[0], one fine
+    partner, was called "j"; col[1]/col[2] -- one fine, one coarse index --
+    were paired as if directly comparable "s1,s2", which then got the
+    wrong filter bank in compute_norm_jab) and, for Q>1, no column matched
+    the fingerprint at all so it silently fell back to a best guess (40%
+    of coefficients violated even that guess's own sanity check in a
+    J=4,Q=2 test). Deriving the split directly from J/Q below fixes both.
+
+    Returns j (shape (n_coeff,), in [0, num_filters)), s1, s2 (shape
+    (n_coeff,), sorted s1<=s2, both in [0, J*Q)).
     """
     idx = potential.indices.long().detach().cpu().numpy()
     if idx.shape[0] != 3:
         raise ValueError(f"expected potential.indices with 3 rows, got {idx.shape[0]}.")
-    s1_raw, s2_raw, j2 = idx[0], idx[1], idx[2]
+    J, Q = getattr(potential, 'J', None), getattr(potential, 'Q', None)
+    if J is None or Q is None:
+        raise RuntimeError("potential is missing J/.Q -- can't validate the fine/coarse index split.")
+    num_filters_q = J * Q
+
+    s1_raw, s2_raw, j = idx[0], idx[1], idx[2]
+    bad = int((s1_raw >= num_filters_q).sum() + (s2_raw >= num_filters_q).sum())
+    if bad:
+        raise ValueError(
+            f"{bad} entries have col[0]/col[1] >= J*Q={num_filters_q} -- this potential's "
+            f".indices doesn't match the (fine pair, coarse singleton) layout that "
+            f"indices_fourth_order_Q produces; check potential.J/.Q."
+        )
     s1, s2 = np.minimum(s1_raw, s2_raw), np.maximum(s1_raw, s2_raw)
     if verbose:
-        JQ = potential.J * potential.Q
-        print(f"decode_mod2_stq: s1,s2 in [0,{JQ}) (fine, first-layer, J*Q={JQ} channels), "
-              f"j2 in [0,{potential.J}] (coarse, second-layer, J+1 channels incl. low-pass).")
-    return j2, s1, s2
+        num_filters = int(j.max()) + 1 if j.size else 0
+        print(f"s1,s2 in [0,{num_filters_q}) (fine, first-layer, J*Q={num_filters_q} channels), "
+              f"j in [0,{num_filters}) (coarse, second-layer, shared).")
+    return j, s1, s2
+
+
+def decode_jab(potential, verbose=False):
+    """
+    Decode (j, s1, s2) for a Scattering_Fourth_Order_{Real,Imag}_1d
+    potential (the non-Mod2 classes). Identical layout/logic to
+    decode_mod2_stq -- see _decode_scattering_jsk for the full derivation
+    and for why a previous version of this function (which guessed the
+    layout instead of deriving it) mislabeled the axes for every Q,
+    including Q=1. Kept as a separate name for call-site clarity and
+    backward compatibility with existing (j, k_prime, k) column naming.
+
+    Returns j, s1, s2 -- see _decode_scattering_jsk.
+    """
+    return _decode_scattering_jsk(potential, verbose=verbose)
+
+
+def decode_mod2_stq(potential, verbose=False):
+    """
+    Decode (j2, s1, s2) for a Scattering_Fourth_Order_Mod2_{Real,Imag}_1d
+    potential. Identical layout/logic to decode_jab -- see
+    _decode_scattering_jsk for the full derivation (originally established
+    here by tracing forward()'s actual tensor shapes: (B, J*Q, J*Q, J+1),
+    NOT (B, J+1, J+1, J*Q) as that class's own inline comments claim).
+
+    Returns (j2, s1, s2) -- see _decode_scattering_jsk (j2 is that
+    function's `j`).
+    """
+    return _decode_scattering_jsk(potential, verbose=verbose)
 
 
 # ---------------------------------------------------------------------
@@ -739,32 +749,27 @@ def build_theta_dataframe(theta_final, potentials, target_key, x1, filters,
                            m_k=None, norm_order=None, known_dims=None, verbose=False):
     """
     Builds a tidy dataframe for a single, real-valued target_key. Decodes
-    (j, a, b) indices if the potential has scattering index structure,
+    (j, s1, s2) indices if the potential has scattering index structure,
     otherwise builds a generic coefficient table.
 
     Normalization (theta_t1_normalized):
     - Potentials WITH scattering index structure (.indices): the physical
       micro-norm convention theta_physical = theta_fitted *
       (E[|Wx_s1|^2]*E[|Wx_s2|^2])**(norm_order/4), via compute_norm_jab,
-      evaluated at each coefficient's own (s1, s2) scales.
-        If 'Mod2' is in target_key (Scattering_Fourth_Order_Mod2_Real/Imag):
-        uses decode_mod2_stq for indexing -- s1, s2 are FINE, first-layer
-        scale indices in [0, J*Q), and j2 (the shared axis) is the COARSE,
-        second-layer scale in [0, J] -- and evaluates compute_norm_jab
-        against potential.filters_Q (the fine bank), NOT potential.filters,
-        since that's the bank fit_micro actually used to build self.norm
-        for this potential class (verified against its source: self.norm
-        has shape (J*Q,), an outer product over that axis, merely
-        broadcast -- not varied -- across the J+1 axis). Using
-        potential.filters here instead would silently compute the wrong
-        micro-norm.
-        Otherwise: uses decode_jab (shared axis = "first-layer" j in
-        [0,J), paired axes = "second-layer" s1,s2 > j, same space as j)
-        and potential.filters, falling back to the `filters` argument only
-        if the potential doesn't carry its own.
+      evaluated at each coefficient's own (s1, s2) scales. decode_jab and
+      decode_mod2_stq decode the SAME (fine pair s1,s2 in [0,J*Q); coarse
+      shared j in [0,num_filters)) layout for every
+      Scattering_Fourth_Order_{Real,Imag,Mod2_Real,Mod2_Imag}_1d potential
+      (see _decode_scattering_jsk) -- so compute_norm_jab always evaluates
+      against potential.filters_Q (the fine bank), NOT potential.filters,
+      since that's the bank fit_micro actually used to build self.norm for
+      every one of these classes (verified against its source: self.norm
+      has shape (J*Q,), an outer product over that axis, merely broadcast
+      -- not varied -- across the coarse axis). Using potential.filters
+      here instead would silently compute the wrong micro-norm.
         norm_order=2 -> sqrt(E1*E2)  for plain Real/Imag potentials
         norm_order=4 -> E1*E2        for Mod2_Real/Mod2_Imag potentials
-      If norm_order is left as None, it's inferred the same way: 4 if
+      If norm_order is left as None, it's inferred from the name: 4 if
       'Mod2' is in target_key, else 2 -- pass it explicitly if that
       heuristic is wrong for a given potential's naming.
     - Potentials WITHOUT .indices (L_6, L_2_lowpass, Scalar_*): there's no
@@ -779,12 +784,8 @@ def build_theta_dataframe(theta_final, potentials, target_key, x1, filters,
 
     if hasattr(potential, 'indices'):
         is_mod2 = 'Mod2' in target_key
-        if is_mod2:
-            j_arr, s1_arr, s2_arr = decode_mod2_stq(potential, verbose=verbose)
-            pot_filters = getattr(potential, 'filters_Q', filters)
-        else:
-            j_arr, a_arr, b_arr, s1_arr, s2_arr, j_row = decode_jab(potential, verbose=verbose)
-            pot_filters = getattr(potential, 'filters', filters)
+        j_arr, s1_arr, s2_arr = _decode_scattering_jsk(potential, verbose=verbose)
+        pot_filters = getattr(potential, 'filters_Q', filters)
 
         order = norm_order if norm_order is not None else (4 if is_mod2 else 2)
         norm = compute_norm_jab(x1, pot_filters, s1_arr, s2_arr, order=order)
@@ -893,12 +894,8 @@ def build_complex_theta_dataframe(theta_final, potentials, real_key, imag_key, x
     theta_complex = theta_re_final + 1j * theta_im_final
 
     if hasattr(pot_re, 'indices'):
-        if is_mod2:
-            j_arr, s1_arr, s2_arr = decode_mod2_stq(pot_re, verbose=verbose)
-            pot_filters = getattr(pot_re, 'filters_Q', filters)
-        else:
-            j_arr, a_arr, b_arr, s1_arr, s2_arr, j_row = decode_jab(pot_re, verbose=verbose)
-            pot_filters = getattr(pot_re, 'filters', filters)
+        j_arr, s1_arr, s2_arr = _decode_scattering_jsk(pot_re, verbose=verbose)
+        pot_filters = getattr(pot_re, 'filters_Q', filters)
 
         order = norm_order if norm_order is not None else (4 if is_mod2 else 2)
         norm = compute_norm_jab(x1, pot_filters, s1_arr, s2_arr, order=order)
@@ -1143,9 +1140,18 @@ def build_all_averaged_vectors(theta_all, potentials, terms, real_imag_pairs=(),
 #    different lengths (J*3+1 vs J*1+1). aggregate_octaves_from_QJ collapses
 #    away the Q sub-band axis so every potential ends up as a J-length
 #    octave profile (+ a separate scalar low-pass), directly comparable.
-#    The scattering potential doesn't have this simple per-scale layout
-#    (its coefficients are (j, k', k) triplets), so aggregate_by_j groups
-#    its coefficients by shared j instead.
+#    The scattering potential doesn't have this simple per-scale layout --
+#    each of its coefficients is a correlation ACROSS two fine, first-layer
+#    octaves (s1, s2) evaluated at a shared coarser resolution j (see
+#    _decode_scattering_jsk) -- so its "energy" genuinely belongs to BOTH
+#    octave(s1) and octave(s2) at once, not to the shared j. This used to
+#    be handled by aggregate_by_j grouping on j alone, silently attributing
+#    100% of every coefficient's energy to the analysis resolution and 0%
+#    to either of the two scales it actually correlates.
+#    aggregate_interacting_to_octaves splits each coefficient's energy in
+#    half between octave(s1) and octave(s2) instead (both halves land back
+#    in the same octave whenever s1, s2 share one -- e.g. two Q-oversampled
+#    sub-bands of the same octave -- so that octave still gets full credit).
 # ---------------------------------------------------------------------
 def aggregate_octaves_from_QJ(vec, J, Q, agg='sum'):
     """
@@ -1194,9 +1200,10 @@ def aggregate_octaves_from_QJ(vec, J, Q, agg='sum'):
 def aggregate_by_j(vec, j_indices, J, agg='sum'):
     """
     Aggregate a coefficient vector down to J groups by combining all
-    entries that share the same integer label `j` (e.g. the scattering
-    potential's first-layer scale from decode_jab, or a scalar potential's
-    channel index from decode_scalar_channel).
+    entries that share the same integer label `j` (e.g. a scalar
+    potential's channel index from decode_scalar_channel; for the
+    scattering potential's own (j, s1, s2) triplets, prefer
+    aggregate_interacting_to_octaves, which this function backs).
 
     agg: 'sum' (default) or 'mean'. Use 'sum' when `vec` already holds a
     per-coefficient ENERGY (theta_k * m_k): summing is invariant to how
@@ -1210,10 +1217,9 @@ def aggregate_by_j(vec, j_indices, J, agg='sum'):
     mean(a*b) in general) -- see build_octave_energy_comparison, which
     avoids this by always aggregating the already-multiplied energy.
 
-    Groups with zero matching entries (e.g. large-j scattering triplets
-    need s1,s2 > j so the largest j's often have none; or a channel whose
-    fit pruned all K regions away) come back as 0.0; `counts` lets you tell
-    "genuinely zero" apart from "no coefficients in this group".
+    Groups with zero matching entries (e.g. a channel whose fit pruned all
+    K regions away) come back as 0.0; `counts` lets you tell "genuinely
+    zero" apart from "no coefficients in this group".
 
     Returns (out: shape (J,), counts: shape (J,) int), dtype of `out`
     matches vec (so complex vec -> complex out).
@@ -1242,6 +1248,61 @@ def aggregate_by_j(vec, j_indices, J, agg='sum'):
     else:
         raise ValueError(f"agg must be 'sum' or 'mean', got '{agg}'")
     return out, counts
+
+
+def aggregate_interacting_to_octaves(vec, s1_indices, s2_indices, Q, J, agg='sum'):
+    """
+    Attribute a per-coefficient scattering-potential quantity (typically an
+    ENERGY theta_k * stat_k) to J octave bins by the two FINE, first-layer
+    scales s1, s2 that coefficient actually correlates -- from decode_jab /
+    decode_mod2_stq, each in [0, J*Q) -- NOT by the shared coarse scale j.
+
+    A 4th-order scattering coefficient's quantity is a joint statistic of
+    TWO scales, octave(s1) and octave(s2) (evaluated at some shared coarser
+    resolution j, which is just the analysis window -- see
+    _decode_scattering_jsk for why j isn't itself a third energy-bearing
+    scale). Crediting it entirely to one arbitrary axis (as grouping by the
+    shared j alone does) is wrong for the same reason splitting a
+    mode-mode-mode energy-transfer term between only one of the modes would
+    be: the effect belongs to both. The standard fix for this kind of cross
+    term is to split it evenly between the two scales it connects, so each
+    coefficient's energy is added HALF to octave(s1) and HALF to
+    octave(s2). When s1 and s2 fall in the SAME octave (possible for Q>1,
+    e.g. two sub-bands of one octave), both halves land back in that one
+    octave, so it still receives the coefficient's full energy -- as it
+    should for a same-octave interaction.
+
+    Unlike aggregate_potential_to_octaves' linear-potential path, there is
+    no separate low-pass term here: s1, s2 live in the fine, Q-oversampled
+    grid [0, J*Q), which never includes a low-pass channel, so every
+    coefficient's energy is fully absorbed into the J octave bins.
+
+    agg: 'sum' (default, for energy) or 'mean' -- passed through to
+    aggregate_by_j, which this delegates to (see its docstring for why
+    'sum' is the right choice for an already-multiplied energy quantity).
+
+    Returns (octaves: shape (J,), counts: shape (J,) int) -- counts[o] is
+    the number of half-contributions landing in octave o (each coefficient
+    contributes exactly 2, whether both to one octave or one each to two
+    different octaves), for the same "genuinely zero vs no data"
+    bookkeeping as aggregate_by_j.
+    """
+    vec = np.asarray(vec)
+    s1_indices = np.asarray(s1_indices)
+    s2_indices = np.asarray(s2_indices)
+    if not (vec.shape[-1] == s1_indices.shape[-1] == s2_indices.shape[-1]):
+        raise ValueError(
+            f"vec length {vec.shape[-1]}, s1 length {s1_indices.shape[-1]}, "
+            f"s2 length {s2_indices.shape[-1]} must all match."
+        )
+    octave1 = s1_indices // Q
+    octave2 = s2_indices // Q
+    half = vec / 2
+    return aggregate_by_j(
+        np.concatenate([half, half]),
+        np.concatenate([octave1, octave2]),
+        J, agg=agg,
+    )
 
 
 def aggregate_potential_to_octaves(vec, spec, J, agg='sum'):
@@ -1304,7 +1365,8 @@ def aggregate_potential_to_octaves(vec, spec, J, agg='sum'):
 
 
 def build_octave_energy_comparison(theta_vectors, stat_vectors, potential_specs,
-                                    interacting_key, j_indices_interacting, J,
+                                    interacting_key, s1_indices_interacting,
+                                    s2_indices_interacting, Q_interacting, J,
                                     scalar_potentials=(), energy_kind='mean'):
     """
     Build a per-octave (length-J) comparison of "interacting" vs
@@ -1337,11 +1399,17 @@ def build_octave_energy_comparison(theta_vectors, stat_vectors, potential_specs,
     See aggregate_potential_to_octaves for what each spec means.
     interacting_key: name of the real+imag-combined scattering potential in
     theta_vectors/stat_vectors, e.g. 'Scattering_Fourth_Order_Mod2_Q1'.
-    j_indices_interacting: the `j2` (coarse, second-layer) scale array for
-    that potential's coefficients -- decode_mod2_stq(reference_real_potential,
-    verbose=False)[0]. Ranges over [0, J] (J+1 values incl. low-pass), so
-    this function groups it into J+1 bins internally and splits off the
-    low-pass one -- see 'interacting_lowpass' below.
+    s1_indices_interacting, s2_indices_interacting: the fine, first-layer
+    (s1, s2) scale arrays for that potential's coefficients, each in
+    [0, J*Q) -- decode_mod2_stq(reference_real_potential, verbose=False)[1:]
+    (or decode_jab for a non-Mod2 interacting potential). Each coefficient's
+    energy is split in half between octave(s1) and octave(s2) -- see
+    aggregate_interacting_to_octaves for why (the coefficient is a joint
+    statistic of both scales, not of the shared coarse j used only for the
+    2nd-layer analysis resolution -- attributing it to j alone silently
+    credited a resolution parameter and dropped the two actual scales).
+    Q_interacting: that potential's Q (sub-bands per octave), needed to map
+    s1/s2 -- indices into the J*Q fine grid -- down to octaves.
     J: number of octaves.
     scalar_potentials: names of potentials with no octave structure at all
     (single-coefficient, e.g. 'L_2_lowpass') -- folded directly into the
@@ -1357,12 +1425,15 @@ def build_octave_energy_comparison(theta_vectors, stat_vectors, potential_specs,
         'non_interacting_by_potential': {name: (octaves[J], lowpass)}
         'non_interacting_total': octaves[J]  -- summed over potentials
         'non_interacting_lowpass_total': scalar -- summed low-pass + scalar terms
-        'interacting': octaves[J]  (real-valued)
-        'interacting_counts': counts[J] -- scattering coefficients pooled per octave
-        'interacting_lowpass': scalar -- energy from coefficients coupled to
-            the low-pass (j2=J) second-layer channel
-        'interacting_lowpass_count': int -- how many coefficients landed there
+        'interacting': octaves[J]  (real-valued) -- each coefficient's
+            energy split half-and-half into octave(s1) and octave(s2)
+        'interacting_counts': counts[J] -- half-contributions pooled per
+            octave (each coefficient contributes 2, to one or two octaves)
         'energy_kind': the energy_kind passed in
+
+    There is no 'interacting_lowpass' term: s1, s2 live in the fine,
+    Q-oversampled grid [0, J*Q), which has no low-pass channel, so every
+    coefficient's energy is already fully absorbed into the J octave bins.
 
     "Energy" of a coefficient is theta_k * stat_k for the real potentials,
     and Re(theta_complex * stat_complex) -- plain elementwise complex
@@ -1424,15 +1495,13 @@ def build_octave_energy_comparison(theta_vectors, stat_vectors, potential_specs,
         non_interacting_lowpass_total += energy
 
     energy_int_raw = _checked_energy(interacting_key)
-    # j_indices_interacting (from decode_mod2_stq) ranges over [0, J] -- J+1
-    # values including the low-pass second-layer channel -- so this needs
-    # J+1 groups, splitting into J octaves + 1 low-pass scalar, exactly like
-    # every other potential's low-pass handling. Using only J groups here
-    # would silently DROP any coefficient coupled to the low-pass channel
-    # from the energy sum entirely.
-    interacting_full, counts_full = aggregate_by_j(energy_int_raw, j_indices_interacting, J + 1, agg='sum')
-    interacting, interacting_lowpass = interacting_full[:J], float(interacting_full[J])
-    counts, counts_lowpass = counts_full[:J], int(counts_full[J])
+    # Split each coefficient's energy in half between the two fine scales
+    # (s1, s2) it actually correlates, rather than pooling by the shared
+    # coarse j -- see aggregate_interacting_to_octaves.
+    interacting, counts = aggregate_interacting_to_octaves(
+        energy_int_raw, s1_indices_interacting, s2_indices_interacting,
+        Q_interacting, J, agg='sum',
+    )
 
     return {
         'non_interacting_by_potential': non_interacting_by_potential,
@@ -1440,8 +1509,6 @@ def build_octave_energy_comparison(theta_vectors, stat_vectors, potential_specs,
         'non_interacting_lowpass_total': non_interacting_lowpass_total,
         'interacting': interacting,
         'interacting_counts': counts,
-        'interacting_lowpass': interacting_lowpass,
-        'interacting_lowpass_count': counts_lowpass,
         'energy_kind': energy_kind,
     }
 
