@@ -1,4 +1,5 @@
 {
+  "outputStyle": "Explanatory",
   "permissions": {
     "deny": [
       "Edit(data/data_files/**)",
