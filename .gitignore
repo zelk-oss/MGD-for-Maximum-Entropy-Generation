@@ -34,7 +34,7 @@ turbulence/figures/
 *.zarr
 *.tar
 *.zip
-data/
+data/data_files/
 data_dir/
 datadir/
 models/

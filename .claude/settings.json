@@ -1,0 +1,21 @@
+{
+  "permissions": {
+    "deny": [
+      "Edit(data/data_files/**)",
+      "Write(data/data_files/**)",
+      "Edit(saved_results/**)",
+      "Write(saved_results/**)",
+      "Edit(jets/saved_results/**)",
+      "Write(jets/saved_results/**)",
+      "Edit(turbulence/saved_results/**)",
+      "Write(turbulence/saved_results/**)",
+      "Edit(codes/saved_results/**)",
+      "Write(codes/saved_results/**)",
+      "Edit(**/experiments/*/figures/**)",
+      "Write(**/experiments/*/figures/**)"
+    ],
+    "allow": [
+      "Bash(git commit *)"
+    ]
+  }
+}
