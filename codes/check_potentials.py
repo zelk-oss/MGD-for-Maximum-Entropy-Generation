@@ -1513,3 +1513,113 @@ def plot_linear_potential_mean_std(theta_all, potentials, target_key, terms,
     if (theta_slice < 0).any() and yscale == 'log':
         print(f"WARNING: {target_key} has negative values but yscale='log' -- "
               f"those points are invisible on the plot above. Use 'symlog' or 'linear'.")
+
+
+# ---------------------------------------------------------------------
+# 13. Multi-channel grid view of a fitted Scalar_GGD_KRegion potential
+# ---------------------------------------------------------------------
+def plot_kregion_fit_with_windows(x, model, label="", channels=None, ncols=4,
+                                   n_grid=800, figsize_per=(4.6, 3.6)):
+    """
+    Paper-figure helper for Scalar_GGD_KRegion.
+
+    For each channel, draws:
+      - the empirical histogram of wavelet coefficients (log density)
+      - the fitted per-region truncated-GGD densities (bulk ... tail),
+        each colored by region and labeled with alpha / mixture weight
+      - on a twin axis: the smooth partition-of-unity windows w_k(z)
+        that implement the bulk/tail blending, with cut locations and
+        their +/-2*s transition zones shaded
+
+    Does not refit -- uses model.alpha/scale/cuts/sw/pi/active as fitted.
+    """
+    model._check_fitted()
+    filters = model.filters.to(x.device)
+    wt = torch.fft.ifft(torch.fft.fft(x) * filters).real
+
+    A = model.alpha.cpu().numpy();  S = model.scale.cpu().numpy()
+    C = model.cuts.cpu().numpy();   SW = model.sw.cpu().numpy()
+    P = model.pi.cpu().numpy();     ACT = model.active.cpu().numpy()
+    Keff = model.Keff.cpu().numpy()
+    J, K = A.shape
+
+    if channels is None:
+        channels = list(range(J))
+    ncols = min(ncols, len(channels))
+    nrows = math.ceil(len(channels) / ncols)
+    fig, axes = plt.subplots(nrows, ncols,
+                              figsize=(figsize_per[0]*ncols, figsize_per[1]*nrows))
+    axes = np.atleast_1d(axes).flatten()
+
+    region_colors = plt.cm.plasma(np.linspace(0.12, 0.85, K))
+    region_names = (["bulk"] + [f"mid{k}" for k in range(1, K - 1)]
+                     + (["tail"] if K > 1 else []))
+
+    for idx, j in enumerate(channels):
+        ax = axes[idx]
+        h = wt[:, j, :].detach().cpu().flatten().numpy()
+        h = h[np.isfinite(h)]
+        ah = np.abs(h)
+        xmax = float(ah.max()) * 1.02
+        edges = [0.0] + list(C[j]) + [xmax]
+
+        ax.hist(h, bins=120, density=True, log=True, alpha=0.35,
+                 color="0.6", zorder=1, label="data")
+
+        # --- fitted densities, per region ---
+        for k in range(K):
+            if P[j, k] < 1e-4:
+                continue
+            lo, hi = edges[k], edges[k + 1]
+            hi_fit = np.inf if k == K - 1 else hi
+            xp = np.linspace(max(lo, 1e-6), hi, n_grid)
+            lp = model._logpdf_trunc(xp, A[j, k], S[j, k], lo, hi_fit, P[j, k])
+            xx = np.concatenate([-xp[::-1], xp])
+            yy = np.exp(np.concatenate([lp[::-1], lp]))
+            name = region_names[k] if k < len(region_names) else f"r{k}"
+            star = "*" if ACT[j, k] else ""
+            ax.plot(xx, yy, lw=2.2, color=region_colors[k], zorder=3,
+                     label=f"{name}{star} α={A[j,k]:.2f} π={P[j,k]:.1%}")
+
+        # --- windowing functions w_k(z), on a twin axis ---
+        axt = ax.twinx()
+        zg = np.linspace(-xmax, xmax, 1000)
+        az = np.abs(zg)
+
+        if K == 1:
+            ws = [np.ones_like(az)]
+        else:
+            g = [1.0 / (1.0 + np.exp(-(C[j, m] - az) / SW[j, m]))
+                 for m in range(K - 1)]  # sigmoid(-(|z|-c_m)/s_m), matches model internals
+            ws = [g[0]]
+            for m in range(1, K - 1):
+                ws.append(g[m] - g[m - 1])
+            ws.append(1.0 - g[K - 2])
+
+        for k in range(K):
+            name = region_names[k] if k < len(region_names) else f"r{k}"
+            axt.plot(zg, ws[k], lw=1.4, ls="--", color=region_colors[k],
+                      alpha=0.9, zorder=2, label=f"w_{name}")
+
+        for c_m, s_m in zip(C[j], SW[j]):
+            for sign in (-1, 1):
+                axt.axvline(sign * c_m, color="k", ls=":", lw=0.8, alpha=0.5, zorder=2)
+                axt.axvspan(sign * c_m - 2 * s_m, sign * c_m + 2 * s_m,
+                             color="gray", alpha=0.12, zorder=0)
+
+        axt.set_ylim(-0.05, 1.05)
+        axt.set_ylabel("window weight")
+
+        ax.set_xlabel("coefficient value")
+        ax.set_ylabel("log density")
+        ax.set_title(f"{label}  ch={j}  (Keff={int(Keff[j])})", fontsize=10)
+        ax.legend(fontsize=6.5, loc="upper left", framealpha=0.85)
+        if idx == 0:
+            axt.legend(fontsize=6.5, loc="upper right", framealpha=0.85)
+
+    for k in range(len(channels), len(axes)):
+        axes[k].axis("off")
+
+    plt.suptitle(f"Bulk/tail windowing and per-region fit — {label}", fontsize=13)
+    plt.tight_layout()
+    plt.show()
