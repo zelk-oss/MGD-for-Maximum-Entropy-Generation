@@ -1,11 +1,15 @@
 """
 Per-panel figure generator for the turbulence diagnostics paper figure.
 
-Each panel_* function makes ONE standalone matplotlib figure comparing two
-(data, synth) pairs -- Eulerian (blue) and Lagrangian (green) -- with training
-data as dotted lines and MGD synthesis as solid lines. Call make_all_panels()
-once per (data_E, synth_E, data_L, synth_L) group; run it again for a second
-pair of datasets by just calling it again with a different save_dir.
+Each panel_* function makes ONE standalone matplotlib figure comparing one
+OR two (data, synth) pairs -- generically "Type 1" (blue) and "Type 2"
+(orange), with training data as dotted lines and MGD synthesis as solid
+lines -- so the same code works whether you're showing a single data type
+(e.g. just Lagrangian turbulence, or just jets) or overlaying two. Pass only
+data1/synth1 for a single-type figure; add data2/synth2 (and label1/label2)
+to overlay a second type on the same panels. Call make_all_panels() once per
+group; run it again for a different dataset by calling it again with a
+different save_dir.
 
 Depends on (assumed already imported / defined in the notebook):
     second_order_structure_function, flatness, logder, C_pq_structure,
@@ -27,14 +31,24 @@ from check_moments import C_ORIG, C_SYNTH, C_pq_structure, second_order_structur
 
 # ---------------------------------------------------------------- style ----
 STYLE = dict(fontsize=24, lw=4.0, grid_alpha=0.3, figsize=(7, 6))
-COLOR_E = 'tab:blue'   # Eulerian
-COLOR_L = 'tab:blue'  # Lagrangian
+COLOR_1 = 'tab:blue'
+COLOR_2 = 'tab:orange'
 LS_DATA = ':'          # training data
 LS_SYNTH = '-'         # MGD synthesis
 
 
 def _to_np(x):
     return x.cpu().numpy() if hasattr(x, 'cpu') else np.asarray(x)
+
+
+def _build_groups(data1, synth1, data2, synth2, label1, label2):
+    """(data, synth, color, label) tuples for whichever of the 1 or 2 data
+    types were actually passed in -- data2/synth2 are optional, so a
+    single-type figure just omits the second entry entirely."""
+    groups = [(data1, synth1, COLOR_1, label1)]
+    if data2 is not None:
+        groups.append((data2, synth2, COLOR_2, label2))
+    return groups
 
 
 def _apply_style(ax, xlabel, ylabel):
@@ -59,13 +73,13 @@ def _legend(ax, ncol=1):
 
 
 # ------------------------------------------------------------- (a) PDFs ----
-def panel_a_marginals(data_E, synth_E, data_L, synth_L, n_bins=201,
+def panel_a_marginals(data1, synth1, data2=None, synth2=None,
+                       label1="Type 1", label2="Type 2", n_bins=201,
                        smooth=True, smooth_sigma=1.5, y_floor=1e-4,
                        save_dir=None, fmt='pdf', dpi=200):
     fig, ax = plt.subplots(figsize=STYLE['figsize'])
     x_lo, x_hi = np.inf, -np.inf
-    for data, synth, color, label in [(data_E, synth_E, COLOR_E, 'Eulerian'),
-                                       (data_L, synth_L, COLOR_L, 'Lagrangian')]:
+    for data, synth, color, label in _build_groups(data1, synth1, data2, synth2, label1, label2):
         d, s = _to_np(data).reshape(-1), _to_np(synth).reshape(-1)
         lo, hi = min(d.min(), s.min()), max(d.max(), s.max())
         bins = np.linspace(lo, hi, n_bins)
@@ -107,10 +121,11 @@ def _psd(x):
     return np.mean(np.abs(f) ** 2, axis=0)
 
 
-def panel_b_spectrum(data_E, synth_E, data_L, synth_L, omega_max=0.4,
-                      save_dir=None, fmt='pdf', dpi=200):
+def panel_b_spectrum(data1, synth1, data2=None, synth2=None,
+                      label1="Type 1", label2="Type 2",
+                      omega_max=0.4, save_dir=None, fmt='pdf', dpi=200):
     fig, ax = plt.subplots(figsize=STYLE['figsize'])
-    T = data_E.shape[-1]
+    T = data1.shape[-1]
     omega = np.fft.rfftfreq(T)
     # Cut the spectrum off at omega_max (drop the omega=0 bin too, since it's
     # plotted on a log-x axis). Slicing before plotting -- rather than just
@@ -118,8 +133,7 @@ def panel_b_spectrum(data_E, synth_E, data_L, synth_L, omega_max=0.4,
     # visible frequency range.
     mask = (omega > 0) & (omega <= omega_max)
     omega_plot = omega[mask]
-    for data, synth, color, label in [(data_E, synth_E, COLOR_E, 'Eulerian'),
-                                       (data_L, synth_L, COLOR_L, 'Lagrangian')]:
+    for data, synth, color, label in _build_groups(data1, synth1, data2, synth2, label1, label2):
         P_o, P_s = _psd(data), _psd(synth)
         ax.plot(omega_plot, P_o[mask], ls=LS_DATA, color=color, lw=STYLE['lw'], label=f'{label} data')
         ax.plot(omega_plot, P_s[mask], ls=LS_SYNTH, color=color, lw=STYLE['lw'], label=f'{label} synth')
@@ -131,16 +145,16 @@ def panel_b_spectrum(data_E, synth_E, data_L, synth_L, omega_max=0.4,
 
 
 # ------------------------------------------------- (c) structure functions
-def panel_c_structure_functions(data_E, synth_E, data_L, synth_L, orders=(4, 6, 8),
-                                 save_dir=None, fmt='pdf', dpi=200):
+def panel_c_structure_functions(data1, synth1, data2=None, synth2=None,
+                                 label1="Type 1", label2="Type 2",
+                                 orders=(4, 6, 8), save_dir=None, fmt='pdf', dpi=200):
     # NOTE: only the first order is labeled per group to keep the legend
     # readable; the 3 orders are distinguished by alpha only (1.0/0.7/0.4).
     fig, ax = plt.subplots(figsize=STYLE['figsize'])
-    max_tau = data_E.shape[-1] // 2
+    max_tau = data1.shape[-1] // 2
     taus = np.arange(1, max_tau)
     alphas = np.linspace(1.0, 0.4, len(orders))
-    for data, synth, color, label in [(data_E, synth_E, COLOR_E, 'Eulerian'),
-                                       (data_L, synth_L, COLOR_L, 'Lagrangian')]:
+    for data, synth, color, label in _build_groups(data1, synth1, data2, synth2, label1, label2):
         S_o = second_order_structure_function(data, p=np.array(orders), max_tau=max_tau)
         S_s = second_order_structure_function(synth, p=np.array(orders), max_tau=max_tau)
         for k, p in enumerate(orders):
@@ -156,13 +170,13 @@ def panel_c_structure_functions(data_E, synth_E, data_L, synth_L, orders=(4, 6, 
 
 
 # --------------------------------------------------- (d) flatness slope ----
-def panel_d_flatness_slope(data_E, synth_E, data_L, synth_L, num_points=30,
-                            save_dir=None, fmt='pdf', dpi=200):
+def panel_d_flatness_slope(data1, synth1, data2=None, synth2=None,
+                            label1="Type 1", label2="Type 2",
+                            num_points=30, save_dir=None, fmt='pdf', dpi=200):
     # ASSUMPTION: "local slope of the flatness" = d(log Flat_4)/d(log tau).
     # Swap in plain flatness(...) below if you meant Flat_4(tau) itself.
     fig, ax = plt.subplots(figsize=STYLE['figsize'])
-    for data, synth, color, label in [(data_E, synth_E, COLOR_E, 'Eulerian'),
-                                       (data_L, synth_L, COLOR_L, 'Lagrangian')]:
+    for data, synth, color, label in _build_groups(data1, synth1, data2, synth2, label1, label2):
         taus_o, F_o = flatness(data, num_points=num_points)
         taus_s, F_s = flatness(synth, num_points=num_points)
         slope_o = logder(F_o, taus_o)
@@ -176,12 +190,14 @@ def panel_d_flatness_slope(data_E, synth_E, data_L, synth_L, num_points=30,
 
 
 # --------------------------------------------------- (e) increment PDFs ----
-def panel_e_increment_pdfs(data_E, synth_E, data_L, synth_L, taus=(1, 4, 16, 64),
+def panel_e_increment_pdfs(data1, synth1, data2=None, synth2=None,
+                            label1="Type 1", label2="Type 2",
+                            taus=(1, 4, 16, 64),
                             n_bins=201, xlim=(-6, 6), smooth=True, smooth_sigma=1.5,
                             save_dir=None, fmt='pdf', dpi=200):
     fig, ax = plt.subplots(figsize=STYLE['figsize'])
     taus = list(taus)
-    groups = [(data_E, synth_E, COLOR_E, 'Eulerian'), (data_L, synth_L, COLOR_L, 'Lagrangian')]
+    groups = _build_groups(data1, synth1, data2, synth2, label1, label2)
     bins = np.linspace(xlim[0], xlim[1], n_bins)
     ctr = 0.5 * (bins[1:] + bins[:-1])
 
@@ -224,13 +240,12 @@ def panel_e_increment_pdfs(data_E, synth_E, data_L, synth_L, taus=(1, 4, 16, 64)
 
 
 # ------------------------------------------------------ (f,g,h) C_{p,q} ----
-def _panel_cpq(data_E, synth_E, data_L, synth_L, p, q, tau_star, ylabel, name,
+def _panel_cpq(data1, synth1, data2, synth2, label1, label2, p, q, tau_star, ylabel, name,
                inset=False, save_dir=None, fmt='pdf', dpi=200):
     fig, ax = plt.subplots(figsize=STYLE['figsize'])
-    max_tau = data_E.shape[-1] // 2
+    max_tau = data1.shape[-1] // 2
     axins = ax.inset_axes([0.55, 0.55, 0.4, 0.4]) if inset else None
-    for data, synth, color, label in [(data_E, synth_E, COLOR_E, 'Eulerian'),
-                                       (data_L, synth_L, COLOR_L, 'Lagrangian')]:
+    for data, synth, color, label in _build_groups(data1, synth1, data2, synth2, label1, label2):
         d_np, s_np = _to_np(data), _to_np(synth)
         taus, r_o = C_pq_structure(d_np, p, q, tau_star, max_tau=max_tau)
         _, r_s = C_pq_structure(s_np, p, q, tau_star, max_tau=max_tau)
@@ -252,36 +267,40 @@ def _panel_cpq(data_E, synth_E, data_L, synth_L, p, q, tau_star, ylabel, name,
     _finalize(fig, save_dir, name, fmt, dpi)
 
 
-def panel_f_C4(data_E, synth_E, data_L, synth_L, tau_star=20,
-               save_dir=None, fmt='pdf', dpi=200):
-    _panel_cpq(data_E, synth_E, data_L, synth_L, 2, 2, tau_star,
+def panel_f_C4(data1, synth1, data2=None, synth2=None,
+               label1="Type 1", label2="Type 2",
+               tau_star=20, save_dir=None, fmt='pdf', dpi=200):
+    _panel_cpq(data1, synth1, data2, synth2, label1, label2, 2, 2, tau_star,
                r'$C_4(\tau,\tau^\star)$', 'panel_f_C4', inset=False,
                save_dir=save_dir, fmt=fmt, dpi=dpi)
 
 
-def panel_g_C6(data_E, synth_E, data_L, synth_L, tau_star=20,
-               save_dir=None, fmt='pdf', dpi=200):
-    _panel_cpq(data_E, synth_E, data_L, synth_L, 3, 3, tau_star,
+def panel_g_C6(data1, synth1, data2=None, synth2=None,
+               label1="Type 1", label2="Type 2",
+               tau_star=20, save_dir=None, fmt='pdf', dpi=200):
+    _panel_cpq(data1, synth1, data2, synth2, label1, label2, 3, 3, tau_star,
                r'$C_6(\tau,\tau^\star)$', 'panel_g_C6', inset=False,
                save_dir=save_dir, fmt=fmt, dpi=dpi)
 
 
-def panel_h_C42(data_E, synth_E, data_L, synth_L, tau_star=20,
-                 save_dir=None, fmt='pdf', dpi=200):
-    _panel_cpq(data_E, synth_E, data_L, synth_L, 4, 2, tau_star,
+def panel_h_C42(data1, synth1, data2=None, synth2=None,
+                 label1="Type 1", label2="Type 2",
+                 tau_star=20, save_dir=None, fmt='pdf', dpi=200):
+    _panel_cpq(data1, synth1, data2, synth2, label1, label2, 4, 2, tau_star,
                r'$C_{4,2}(\tau,\tau^\star)$', 'panel_h_C42', inset=True,
                save_dir=save_dir, fmt=fmt, dpi=dpi)
 
 
 # --------------------------------------------------------- (i) skewness ---
-def panel_i_skewness(data_E, synth_E, data_L, synth_L, num_points=45, mode='power',
+def panel_i_skewness(data1, synth1, data2=None, synth2=None,
+                      label1="Type 1", label2="Type 2",
+                      num_points=45, mode='power',
                       save_dir=None, fmt='pdf', dpi=200):
-    # taus log-spaced over [1, M/2), M = data_E.shape[-1] (i.e. stop at tau=M/2)
+    # taus log-spaced over [1, M/2), M = data1.shape[-1] (i.e. stop at tau=M/2)
     fig, ax = plt.subplots(figsize=STYLE['figsize'])
-    max_tau = data_E.shape[-1] // 2
+    max_tau = data1.shape[-1] // 2
     taus = log_spaced_taus(max_tau, num_points=num_points)
-    for data, synth, color, label in [(data_E, synth_E, COLOR_E, 'Eulerian'),
-                                       (data_L, synth_L, COLOR_L, 'Lagrangian')]:
+    for data, synth, color, label in _build_groups(data1, synth1, data2, synth2, label1, label2):
         _, s_o = skewness_vs_tau(data, taus, mode=mode)
         _, s_s = skewness_vs_tau(synth, taus, mode=mode)
         ax.plot(taus, s_o, ls=LS_DATA, color=color, lw=STYLE['lw'], label=f'{label} data')
@@ -294,26 +313,33 @@ def panel_i_skewness(data_E, synth_E, data_L, synth_L, num_points=45, mode='powe
 
 
 # --------------------------------------------------------------- driver ----
-def make_all_panels(data_E, synth_E, data_L, synth_L, tau_star=20,
-                     save_dir=None, fmt='png', dpi=200):
-    """Run all 9 panels for one (Eulerian, Lagrangian) group.
-    Call again with a different save_dir for the second data/synth pair."""
-    panel_a_marginals(data_E, synth_E, data_L, synth_L, save_dir=save_dir, fmt=fmt, dpi=dpi)
-    panel_b_spectrum(data_E, synth_E, data_L, synth_L, save_dir=save_dir, fmt=fmt, dpi=dpi)
-    panel_c_structure_functions(data_E, synth_E, data_L, synth_L, save_dir=save_dir, fmt=fmt, dpi=dpi)
-    panel_d_flatness_slope(data_E, synth_E, data_L, synth_L, save_dir=save_dir, fmt=fmt, dpi=dpi)
-    panel_e_increment_pdfs(data_E, synth_E, data_L, synth_L, save_dir=save_dir, fmt=fmt, dpi=dpi)
-    panel_f_C4(data_E, synth_E, data_L, synth_L, tau_star=tau_star, save_dir=save_dir, fmt=fmt, dpi=dpi)
-    panel_g_C6(data_E, synth_E, data_L, synth_L, tau_star=tau_star, save_dir=save_dir, fmt=fmt, dpi=dpi)
-    panel_h_C42(data_E, synth_E, data_L, synth_L, tau_star=tau_star, save_dir=save_dir, fmt=fmt, dpi=dpi)
-    panel_i_skewness(data_E, synth_E, data_L, synth_L, save_dir=save_dir, fmt=fmt, dpi=dpi)
+def make_all_panels(data1, synth1, data2=None, synth2=None,
+                     label1="Type 1", label2="Type 2",
+                     tau_star=20, save_dir=None, fmt='png', dpi=200):
+    """Run all 9 panels for one data type, or two overlaid together.
+    Pass only data1/synth1 for a single-type figure (e.g. just Lagrangian
+    turbulence, or just jets); add data2/synth2 (and label1/label2) to
+    overlay a second type on the same panels. Call again with a different
+    save_dir for another dataset/group."""
+    kwargs = dict(label1=label1, label2=label2, save_dir=save_dir, fmt=fmt, dpi=dpi)
+    panel_a_marginals(data1, synth1, data2, synth2, **kwargs)
+    panel_b_spectrum(data1, synth1, data2, synth2, **kwargs)
+    panel_c_structure_functions(data1, synth1, data2, synth2, **kwargs)
+    panel_d_flatness_slope(data1, synth1, data2, synth2, **kwargs)
+    panel_e_increment_pdfs(data1, synth1, data2, synth2, **kwargs)
+    panel_f_C4(data1, synth1, data2, synth2, tau_star=tau_star, **kwargs)
+    panel_g_C6(data1, synth1, data2, synth2, tau_star=tau_star, **kwargs)
+    panel_h_C42(data1, synth1, data2, synth2, tau_star=tau_star, **kwargs)
+    panel_i_skewness(data1, synth1, data2, synth2, **kwargs)
 
 
 # Usage:
 # from paper_figures import make_all_panels
-# make_all_panels(data_E, synth_E, data_L, synth_L, tau_star=20, save_dir=None)          # display
-# make_all_panels(data_E, synth_E, data_L, synth_L, tau_star=20, save_dir='figs/run1')   # save
-# make_all_panels(data_E2, synth_E2, data_L2, synth_L2, tau_star=20, save_dir='figs/run2')
+# make_all_panels(data1, synth1, tau_star=20, save_dir=None)                                   # single type, display
+# make_all_panels(data1, synth1, label1="Lagrangian",
+#                 tau_star=20, save_dir='figs/lagrangian')                                      # single type, save
+# make_all_panels(data1, synth1, data2, synth2, label1="Jets", label2="Lagrangian",
+#                 tau_star=20, save_dir='figs/combined')                                        # two types overlaid
 
 
 def _shade(color, frac):
