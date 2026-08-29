@@ -110,14 +110,19 @@ def build_config_name(args, M, coarse_grained=False, include_timestamp=True):
     terms_hash = hashlib.md5('|'.join(sorted(args.terms)).encode()).hexdigest()[:8]
 
     re_number = getattr(args, 'Re_number', None)
+    hurst = getattr(args, 'hurst', None)
     if re_number is not None:
         prefix = 'jetsynth'
+    elif hurst is not None:
+        prefix = 'gaussiansynth'
     else:
         prefix = 'turbulencesynth'
 
     parts = [prefix]
-    if re_number is not None: 
+    if re_number is not None:
         parts.append(f'Re_number{re_number}')
+    if hurst is not None:
+        parts.append(f'H{hurst}_intermittency{getattr(args, "intermittency", 0.0)}')
     parts += [
         f'M{M}',
         f'J{args.J}',

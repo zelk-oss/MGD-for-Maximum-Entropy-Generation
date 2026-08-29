@@ -1,7 +1,7 @@
 # Repository structure
 
 - `codes/` — shared implementation: `utils.py` (SDE utilities, `save_results`/`load_results`, symmetrization), `utils_experiment.py` (experiment naming/config resolution, `run_experiment`), `potentials/` (`potentials_1d.py`, `potentials_2d.py`, `potentials_1d_condi.py`, `potentials_scalar.py`, `potentials_classes/`).
-- `jets/run_jet_SDE.py` and `turbulence/run_SDE.py` — the two experiment entry points (argparse CLIs).
+- `jets/run_jet_SDE.py`, `turbulence/run_SDE.py`, and `gaussian_experiment/run_SDE.py` — the experiment entry points (argparse CLIs). The last runs on fractional Brownian motion / multifractal random walk increments generated via `data/synthetic_data_generator.py` (backed by `data/standard_models/`, ported from the `conditional_mgd` project / github.com/RudyMorel/scattering_spectra) rather than on real recorded data.
 - Results land under `saved_results/` (and per-subproject copies in `jets/`, `turbulence/`, `codes/`): `samples/`, `lagrange_multipliers/`, `lagrange_multipliers_regularised/`, `entropy_bounds/`, `sampling_times/` — `<config>.pt` (PyTorch) files as of 2026-08-25; older runs may lack the `.pt` extension, `load_results` handles both.
 - Each run also gets `*/experiments/<config_name>/` with `config.json` (provenance, always kept), `logs/run.log`, and `figures/` (diagnostic plots).
 - `notebooks/` — analysis notebooks; not run on the cluster.
@@ -18,7 +18,9 @@ need it rather than guessing one.
 # Conventions
 
 - Experiment/config naming comes from `build_config_name()` in
-  `codes/utils_experiment.py`: `<jetsynth|turbulencesynth>_[Re_number<N>_]M<M>_J<J>_Q<Q>_sigma<σ>_nt<nt>_n1_<n1>_lam<λ>_seed_<seed>_terms<hash>[_<label>][_<timestamp>]`.
+  `codes/utils_experiment.py`: `<jetsynth|turbulencesynth|gaussiansynth>_[Re_number<N>_][H<hurst>_intermittency<λ_mrw>_]M<M>_J<J>_Q<Q>_sigma<σ>_nt<nt>_n1_<n1>_lam<λ>_seed_<seed>_terms<hash>[_<label>][_<timestamp>]`.
+  The `gaussiansynth` prefix (and `H<hurst>_intermittency<λ_mrw>` segment) triggers off `args.hurst`
+  being set, the same way `jetsynth` triggers off `args.Re_number` — see `gaussian_experiment/run_SDE.py`.
 - Project's Lustre path: `/lustre/fswork/projects/rech/wbg/ukv59en/MGD-for-Maximum-Entropy-Generation` (see `~/scripts/sync_common.sh`).
 - W&B is not used anywhere in this codebase (checked) — don't assume it is, and don't add it without being asked.
 
