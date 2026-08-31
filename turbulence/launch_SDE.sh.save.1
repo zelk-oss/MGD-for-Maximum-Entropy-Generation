@@ -1,19 +1,15 @@
 #!/bin/bash
-# timestamp
+# timestamp 
 TIMESTAMP=$(date +"%Y%m%d_%H%M")
 
 # ── PARAMETERS ───────────────────────────────────────
 SEED_LIST=({300..350})
 N1_LIST=(5000)
 NT_LIST=(60000)
-SIGMA_LIST=(3.5)
+SIGMA_LIST=(3.5) # Now a list
 
-# fBm/MRW data generation (replaces SUBSERIES_LEN/TARGET_LEN/coarse-graining:
-# gaussian_experiment/run_SDE.py generates data directly at length M, no
-# real-recording windowing/coarse-graining step is needed).
-M=256
-HURST_LIST=(0.5)          # Hurst exponent of the underlying fBm
-INTERMITTENCY_LIST=(0.0)  # MRW intermittency (lam); 0.0 = pure fBm increments
+SUBSERIES_LEN=1024
+TARGET_LEN=256
 
 J=8
 Q=3
@@ -49,14 +45,18 @@ PYTHON_SCRIPT="${SCRIPT_DIR}/run_SDE.py"
 OUTDIR="${SCRIPT_DIR}"
 mkdir -p "${OUTDIR}/saved_results/logs"
 
-# Added HURST_LIST/INTERMITTENCY_LIST to the TOTAL calculation
-TOTAL=$(( ${#N1_LIST[@]} * ${#NT_LIST[@]} * ${#SEED_LIST[@]} * ${#SIGMA_LIST[@]} \
-          * ${#HURST_LIST[@]} * ${#INTERMITTENCY_LIST[@]} ))
+# Added SIGMA_LIST to the TOTAL calculation
+TOTAL=$(( ${#N1_LIST[@]} * ${#NT_LIST[@]} * ${#SEED_LIST[@]} * ${#SIGMA_LIST[@]} ))
 
 # ── optional flags ───────────────────────────────────
 BS_FLAG=""
 if [ -n "${BATCH_SIZE}" ]; then
     BS_FLAG="--batch_size ${BATCH_SIZE}"
+fi
+
+CG_FLAG=""
+if [ "${COARSE_GRAIN}" = true ]; then
+    CG_FLAG="--coarse_grain"
 fi
 
 # ── terms → string ───────────────────────────────────
@@ -65,7 +65,7 @@ TERMS_STR="${TERMS[@]}"
 # ── submit ───────────────────────────────────────────
 sbatch <<EOT
 #!/bin/bash
-#SBATCH --job-name=gaussian_sde_sweep
+#SBATCH --job-name=sde_sweep
 #SBATCH -A ${ACCOUNT}
 #SBATCH -C ${CONSTRAINT}
 #SBATCH --array=0-$((TOTAL-1))
@@ -85,44 +85,36 @@ SEED_LIST=(${SEED_LIST[@]})
 N1_LIST=(${N1_LIST[@]})
 NT_LIST=(${NT_LIST[@]})
 SIGMA_LIST=(${SIGMA_LIST[@]})
-HURST_LIST=(${HURST_LIST[@]})
-INTERMITTENCY_LIST=(${INTERMITTENCY_LIST[@]})
 
 # Calculate lengths
 nSEED=\${#SEED_LIST[@]}
 nN1=\${#N1_LIST[@]}
 nNT=\${#NT_LIST[@]}
 nSIGMA=\${#SIGMA_LIST[@]}
-nHURST=\${#HURST_LIST[@]}
-nINTERMITTENCY=\${#INTERMITTENCY_LIST[@]}
 
 # Grab the current array ID
 IDX=\${SLURM_ARRAY_TASK_ID}
 
-# Decode the 6D grid
-SEED_INDEX=\$(( IDX % nSEED ));            IDX=\$(( IDX / nSEED ))
-SIGMA_INDEX=\$(( IDX % nSIGMA ));          IDX=\$(( IDX / nSIGMA ))
-NT_INDEX=\$(( IDX % nNT ));                IDX=\$(( IDX / nNT ))
-N1_INDEX=\$(( IDX % nN1 ));                IDX=\$(( IDX / nN1 ))
-HURST_INDEX=\$(( IDX % nHURST ));          IDX=\$(( IDX / nHURST ))
-INTERMITTENCY_INDEX=\$(( IDX % nINTERMITTENCY ))
+# Decode the 4D grid
+SEED_INDEX=\$(( IDX % nSEED ));   IDX=\$(( IDX / nSEED ))
+SIGMA_INDEX=\$(( IDX % nSIGMA )); IDX=\$(( IDX / nSIGMA ))
+NT_INDEX=\$(( IDX % nNT ));       IDX=\$(( IDX / nNT ))
+N1_INDEX=\$(( IDX % nN1 ))
 
 # Extract the values for this specific job
 SEED_VAL=\${SEED_LIST[\$SEED_INDEX]}
 SIGMA_VAL=\${SIGMA_LIST[\$SIGMA_INDEX]}
 NT=\${NT_LIST[\$NT_INDEX]}
 N1=\${N1_LIST[\$N1_INDEX]}
-HURST_VAL=\${HURST_LIST[\$HURST_INDEX]}
-INTERMITTENCY_VAL=\${INTERMITTENCY_LIST[\$INTERMITTENCY_INDEX]}
 
 srun python "${PYTHON_SCRIPT}" \
     --seed \${SEED_VAL} \
     --timestamp "$TIMESTAMP" \
     --n1 \${N1} \
     --nt \${NT} \
-    --M ${M} \
-    --hurst \${HURST_VAL} \
-    --intermittency \${INTERMITTENCY_VAL} \
+    --subseries_len ${SUBSERIES_LEN} \
+    --target_len ${TARGET_LEN} \
+    ${CG_FLAG} \
     --J ${J} \
     --Q ${Q} \
     --sigma \${SIGMA_VAL} \

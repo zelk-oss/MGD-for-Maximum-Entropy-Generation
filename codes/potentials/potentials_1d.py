@@ -89,8 +89,7 @@ class Scattering_First_Order_1d(Potential):
         x_filtered = torch.fft.ifft(filters*torch.fft.fft(x))
         return abs_eps(x_filtered).mean(-1)
 
-    def grad(self, x, v=None, means=None):
-        
+    def grad(self, x, v=None, means=None):        
         filters = self.filters.to(x.device)
         x_fourier = torch.fft.fft(x)
         x_filtered = torch.fft.ifft(filters*x_fourier)
@@ -238,9 +237,7 @@ class Scattering_Third_Order_Real_1d(Potential):
         x_filtered_abs = abs_eps(x_filtered)
         x_filtered_over_abs = x_filtered/x_filtered_abs
 
-
         indices = indices_third_order(self.J, 1)
-
 
         if v!=None:
             m = torch.zeros((number_filters-1, number_filters)).to(x.device)
