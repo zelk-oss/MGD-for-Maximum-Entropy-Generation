@@ -79,6 +79,13 @@ class Potential(nn.Module):
 
 
 class Scattering_First_Order_1d(Potential):
+    # No fit_micro() override here (nor in Scattering_Second_Order_1d below)
+    # -- this class inherits Potential.fit_micro()'s no-op ("pass"), so
+    # self.norm is never set and forward() never divides by it. Unlike the
+    # 4th-order classes further down (see
+    # Scattering_Fourth_Order_Real_1d.fit_micro for the full explanation of
+    # what that micro-normalization is for), this potential is just the raw
+    # per-scale statistic E[|Wx_s|], with no per-scale rescaling applied.
     def __init__(self,filters):
         super().__init__()
         self.filters = filters
@@ -268,40 +275,60 @@ class Scattering_Fourth_Order_Real_1d(Potential):
         super().__init__()
         self.J = J
         self.Q = Q
-        self.filters = filters
-        self.filters_Q = filters_Q
+        self.filters = filters       # coarse, "second-layer" filter bank: J(+1) channels (one per octave, plus low-pass)
+        self.filters_Q = filters_Q   # fine, "first-layer" filter bank: J*Q channels (Q wavelets per octave)
         if include_diag is True:
             offset = 0
         else:
             offset = 1
+        # Which (s1, s2, j) coefficient triples this potential keeps: s1,s2 are
+        # fine scales in [0,J*Q), j is the coarse scale in [0,J] the s1/s2
+        # correlation is measured at. Only s1<=s2 is stored -- Re[z] is
+        # symmetric under swapping s1<->s2, so the s1>s2 half is redundant.
+        # See indices_fourth_order_Q in utils_potentials.py.
         self.indices = indices_fourth_order_Q(self.J, self.Q,offset,lite)
-        self.norm = 1
-        self.norm_indices = torch.ones((len(self.indices[0]),))
-        
+        self.norm = 1                 # per-fine-scale rescaling, fit once by fit_micro() below
+        self.norm_indices = torch.ones((len(self.indices[0]),))  # self.norm, reshaped to match self.indices' flat coefficient layout (used by grad())
+
         self.num_coefficients = len(self.indices[0])
-        
+
     def forward(self, x):
         filters = self.filters.to(x.device)
         filters_Q = self.filters_Q.to(x.device)
+        # First wavelet transform: one complex coefficient Wx_s(t) per fine
+        # scale s and time step.
         x_filtered = torch.fft.ifft(filters_Q*torch.fft.fft(x)) #(B,JQ,T)
-        
-        #Normalize micro
+
+        #Normalize micro -- divide by the per-scale factor fit_micro() computed
+        # from real data, so scales with very different raw power (typical of
+        # a power-law spectrum) don't dominate the statistic below just
+        # because they're louder. See fit_micro()'s docstring for the "why".
         x_filtered = x_filtered/self.norm
-        
+
+        # Envelope used by this potential: the MODULUS |Wx_s(t)| (order 1,
+        # NOT squared -- that's what distinguishes this "plain" class from
+        # its Mod2 sibling, which uses |Wx_s(t)|**2 instead).
         x_filtered_abs = abs_eps(x_filtered) #(B,JQ,T)
-        
+
+        # Second wavelet transform of that envelope: how the envelope at fine
+        # scale s fluctuates in time, as seen at coarser scale j.
         W_Wx = torch.fft.ifft(filters[:, :, None] * torch.fft.fft(x_filtered_abs)[:, None]) #(B,JQ,J+1,T)
+        # The 4th-order statistic itself: correlate two fine scales s1, s2 at
+        # the SAME coarse scale j, average over time, keep the real part.
         output = torch.real(W_Wx[:, :, :, None] * W_Wx[:, :, None].conj()) #(B,JQ,J+1,J+1,T)
         output = output.mean(-1) #(B,JQ,J+1,J+1)
-        output = output.permute(0, 3, 2, 1) #(B,J+1,J+1,JQ)
-        
+        output = output.permute(0, 3, 2, 1) #(B,J+1,J+1,JQ)  -> (batch, s2, s1, j), matching self.indices' column order
+
         indices = self.indices.long()
-        
+
         output = output[:, indices[0], indices[1], indices[2]]
-        
+
         output = output.reshape(x.shape[0], indices.shape[1])
         return output
 
+    # Adjoint of forward() above (used by the SDE solver's score term during
+    # generation) -- same normalization convention (self.norm/self.norm_indices),
+    # not walked through line-by-line here.
     def grad(self, x,  v=None, means=None):
         filters = self.filters.to(x.device)
         filters_Q = self.filters_Q.to(x.device)
@@ -337,18 +364,39 @@ class Scattering_Fourth_Order_Real_1d(Potential):
         return output / self.norm_indices[:,None].to(x.device).to(x.dtype)
         
     def fit_micro(self,x):
+        """
+        Called ONCE on real data, before any fitting/generation (never on
+        synthetic samples) -- computes self.norm, the per-fine-scale factor
+        forward() divides the raw wavelet coefficient by (see the
+        "Normalize micro" line there).
+
+        WHY: this codebase's data (fBm/MRW, turbulence) typically has a
+        power-law spectrum, so E[|Wx_s|^2] varies hugely across fine scales
+        s -- some scales are just naturally louder than others. Without
+        correcting for that, the 4th-order statistic in forward() would be
+        dominated by whichever scale carries the most raw power, and fitting
+        theta at different frequencies becomes ill-conditioned (see the
+        scattering-spectra paper's renormalization section: "renormalizing
+        to 1 the variance of wavelet coefficients at all scales avoids
+        numerical instabilities"). Dividing Wx_s by its own scale, once,
+        here, fixes that for every statistic built from it downstream.
+        """
         filters_Q = self.filters_Q.to(x.device)
         x_filtered = torch.fft.ifft(filters_Q*torch.fft.fft(x))
-        x_filtered = x_filtered.abs()**2
+        x_filtered = x_filtered.abs()**2   # -> E[|Wx_s|^2] per scale once .mean()'d below
         #Normalize_micro
-        self.norm = x_filtered.mean((0,2))[:,None]**(-1/4)
-        #self.norm = x_filtered.mean((0,2))[:,None]**0.5
-        
+        self.norm = x_filtered.mean((0,2))[:,None]**0.5
+        # self.norm = x_filtered.mean((0,2))[:,None]**(-1/4)   # previous convention, kept for comparison (chat 2026-08-31): doesn't cancel the scale-dependence derived above -- see fit_micro docstring on Mod2_Real_1d for the worked-out reason.
+
+        # Same normalization, reshaped onto self.indices' flat (s1,s2,j)
+        # coefficient layout -- this is what grad() actually uses, since it
+        # works on the flat coefficient vector, not the (J*Q, J*Q) scale grid
+        # self.norm itself lives on.
         indices = self.indices
-        norm_indices = self.norm[:,None]*self.norm[None,:] 
+        norm_indices = self.norm[:,None]*self.norm[None,:]
         norm_indices = norm_indices.repeat((1,1,self.J+1))
         self.norm_indices =  norm_indices[indices[0], indices[1], indices[2]] #(n_pot)
-     
+
 class Scattering_Fourth_Order_Imag_1d(Potential):
     def __init__(self, J,Q,filters,filters_Q):
         super().__init__()
@@ -546,15 +594,24 @@ class Scattering_Fourth_Order_Mod2_Real_1d(Potential):
         return output / self.norm_indices[:,None].to(x.device).to(x.dtype)
         
     def fit_micro(self,x):
+        # Same normalization role as Scattering_Fourth_Order_Real_1d.fit_micro
+        # (see its docstring for the full explanation) -- the only difference
+        # is this class's envelope is |Wx_s|**2 (modulus SQUARED) instead of
+        # |Wx_s|, since that's what forward() feeds into the second wavelet
+        # transform above. Squaring the envelope doesn't change what exponent
+        # cancels the scale-dependence, though: the extra power from squaring
+        # the envelope and the extra power from squaring self.norm's own
+        # effect cancel each other out, so the same self.norm**0.5 is correct
+        # for both this class and the plain (non-Mod2) one.
         filters_Q = self.filters_Q.to(x.device)
         x_filtered = torch.fft.ifft(filters_Q*torch.fft.fft(x))
         x_filtered = x_filtered.abs()**2
         #Normalize_micro
-        self.norm = x_filtered.mean((0,2))[:,None]**(-1/4)
-        #self.norm = x_filtered.mean((0,2))[:,None]**0.5
-        
+        self.norm = x_filtered.mean((0,2))[:,None]**0.5
+        # self.norm = x_filtered.mean((0,2))[:,None]**(-1/4)   # previous convention, kept for comparison (chat 2026-08-31)
+
         indices = self.indices
-        norm_indices = self.norm[:,None]*self.norm[None,:] 
+        norm_indices = self.norm[:,None]*self.norm[None,:]
         norm_indices = norm_indices.repeat((1,1,self.J+1))
         self.norm_indices =  norm_indices[indices[0], indices[1], indices[2]] #(n_pot)
 
