@@ -642,8 +642,19 @@ class Scattering_Fourth_Order_Mod2_Real_1d(Potential):
         self.norm = x_filtered.mean((0,2))[:,None]**0.5
         # self.norm = x_filtered.mean((0,2))[:,None]**(-1/4)   # previous convention, kept for comparison (chat 2026-08-31)
 
+        # FIX (chat 2026-08-31): grad() derives its analytic gradient from the
+        # RAW (unnormalized) coefficient and injects the normalization only via
+        # this final division by norm_indices -- unlike forward(), which divides
+        # the coefficient by self.norm before squaring the envelope. Because this
+        # class's envelope is |Wx/norm|**2 (quadratic in 1/norm, vs. the plain
+        # Real/Imag classes' |Wx/norm| which is linear), the correct per-scale
+        # factor is norm**2, not norm -- squaring here is what forward()'s
+        # pre-division already gets "for free" by construction, but grad() must
+        # be told explicitly. Previously norm_indices used self.norm (unsquared,
+        # copy-pasted from the linear-envelope classes), which under-corrected
+        # grad() by a factor of norm[s1]*norm[s2] whenever self.norm != 1.
         indices = self.indices
-        norm_indices = self.norm[:,None]*self.norm[None,:]
+        norm_indices = (self.norm**2)[:,None]*(self.norm**2)[None,:]
         norm_indices = norm_indices.repeat((1,1,self.J+1))
         self.norm_indices =  norm_indices[indices[0], indices[1], indices[2]] #(n_pot)
 
@@ -754,12 +765,17 @@ class Scattering_Fourth_Order_Mod2_Imag_1d(Potential):
         #Normalize_micro
         self.norm = x_filtered.mean((0,2))[:,None]**0.5   # matches Imag_1d convention (not the -1/4 used by the Real classes)
 
+        # FIX (chat 2026-08-31): same norm**2 correction as
+        # Scattering_Fourth_Order_Mod2_Real_1d.fit_micro -- see its comment.
+        # This class's |Wx/norm|**2 envelope makes grad()'s raw-statistic
+        # scaling quadratic in 1/norm per scale, so norm_indices needs
+        # self.norm**2, not self.norm.
         indices = self.indices
-        norm_indices = self.norm[:,None]*self.norm[None,:]
+        norm_indices = (self.norm**2)[:,None]*(self.norm**2)[None,:]
         norm_indices = norm_indices.repeat((1,1,self.J+1))
         self.norm_indices =  norm_indices[indices[0], indices[1], indices[2]] #(n_pot)
 
-   
+
 class Scalar(Potential):
     def __init__(self,filters, scalar_param =None,quantiles = True,confine=True):
         """ Build num_potentials windows in [-domain, domain] whose

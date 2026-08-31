@@ -259,6 +259,10 @@ def run_experiment(args, M, config, x1, filters, t, logger, outdir, device,
         scalar_param=None, parallel=False,
     )
 
+    #for pot in potentials.values():          # <-- add this
+    #    if hasattr(pot, 'fit_micro'):        # <-- add this
+    #        pot.fit_micro(x1)                # <-- add this
+
 
     batch_size = args.batch_size or x1.shape[0]
     nb_workers = x1.shape[0]
