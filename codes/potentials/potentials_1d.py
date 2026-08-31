@@ -79,24 +79,24 @@ class Potential(nn.Module):
 
 
 class Scattering_First_Order_1d(Potential):
-    # No fit_micro() override here (nor in Scattering_Second_Order_1d below)
-    # -- this class inherits Potential.fit_micro()'s no-op ("pass"), so
-    # self.norm is never set and forward() never divides by it. Unlike the
-    # 4th-order classes further down (see
-    # Scattering_Fourth_Order_Real_1d.fit_micro for the full explanation of
-    # what that micro-normalization is for), this potential is just the raw
-    # per-scale statistic E[|Wx_s|], with no per-scale rescaling applied.
     def __init__(self,filters):
         super().__init__()
         self.filters = filters
         self.num_coefficients = filters.shape[1]
+        # EXPERIMENTAL (chat 2026-08-31): was unnormalized (self.norm not
+        # defined, fit_micro a no-op). Testing paper's S1(x)[λ]/σ[λ]
+        # normalization (Bruna & Mallat scattering-spectra eq. 16), with
+        # σ[λ] fit below. Revert by deleting this line and fit_micro/the
+        # /self.norm divisions in forward()/grad() if it doesn't pan out.
+        self.norm = 1
 
     def forward(self,x):
         filters = self.filters.to(x.device)
         x_filtered = torch.fft.ifft(filters*torch.fft.fft(x))
+        x_filtered = x_filtered/self.norm  # EXPERIMENTAL normalization, see __init__ note
         return abs_eps(x_filtered).mean(-1)
 
-    def grad(self, x, v=None, means=None):        
+    def grad(self, x, v=None, means=None):
         filters = self.filters.to(x.device)
         x_fourier = torch.fft.fft(x)
         x_filtered = torch.fft.ifft(filters*x_fourier)
@@ -104,36 +104,68 @@ class Scattering_First_Order_1d(Potential):
         x_filtered_over_abs = x_filtered/x_filtered_abs
 
         output = torch.real(torch.fft.ifft(torch.fft.fft(x_filtered_over_abs)*filters))
-        
-        
+        # EXPERIMENTAL: self.norm doesn't depend on x, so dividing the final
+        # (raw) gradient by it here is equivalent to normalizing the
+        # coefficient before forward()'s abs() -- see __init__ note.
+        output = output/self.norm
+
         if v==None:
             return output/x.shape[-1]
         else:
             return (output*v[None,:,None]).sum(1)[:,None]/x.shape[-1]
+
+    def fit_micro(self,x):
+        """
+        EXPERIMENTAL (chat 2026-08-31, being tried out -- not yet settled):
+        fits self.norm = σ[λ] = sqrt(spectrum) = sqrt(E[|Wx_s|^2]) per scale,
+        averaged over batch AND time -- i.e. σ²[λ] = Ave_i S2(x_i)[λ] in the
+        paper's notation (eq. 16/17). forward()/grad() divide by this. If
+        this normalization is reverted, delete this method along with the
+        self.norm bits in __init__/forward/grad above.
+        """
+        filters = self.filters.to(x.device)
+        x_filtered = torch.fft.ifft(filters*torch.fft.fft(x))
+        self.norm = (x_filtered.abs()**2).mean((0,2))[:,None]**0.5
 
 class Scattering_Second_Order_1d(Potential):
     def __init__(self,filters):
         super().__init__()
         self.filters = filters
         self.num_coefficients = filters.shape[1]
+        # EXPERIMENTAL (chat 2026-08-31): same status as
+        # Scattering_First_Order_1d.__init__'s note -- was unnormalized.
+        self.norm = 1
 
     def forward(self, x):
         filters = self.filters.to(x.device)
         x_filtered = torch.fft.ifft(filters*torch.fft.fft(x))
+        x_filtered = x_filtered/self.norm  # EXPERIMENTAL normalization, see __init__ note
         return (x_filtered*x_filtered.conj()).real.mean(-1)
 
     def grad(self, x, v=None,  means=None):
 
         filters = self.filters.to(x.device)
         x_filtered_2 = torch.fft.ifft(torch.fft.fft(x)*filters**2)
-       
-        output = x_filtered_2.real.reshape(x_filtered_2.shape[:1]+(-1,x.shape[-1]))
 
+        output = x_filtered_2.real.reshape(x_filtered_2.shape[:1]+(-1,x.shape[-1]))
+        # EXPERIMENTAL: raw statistic is quadratic in the coefficient, so the
+        # normalization enters squared -- matches forward()'s
+        # x_filtered/self.norm applied before the product. See __init__ note.
+        output = output/self.norm**2
 
         if v==None:
             return 2*output/x.shape[-1]
         else:
             return (2*output*v[None,:,None]).sum(1)[:,None]/x.shape[-1]
+
+    def fit_micro(self,x):
+        # EXPERIMENTAL (chat 2026-08-31): same σ[λ] = sqrt(spectrum)
+        # convention as Scattering_First_Order_1d.fit_micro (see its
+        # docstring) -- fit independently here since First/Second order are
+        # separate Potential instances, each against its own filters bank.
+        filters = self.filters.to(x.device)
+        x_filtered = torch.fft.ifft(filters*torch.fft.fft(x))
+        self.norm = (x_filtered.abs()**2).mean((0,2))[:,None]**0.5
 
 # experiment for lagrangian turbulence 
 class Scattering_Second_Order_Bulk_1d(Potential):

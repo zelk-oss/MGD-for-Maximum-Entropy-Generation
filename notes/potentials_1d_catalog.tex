@@ -1,0 +1,541 @@
+\documentclass[11pt]{article}
+\usepackage[margin=2.5cm]{geometry}
+\usepackage{amsmath,amssymb}
+\usepackage{booktabs}
+\usepackage{array}
+\usepackage{xcolor}
+\usepackage{hyperref}
+\usepackage{listings}
+\usepackage{microtype}
+
+\newcommand{\E}{\mathbb{E}}
+\newcommand{\Wx}{W\!x}
+\newcommand{\code}[1]{\texttt{#1}}
+\let\origunderscore\_
+\renewcommand{\_}{\origunderscore\allowbreak} % let long code_identifiers wrap at underscores instead of overflowing table columns
+\newcommand{\verified}{\textcolor{blue!50!black}{[verified from code]}}
+\newcommand{\fixed}{\textcolor{green!40!black}{[fixed 2026-08-31]}}
+\newcommand{\suspect}{\textcolor{red!60!black}{[does not match Eq.~\ref{eq:paper-norm}, unresolved]}}
+\newcommand{\none}{\textcolor{gray}{[none implemented]}}
+\newcommand{\notefix}{\textcolor{orange!70!black}{[note corrected 2026-08-31 -- code unchanged]}}
+
+\lstset{basicstyle=\ttfamily\small, breaklines=true}
+\emergencystretch=3em
+
+\title{Catalog of 1D potentials in \texttt{codes/potentials/potentials\_1d.py}}
+\author{Generated with Claude Code, from a code-reading session on 2026-08-31}
+\date{}
+
+\begin{document}
+\maketitle
+
+\section*{Scope and notation}
+
+This note catalogs every potential class in \code{codes/potentials/potentials\_1d.py},
+in file order, from \code{Scattering\_First\_Order\_1d} up to and including
+\code{L2p1\_norm}. \code{Scalar\_GGD\_KRegion} and everything after it (the
+generalized-Gaussian fitting potentials) are out of scope. Three infrastructure
+classes precede the catalog (\code{Potential}, \code{Potential\_Prepare},
+\code{Potential\_Parallel}) — they are base/wrapper classes with no mathematical
+content of their own and are not covered here.
+
+\paragraph{Filter banks.} \code{get\_1d\_potentials} (\code{codes/potentials\_builder.py})
+builds every potential from one of three filter banks, all constructed by
+\code{return\_Filters} (\code{codes/filters\_bank.py:21}):
+\begin{itemize}
+  \item \textbf{\code{filters}} — the \emph{coarse} bank, $Q=1$ wavelet per octave.
+        \textbf{Always} includes one low-pass channel $\phi$ concatenated as its
+        last channel, alongside $J$ band-pass channels $\psi_1,\dots,\psi_J$: $J+1$
+        channels total.
+  \item \textbf{\code{filters\_Q}} — the \emph{fine} bank, $Q$ wavelets per octave
+        (whatever $Q$ the run was configured with, e.g. $Q=3$). Same structure:
+        $JQ$ band-pass channels plus the same one low-pass channel concatenated
+        at the end: $JQ+1$ channels total.
+  \item \textbf{\code{filters\_Phi}} — a \emph{separate} stack of $J$ different
+        low-pass filters, one per scale $j=1,\dots,J$ (increasingly smoothed).
+        Not a duplicate of the low-pass channel bundled into \code{filters}/\code{filters\_Q}.
+\end{itemize}
+Several call sites slice off the bundled low-pass channel explicitly with
+\code{[:,:-1]} when a potential should only see band-pass channels.
+
+\paragraph{Wavelet coefficient.} $\Wx[\lambda](t) := (\psi_\lambda * x)(t)$, a
+complex-valued coefficient at scale/channel $\lambda$ and time $t$ (Morlet
+wavelets are complex). $\E[\cdot]$ denotes the empirical average over batch and
+time, $\frac{1}{BT}\sum_{b,t}$, unless stated otherwise. $\sigma(\cdot)$ denotes
+the logistic sigmoid; $\mathrm{abs\_eps}(z) = \sqrt{\mathrm{Re}(z)^2+\mathrm{Im}(z)^2+\varepsilon}$
+(\code{utils\_potentials.py:135}) is used with $\varepsilon=0$ everywhere in this
+file, i.e. it is exactly $|z|$ in every call site checked.
+
+\paragraph{The micro-normalization mechanism (\code{fit\_micro}/\code{self.norm}).}
+Several classes below define \code{fit\_micro(x)}: called \emph{once}, on real
+data, before fitting or generation (never on synthetic samples). It sets
+\code{self.norm}, a per-scale rescaling factor that \code{forward()} divides the
+\emph{raw first-layer coefficient} by, before any further nonlinearity. The
+motivation (from the scattering-spectra literature): this codebase's data has a
+power-law spectrum, so $\E[|\Wx_s|^2]$ varies hugely across scales $s$; without
+correcting for that, whichever scale carries the most raw power dominates the
+fitted $\theta$ purely because it is louder, and fitting becomes ill-conditioned
+across frequencies. The reference normalization, generalizing Eq.~22 of the
+scattering-spectra paper (Morel et al.) — divide the wavelet coefficient by its
+own standard deviation once, and every statistic built from it inherits the
+correctly-cancelling power of $\sigma$:
+\begin{equation}
+  \label{eq:paper-norm}
+  \Wx[\lambda] \;\longmapsto\; \Wx[\lambda]/\sigma[\lambda], \qquad
+  \sigma[\lambda] := \big(\E[|\Wx[\lambda]|^2]\big)^{1/2}.
+\end{equation}
+Each subsection below states explicitly what \code{self.norm} actually is, and
+whether it matches \eqref{eq:paper-norm} (verified, or fixed on 2026-08-31 during
+this session), or departs from it (flagged, unresolved).
+
+\bigskip
+\hrule
+\bigskip
+
+\section{\code{Scattering\_First\_Order\_1d}}
+\textbf{Code:} \code{potentials\_1d.py:81--106}. \quad
+\textbf{Term:} \code{'Scattering\_First\_Order'}.
+
+\paragraph{Formula.}
+\begin{equation}
+  S_1[\lambda] = \E\big[\,|\Wx[\lambda](t)|\,\big], \qquad \lambda = 1,\dots,JQ.
+\end{equation}
+The plain first absolute moment (modulus) of the wavelet coefficient, per fine scale.
+
+\paragraph{Filter bank.} \code{potentials\_builder.py:190}: \code{Scattering\_First\_Order\_1d(filters\_Q[:,:-1])}
+— the \textbf{fine} bank, \textbf{band-pass channels only} (the bundled low-pass
+is sliced off). Runs at whatever $Q$ the experiment was configured with (e.g.
+$Q=3$), \emph{not} $Q=1$. \verified
+
+\paragraph{Normalization.} \none. No \code{fit\_micro} override — inherits the
+base \code{Potential.fit\_micro}, a no-op. \code{self.norm} is never set, and
+\code{forward()} never references it. This statistic is exactly as
+\eqref{eq:paper-norm} says it should \emph{not} be left: fully exposed to
+whatever power each scale $\lambda$ happens to carry.
+
+\bigskip
+\hrule
+\bigskip
+
+\section{\code{Scattering\_Second\_Order\_1d}}
+\textbf{Code:} \code{potentials\_1d.py:114--137}. \quad
+\textbf{Terms:} \code{'Scattering\_Second\_Order'}, \code{'Scattering\_Second\_Order\_Q1'}.
+
+\paragraph{Formula.}
+\begin{equation}
+  S_2[\lambda] = \E\big[\,\Wx[\lambda](t)\,\overline{\Wx[\lambda](t)}\,\big]
+              = \E\big[\,|\Wx[\lambda](t)|^2\,\big].
+\end{equation}
+The plain second moment (power spectrum) of the wavelet coefficient, per scale.
+
+\paragraph{Filter bank.} Instantiated \emph{twice} in \code{potentials\_builder.py}:
+\begin{itemize}
+  \item Line 193: \code{Scattering\_Second\_Order\_1d(filters\_Q)} — \textbf{fine}
+        bank, term \code{'Scattering\_Second\_Order'}. \emph{Includes} the bundled
+        low-pass channel (no slicing here, unlike the first-order sibling above).
+  \item Line 211: \code{Scattering\_Second\_Order\_1d(filters)} — \textbf{coarse}
+        ($Q=1$) bank, term \code{'Scattering\_Second\_Order\_Q1'}. Also includes
+        the low-pass channel.
+\end{itemize}
+\verified
+
+\paragraph{Normalization.} \none. Same as \code{Scattering\_First\_Order\_1d}:
+no \code{fit\_micro}, no \code{self.norm} division.
+
+\bigskip
+\hrule
+\bigskip
+
+\section{\code{Scattering\_Second\_Order\_Bulk\_1d}}
+\textbf{Code:} \code{potentials\_1d.py:139--213}. \quad
+\textbf{Term:} \code{'Scattering\_Second\_Order\_bulk'} (comment in code:
+``experiment for lagrangian turbulence''; only on the distribution bulk).
+
+\paragraph{Formula.} A \emph{trimmed} second moment: the same $|\Wx[\lambda](t)|^2$
+as above, but weighted by a smooth window that suppresses the tail of the
+distribution of $|\mathrm{Re}(\Wx[\lambda](t))|$ (note: the window is built from
+the \emph{real part}'s magnitude, not the complex modulus, while the quantity
+being averaged \emph{is} the full complex modulus squared). Calibrated once, from
+data, in \code{fit(x)}:
+\begin{align}
+  c[\lambda] &= \text{the \code{bulk\_quantile} (default 0.90) quantile of } |\mathrm{Re}(\Wx[\lambda](t))| \text{ over all } (b,t),\\
+  s[\lambda] &= \tfrac{1}{4}\big(Q_{0.95}(|\mathrm{Re}(\Wx[\lambda])|) - Q_{0.85}(|\mathrm{Re}(\Wx[\lambda])|)\big), \text{ clamped to } \ge 10^{-6}.
+\end{align}
+Then, per-sample:
+\begin{equation}
+  w_{\text{bulk}}[\lambda](t) = 1 - \sigma\!\left(\frac{|\mathrm{Re}(\Wx[\lambda](t))| - c[\lambda]}{s[\lambda]}\right), \qquad
+  S_2^{\text{bulk}}[\lambda] = \E_t\big[\,w_{\text{bulk}}[\lambda](t)\cdot|\Wx[\lambda](t)|^2\,\big].
+\end{equation}
+A robust/trimmed power spectrum: samples whose real part exceeds the bulk
+quantile threshold are smoothly down-weighted rather than hard-clipped.
+
+\paragraph{Filter bank.} \code{potentials\_builder.py:197}: \code{Scattering\_Second\_Order\_Bulk\_1d(filters\_Q)}
+— \textbf{fine} bank, full (band-pass + low-pass). \verified
+
+\paragraph{Normalization.} Not a \code{fit\_micro}/\code{self.norm}-style
+rescaling of the output — instead uses its own \code{fit(x)} method to calibrate
+the bulk/tail cutoff $(c[\lambda], s[\lambda])$ directly from data. The output
+itself is never divided by anything. This addresses a different problem
+(robustness to outliers/tails) than \eqref{eq:paper-norm} (comparability across
+scales' own power) — the two are not interchangeable, and this class still has
+none of the latter.
+
+\bigskip
+\hrule
+\bigskip
+
+\section{\code{Scattering\_Third\_Order\_Real\_1d}}
+\textbf{Code:} \code{potentials\_1d.py:215--269}. \quad
+\textbf{Term:} \code{'Scattering\_Third\_Order\_Real'}.
+(\code{'Scattering\_Third\_Order\_Imag'} is wired to a \code{pass} in
+\code{potentials\_builder.py:203} — the corresponding \code{Scattering\_Third\_Order\_Imag\_1d}
+class is commented out and does not exist as a usable term.)
+
+\paragraph{Formula.} A genuine \emph{cross-scale} correlation — the classic
+scattering third-order coefficient, correlating the coefficient \emph{at the
+second-transform's own scale} $\mu$ against a second wavelet transform, built
+at that same scale $\mu$, of the modulus envelope from a finer (or equal)
+scale $\lambda \le \mu$:
+\begin{equation}
+  S_3[\lambda,\mu] = \E_t\Big[\,\mathrm{Re}\Big(
+     \overline{\Wx[\mu](t)} \cdot \big(\psi_{\mu} * |\Wx[\lambda](\cdot)|\big)(t)
+  \Big)\Big], \qquad \mu \ge \lambda.
+\end{equation}
+\notefix\ Traced by hand from \code{forward()} (\code{potentials\_1d.py:222--235})
+and confirmed numerically against dummy tensors, since the broadcasting there
+is easy to misread: the coefficient that gets conjugated is
+$\overline{\Wx[\mu]}$ (same scale as the second-layer filter). This is the standard scattering-transform convention (a
+fine-scale envelope, re-filtered at a coarser scale $\mu$, correlated against
+the coefficient. 
+
+\paragraph{Filter bank and a real caveat at $Q>1$.} \code{potentials\_builder.py:200}:
+\code{Scattering\_Third\_Order\_Real\_1d(J, filters\_Q)} — \textbf{fine} bank,
+full (no slicing), with \code{self.J = J} (\code{args.J}, the base scale count,
+\emph{not} \code{J*Q}) and \code{self.filters = filters\_Q} ($JQ+1$ channels).
+\verified\ The index pairs $(\lambda,\mu)$ are generated by
+\code{indices\_third\_order(self.J, 1)}, which builds them assuming
+\code{num\_filters = self.J+1} — \emph{i.e. it only ever emits indices in
+$[0, J]$}, regardless of how many channels the bank passed to \code{forward()}
+actually has. \notefix\ I confirmed this numerically
+(\code{indices\_third\_order(J,1)} with $J{=}8,Q{=}3$ tops out at index 8, never
+9--24) rather than trusting the shapes by eye.
+\begin{itemize}
+  \item At \textbf{$Q=1$} (\code{filters\_Q} then equals the coarse bank, $J+1$
+        channels) this is exactly right: every channel of the bank passed in is
+        reachable, and $\mu$ correctly ranges up to and including the low-pass
+        channel. This is the regime this term is actually used in.
+  \item At \textbf{$Q>1$} (the fine bank actually has $JQ+1$ channels) this is
+        \textbf{broken}: channels $J{+}1,\dots,JQ$ of \code{filters\_Q} are
+        silently never referenced by this potential at all. The term still
+        runs without error and returns a plausible-looking tensor of the shape
+        \code{self.num\_coefficients} $= J((1+J)/2+1)$ predicts — it just
+        quietly ignores most of the fine bank's scales rather than computing
+        the cross-scale statistic over all of them. \textbf{Do not use
+        \code{'Scattering\_Third\_Order\_Real'} with $Q>1$ filters as currently
+        implemented} — fixing it would mean calling
+        \code{indices\_third\_order} with an argument reflecting the actual
+        $JQ+1$ channel count, not \code{self.J}.
+\end{itemize}
+
+\paragraph{Normalization.} \none. No \code{fit\_micro} defined.
+
+\bigskip
+\hrule
+\bigskip
+
+\section{\code{Scattering\_Fourth\_Order\_Real\_1d}}
+\label{sec:s4real}
+\textbf{Code:} \code{potentials\_1d.py:273--398} (post-fix). \quad
+\textbf{Terms:} \code{'Scattering\_Fourth\_Order\_Real'}, \code{'Scattering\_Fourth\_Order\_Real\_Q1'}.
+
+\paragraph{Formula.} Correlates the second-layer (coarse-scale) wavelet
+transform of the \emph{modulus} envelope $|\Wx[s]|$ at two fine scales
+$s_1 \le s_2$, at a shared coarse scale $j$:
+\begin{align}
+  \Wx^{\text{norm}}[s](t) &:= \Wx[s](t)/\sigma[s], \qquad
+  E[s](t) := |\Wx^{\text{norm}}[s](t)|, \\
+  W_j E[s](t) &:= (\phi_j * E[s](\cdot))(t) \quad \text{(second, coarse-bank transform)}, \\
+  S_4^{\text{Re}}[s_1,s_2,j] &= \E_t\Big[\,\mathrm{Re}\big(W_j E[s_1](t)\cdot \overline{W_j E[s_2](t)}\big)\Big].
+\end{align}
+$j$ ranges over \emph{all} coarse channels including the low-pass one
+(\code{include\_lowpass} defaults to \code{True} for this class — not passed
+explicitly at any call site). Only $s_1\le s_2$ is stored: $\mathrm{Re}(z)$ is
+symmetric under swapping $s_1\!\leftrightarrow\!s_2$, so the other half is
+redundant.
+
+\paragraph{Filter bank.} Two wirings, both in \code{potentials\_builder.py}:
+\begin{itemize}
+  \item Line 207: \code{Scattering\_Fourth\_Order\_Real\_1d(J, Q, filters, filters\_Q[:,:-1])}
+        — term \code{'Scattering\_Fourth\_Order\_Real'}: second layer on the
+        \textbf{coarse} bank, first layer on the \textbf{fine} bank (band-pass
+        only), at whatever $Q$ was configured.
+  \item Line 216: \code{Scattering\_Fourth\_Order\_Real\_1d(J, 1, filters, filters[:,:-1])}
+        — term \code{'Scattering\_Fourth\_Order\_Real\_Q1'}: both layers on the
+        \textbf{coarse} ($Q=1$) bank explicitly.
+\end{itemize}
+\verified
+
+\paragraph{Normalization.} \code{self.norm}$[s] = \big(\E[|\Wx[s]|^2]\big)^{0.5} = \sigma[s]$
+\fixed — matches \eqref{eq:paper-norm} exactly. Previously
+\code{self.norm}$[s]=\big(\E[|\Wx[s]|^2]\big)^{-1/4}$; the old line is kept
+commented out in the source. Derivation of why $0.5$ is the exponent that
+cancels the scale-dependence of $S_4^{\text{Re}}$ (independent of whether the
+envelope is $|\Wx|$ or $|\Wx|^2$, see Section~\ref{sec:s4mod2real}): tracking how
+the raw (unnormalized) statistic scales with $E_{s_1}:=\E[|\Wx[s_1]|^2]$ and
+$E_{s_2}$ gives a factor $E_{s_1}^{1/2-p}E_{s_2}^{1/2-p}$ for exponent $p$ on
+$\sigma[s]$ in the denominator; this vanishes (scale-invariance) only at $p=1/2$.
+
+\bigskip
+\hrule
+\bigskip
+
+\section{\code{Scattering\_Fourth\_Order\_Imag\_1d}}
+\textbf{Code:} \code{potentials\_1d.py:400--513}. \quad
+\textbf{Terms:} \code{'Scattering\_Fourth\_Order\_Imag'}, \code{'Scattering\_Fourth\_Order\_Imag\_Q1'}.
+
+\paragraph{Formula.} Identical construction to Section~\ref{sec:s4real}, keeping
+the imaginary part instead:
+\begin{equation}
+  S_4^{\text{Im}}[s_1,s_2,j] = \E_t\Big[\,\mathrm{Im}\big(W_j E[s_1](t)\cdot \overline{W_j E[s_2](t)}\big)\Big], \qquad s_1 < s_2 \text{ strictly}.
+\end{equation}
+$\mathrm{Im}(z)$ is \emph{antisymmetric} under $s_1\!\leftrightarrow\!s_2$
+(swapping gives $\mathrm{Im}(\bar z)=-\mathrm{Im}(z)$), so the diagonal
+$s_1=s_2$ is identically zero and is always excluded (\code{offset=1}, not
+optional here — unlike the Real class, this class has no \code{include\_diag}
+constructor argument at all). \textbf{Also}: \code{include\_lowpass=False} is
+hardcoded in this class's index construction, so $j$ ranges only over the $J$
+band-pass coarse channels, \emph{excluding} the low-pass one — a second,
+independent difference from the Real class (Section~\ref{sec:s4real}) beyond
+the diagonal exclusion.
+
+\paragraph{Filter bank.} Two wirings:
+\begin{itemize}
+  \item Line 219: \code{Scattering\_Fourth\_Order\_Imag\_1d(J, Q, filters, filters\_Q[:,:-1])}
+        — term \code{'Scattering\_Fourth\_Order\_Imag'}: fine first layer, coarse second layer.
+  \item Line 226: \code{Scattering\_Fourth\_Order\_Imag\_1d(J, 1, filters, filters[:,:-1])}
+        — term \code{'Scattering\_Fourth\_Order\_Imag\_Q1'}: both layers coarse.
+\end{itemize}
+\verified
+
+\paragraph{Normalization.} \code{self.norm}$[s] = \sigma[s]$ (exponent $0.5$,
+line 508). \verified — already matched \eqref{eq:paper-norm} before this
+session; not modified.
+
+\bigskip
+\hrule
+\bigskip
+
+\section{\code{Scattering\_Fourth\_Order\_Mod2\_Real\_1d}}
+\label{sec:s4mod2real}
+\textbf{Code:} \code{potentials\_1d.py:522--616} (post-fix). \quad
+\textbf{Term:} \code{'Scattering\_Fourth\_Order\_Mod2\_Real\_Q1'} (only the
+$Q=1$ wiring exists — there is no plain, fine-$Q$ \code{'Scattering\_Fourth\_Order\_Mod2\_Real'}
+term).
+
+\paragraph{Formula.} Identical to Section~\ref{sec:s4real}, except the envelope
+is the \textbf{modulus squared} instead of the modulus:
+\begin{equation}
+  E^{(2)}[s](t) := |\Wx^{\text{norm}}[s](t)|^2, \qquad
+  S_4^{\text{Mod2,Re}}[s_1,s_2,j] = \E_t\Big[\,\mathrm{Re}\big(W_j E^{(2)}[s_1](t)\cdot \overline{W_j E^{(2)}[s_2](t)}\big)\Big].
+\end{equation}
+$j$ includes the low-pass channel (same default as the non-Mod2 Real class).
+
+\paragraph{Filter bank.} \code{potentials\_builder.py:222}: \code{Scattering\_Fourth\_Order\_Mod2\_Real\_1d(J, 1, filters, filters[:,:-1])}
+— \textbf{coarse} ($Q=1$) bank for both layers, explicitly. \verified
+
+\paragraph{Normalization.} \code{self.norm}$[s]=\sigma[s]$ \fixed — was
+\code{self.norm}$[s]=\big(\E[|\Wx[s]|^2]\big)^{-1/4}$ before this session (old
+line kept commented out). Squaring the envelope changes how many powers of the
+normalization factor propagate into the final statistic (two, instead of one),
+but this cancels exactly against the extra power picked up from squaring
+$|\Wx^{\text{norm}}|$ itself — repeating the scale-tracking argument from
+Section~\ref{sec:s4real} for the squared envelope gives a raw-statistic scaling
+of $E_{s_1}^{1-2p}E_{s_2}^{1-2p}$, which \emph{also} vanishes only at $p=1/2$.
+So the same exponent, $0.5$, is correct for both the modulus and modulus-squared
+families — the previous \code{-1/4} value was not merely "right for one, wrong
+for the other," it did not achieve scale-invariance for \emph{either}.
+
+\bigskip
+\hrule
+\bigskip
+
+\section{\code{Scattering\_Fourth\_Order\_Mod2\_Imag\_1d}}
+\textbf{Code:} \code{potentials\_1d.py:618--729}. \quad
+\textbf{Term:} \code{'Scattering\_Fourth\_Order\_Mod2\_Imag\_Q1'} (again, only
+the $Q=1$ wiring exists).
+
+\paragraph{Formula.} As Section~\ref{sec:s4mod2real}, imaginary part, $s_1<s_2$
+strictly, $j$ excludes the low-pass channel (same \code{include\_lowpass=False}
+convention as the non-Mod2 Imag class):
+\begin{equation}
+  S_4^{\text{Mod2,Im}}[s_1,s_2,j] = \E_t\Big[\,\mathrm{Im}\big(W_j E^{(2)}[s_1](t)\cdot \overline{W_j E^{(2)}[s_2](t)}\big)\Big].
+\end{equation}
+
+\paragraph{Filter bank.} \code{potentials\_builder.py:227}: \code{Scattering\_Fourth\_Order\_Mod2\_Imag\_1d(J, 1, filters, filters[:,:-1])}
+— coarse ($Q=1$) bank, both layers. \verified
+
+\paragraph{Normalization.} \code{self.norm}$[s]=\sigma[s]$ (exponent $0.5$,
+comment in code: ``matches \code{Imag\_1d} convention (not the -1/4 used by the
+Real classes)''). \verified — already correct before this session; not modified.
+
+\bigskip
+\hrule
+\bigskip
+
+\section{\code{Scalar}}
+\textbf{Code:} \code{potentials\_1d.py:731--877}. \quad
+\textbf{Terms:} \code{'Scalar\_phi\_quantile\_confine'}, \code{'Scalar\_morlet\_quantile\_confine'},
+\code{'Scalar\_psi\_quantile\_confine'}.
+
+\paragraph{Formula.} Not a moment — a \emph{soft empirical CDF} of $|\Wx[\lambda]|$
+at $K$ (\code{num\_centers}, default 20) quantile-spaced locations per channel
+$\lambda$, i.e. it constrains the shape of the marginal distribution rather than
+a single statistic. Calibrated once in \code{fit(x)}: centers
+$c_k[\lambda] = Q_{q_k}\big(|\Wx[\lambda](t)|\big)$ placed at $K$ quantiles
+$q_k \in [\code{quantile\_min},\code{quantile\_max}]$ (default $[0,1]$), and
+widths $s_k[\lambda]$ set from consecutive-quantile spacing times
+\code{stride\_sigmas} (default $0.75$). Then, per center $k<K$:
+\begin{equation}
+  \Sigma[k,\lambda] = \frac{1}{c_k[\lambda]}\;\E_t\left[\,\sigma\!\left(\frac{|\Wx[\lambda](t)| - c_k[\lambda]}{s_k[\lambda]}\right)\right],
+\end{equation}
+and for $k=K$ (the top quantile, when \code{confine=True}), an extra
+polynomial tail correction is added: letting $u(t)=(|\Wx[\lambda](t)|-c_K[\lambda])/s_K[\lambda]$,
+the weight becomes $\sigma(u(t))\cdot\big(1+u(t)^8\big)$ before the same
+time-average and $1/c_K[\lambda]$ normalization. This is a genuinely different
+statistic family from every other class in this file — a histogram/CDF
+constraint, not a moment.
+
+\paragraph{Filter bank.} Three wirings, one per bank:
+\begin{itemize}
+  \item Line 142: \code{Scalar(filters\_Phi, ...)} — term \code{'Scalar\_phi\_quantile\_confine'}: the separate $J$-many low-pass stack.
+  \item Line 145: \code{Scalar(filters, ...)} — term \code{'Scalar\_morlet\_quantile\_confine'}: coarse ($Q=1$) bank.
+  \item Line 148: \code{Scalar(filters\_Q, ...)} — term \code{'Scalar\_psi\_quantile\_confine'}: fine bank.
+\end{itemize}
+\verified
+
+\paragraph{Normalization.} No \code{fit\_micro}/\code{self.norm} mechanism at
+all — normalization here is implicit in the construction itself: the centers
+and widths $(c_k[\lambda], s_k[\lambda])$ are quantiles of the \emph{same}
+channel's own data, so the statistic is comparable across scales by
+construction, and the explicit $1/c_k[\lambda]$ division further rescales each
+bin by its own center. Not directly comparable to \eqref{eq:paper-norm}'s
+convention (there is no single "physical units" this class shares with the
+moment-based potentials above), but not obviously deficient for its own purpose
+either — a different question from the one this note otherwise focuses on.
+
+\bigskip
+\hrule
+\bigskip
+
+\section{\code{L2p\_norm}}
+\label{sec:l2p}
+\textbf{Code:} \code{potentials\_1d.py:882--917}. \quad
+\textbf{Terms:} \code{'L\_2'} ($p{=}1$), \code{'L\_4'} ($p{=}2$), \code{'L\_6'},
+\code{'L\_6\_psi'} ($p{=}3$), \code{'L\_8'} ($p{=}4$; also \code{'L\_9'} and
+\code{'L\_10'} — a pre-existing bug overwrites key \code{'L\_8'} instead of
+adding a new one, so at most one of \code{L\_8}/\code{L\_9}/\code{L\_10} ever
+survives in the returned dict), plus \code{'L\_2\_phi'}...\code{'L\_8\_phi'} and
+\code{'L\_2\_lowpass'}, \code{'L\_4\_lowpass'}.
+
+\paragraph{Formula.} A generic, arbitrary-order \emph{single-scale} even moment
+of the modulus:
+\begin{equation}
+  L_{2p}[\lambda] = \frac{\E_t\big[\,|\Wx[\lambda](t)|^{2p}\,\big]}{\code{self.norm}[\lambda]}.
+\end{equation}
+No cross-scale term of any kind — see the comparison with \code{Scattering\_Third\_Order\_Real\_1d}
+in the box below.
+
+\paragraph{Filter bank.} All plain \code{L\_2}...\code{L\_10} use \textbf{coarse}
+\code{filters} ($Q=1$); the one exception is \code{'L\_6\_psi'}, which uses
+\textbf{fine} \code{filters\_Q} instead (line 106) — same $p=3$ formula, finer
+scale grid. The \code{\_phi} variants use \code{filters\_Phi} (the separate
+$J$-many low-pass stack); \code{L\_2\_lowpass}/\code{L\_4\_lowpass} slice
+\code{filters} down to just its bundled low-pass channel,
+\code{filters[:,-1:,:]}. \verified — in your currently-active experiment
+configs, only \code{'L\_2\_lowpass'} is actually used (\code{gaussian\_theta\_scaling.ipynb}); none of the others appear in your current \code{terms} lists.
+
+\paragraph{Normalization.} \code{self.norm}$[\lambda] = \big(\E[|\Wx[\lambda]|^{2p}]\big)^{-1/2}$
+(fit from reference data), giving
+$L_{2p}[\lambda] = \E_t[|\Wx[\lambda]|^{2p}] \cdot M_{\mathrm{ref}}[\lambda]^{1/2}$
+— on matching data this is $\approx M_\mathrm{ref}[\lambda]^{3/2}$, \emph{not}
+$1$. \suspect\ Two independent problems, not one:
+\begin{enumerate}
+  \item Even granting the class's own apparent goal (self-normalize each order
+        to $\approx 1$ on its reference data), the active exponent doesn't
+        achieve it — it \emph{inflates} rather than divides down, the same
+        class of mistake found and fixed in Sections~\ref{sec:s4real}--\ref{sec:s4mod2real}.
+        A commented-out alternative sits right below the active line
+        (\code{self.norm = raw\_moment}, no exponent), which \emph{would}
+        self-normalize correctly.
+  \item Even that corrected version would not implement \eqref{eq:paper-norm}:
+        it normalizes $L_{2p}$ by \emph{its own} $2p$-th moment
+        $M_{2p}[\lambda]=\E[|\Wx[\lambda]|^{2p}]$, not by $\sigma[\lambda]^{2p}=\big(\E[|\Wx[\lambda]|^2]\big)^p$
+        as the paper's convention requires. These coincide only at $p=1$ (that
+        is exactly \code{L\_2}); for $p=2,3,4$ they are genuinely different
+        quantities (e.g. for a Gaussian process, $\E[|\Wx|^4]=2(\E[|\Wx|^2])^2$,
+        so \code{L\_4}'s reference differs from $\sigma^4$ by more than a
+        relabeling). Self-normalizing each order against its own value also
+        forfeits the paper's actual point: keeping every renormalized order in
+        the \emph{same} units ($\sigma$) so their magnitudes stay comparable
+        to each other, not just individually $\approx 1$.
+\end{enumerate}
+Not fixed in this session — flagged for a separate decision.
+
+\bigskip
+\hrule
+\bigskip
+
+\section{\code{L2p1\_norm}}
+\label{sec:l2p1}
+\textbf{Code:} \code{potentials\_1d.py:919--954}. \quad
+\textbf{Terms:} \code{'L\_1'} ($p{=}0$), \code{'L\_3'} ($p{=}1$), \code{'L\_5'}
+($p{=}2$), \code{'L\_7'} ($p{=}3$), plus \code{'L\_1\_phi'}...\code{'L\_7\_phi'}.
+
+\paragraph{Formula.} The odd-order counterpart of Section~\ref{sec:l2p}:
+\begin{equation}
+  L_{2p+1}[\lambda] = \frac{\E_t\big[\,|\Wx[\lambda](t)|^{2p+1}\,\big]}{\code{self.norm}[\lambda]}.
+\end{equation}
+Again purely single-scale; no term in this class can represent a cross-scale
+(order-3-or-higher scattering) coefficient — see the boxed note below.
+
+\paragraph{Filter bank.} All plain \code{L\_1}...\code{L\_7} use \textbf{coarse}
+\code{filters} ($Q=1$); the \code{\_phi} variants use \code{filters\_Phi}. There
+is no fine-bank ($Q{>}1$) wiring for this class anywhere in
+\code{get\_1d\_potentials}. \verified — none of these terms appear in your
+currently-active experiment configs.
+
+\paragraph{Normalization.} \code{self.norm}$[\lambda] = \E[|\Wx[\lambda]|^{2p+1}]$
+(the raw reference moment itself, no exponent at all). This \emph{does}
+self-normalize $L_{2p+1}$ to $\approx 1$ on matching data — but that is dividing
+a statistic by \emph{itself}, which is a different (weaker) claim than the
+paper's $/\sigma^{2p+1}$ convention, for the same reason given in point 2 of
+Section~\ref{sec:l2p}: it does not keep different orders in comparable, shared
+units. \suspect
+
+\bigskip
+\hrule
+\bigskip
+
+\section*{Summary table}
+\begin{center}
+\renewcommand{\arraystretch}{1.3}
+\begin{tabular}{@{}p{4.6cm}p{2.4cm}p{2.6cm}p{4.7cm}@{}}
+\toprule
+\textbf{Class} & \textbf{Order} & \textbf{Filter bank(s)} & \textbf{Normalization} \\
+\midrule
+\code{Scattering\_First\_Order\_1d} & 1 & fine, band-pass only & none \\
+\code{Scattering\_Second\_Order\_1d} & 2 & fine \emph{or} coarse & none \\
+\code{Scattering\_Second\_Order\_Bulk\_1d} & 2 (trimmed) & fine & tail-window calib., not \eqref{eq:paper-norm} \\
+\code{Scattering\_Third\_Order\_Real\_1d} & 3 (cross-scale) & fine, \textbf{but only correct at $Q{=}1$} & none \\
+\code{Scattering\_Fourth\_Order\_Real\_1d} & 4 (cross-scale) & fine+coarse, or coarse only & $\sigma[s]^{0.5}$ -- fixed \\
+\code{Scattering\_Fourth\_Order\_Imag\_1d} & 4 (cross-scale) & fine+coarse, or coarse only & $\sigma[s]^{0.5}$ -- already correct \\
+\code{Scattering\_Fourth\_Order\_Mod2\_Real\_1d} & 4, mod-squared & coarse only ($Q{=}1$) & $\sigma[s]^{0.5}$ -- fixed \\
+\code{Scattering\_Fourth\_Order\_Mod2\_Imag\_1d} & 4, mod-squared & coarse only ($Q{=}1$) & $\sigma[s]^{0.5}$ -- already correct \\
+\code{Scalar} & CDF/quantiles & phi-stack, coarse, or fine & implicit in quantile calib. \\
+\code{L2p\_norm} & even, $2,4,6,8$ & coarse (mostly), one fine & wrong exponent \emph{and} wrong reference quantity \\
+\code{L2p1\_norm} & odd, $1,3,5,7$ & coarse only & self-normalizes, not $\sigma$-based \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+\end{document}
