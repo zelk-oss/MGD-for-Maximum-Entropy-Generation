@@ -367,6 +367,7 @@ def main():
         result = run_experiment(args, M, config, x1, filters,
                                 t[:t_final], logger, outdir, device,
                                 filters_Q=filters_Q, filters_Phi=filters_Phi,
+                                normalize_potentials=False,
                                 potentials_save_dir=potentials_dir,
                                 )
 

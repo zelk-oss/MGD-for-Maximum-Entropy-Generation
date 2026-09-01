@@ -64,7 +64,7 @@ def setup_logging(log_dir: Path, config: str) -> logging.Logger:
 
 
 # ── experiment output setup ─────────────────────────────────────────────────
-def setup_experiment_output(outdir: Path, config: str, args, extra_metadata: dict = None,
+def setup_experiment_output(outdir: Path, config: str, args, M, extra_metadata: dict = None,
                              include_potentials_dir: bool = False):
     """Create a run's output directory tree, start its logger, and write
     config.json — the provenance record every entry point (CLI scripts,
@@ -77,10 +77,17 @@ def setup_experiment_output(outdir: Path, config: str, args, extra_metadata: dic
     `include_potentials_dir` creates exp_dir/fitted_potentials/ (turbulence
     needs this for Solver's potentials_save_dir; jets doesn't use it).
 
+    exp_dir nests under experiments/<group_name>/<config>/, where
+    group_name (build_group_name) is the same fields as config minus
+    seed_<N> and the timestamp -- so a seed sweep launched with otherwise
+    identical args lands together under one parent folder instead of each
+    seed dumping a folder directly under experiments/.
+
     Returns (exp_dir, fig_dir, potentials_dir, logger). potentials_dir is
     None when include_potentials_dir is False.
     """
-    exp_dir = outdir / 'experiments' / config
+    group_name = build_group_name(args, M)
+    exp_dir = outdir / 'experiments' / group_name / config
     fig_dir = exp_dir / 'figures'
     log_dir = exp_dir / 'logs'
     exp_dir.mkdir(parents=True, exist_ok=True)
@@ -106,7 +113,11 @@ def setup_experiment_output(outdir: Path, config: str, args, extra_metadata: dic
     return exp_dir, fig_dir, potentials_dir, logger
 
 
-def build_config_name(args, M, coarse_grained=False, include_timestamp=True):
+def _config_name_parts(args, M, include_seed=True):
+    """Shared field-list builder behind build_config_name/build_group_name --
+    keeps the two in sync (a field added to one can't silently drift out of
+    sync with the other, the way the earlier terms-hash mismatch happened
+    between a run's actual --terms and a notebook's copy of it)."""
     terms_hash = hashlib.md5('|'.join(sorted(args.terms)).encode()).hexdigest()[:8]
 
     re_number = getattr(args, 'Re_number', None)
@@ -131,13 +142,32 @@ def build_config_name(args, M, coarse_grained=False, include_timestamp=True):
         f'nt{args.nt}',
         f'n1_{args.n1}',
         f'lam{args.lam}',
-        f'seed_{args.seed}',
-        f'terms{terms_hash}',
     ]
+    if include_seed:
+        parts.append(f'seed_{args.seed}')
+    parts.append(f'terms{terms_hash}')
+    return parts
+
+
+def build_config_name(args, M, coarse_grained=False, include_timestamp=True):
+    parts = _config_name_parts(args, M, include_seed=True)
     if args.label:
         parts.append(args.label)
     if include_timestamp and args.timestamp:
         parts.append(args.timestamp)
+    return '_'.join(parts)
+
+
+def build_group_name(args, M, coarse_grained=False):
+    """Same fields as build_config_name but WITHOUT seed_<N> or the
+    timestamp -- the shared identity of a seed sweep (everything that stays
+    fixed while --seed varies). Used to nest
+    experiments/<group_name>/<config_name>/ so a sweep's many per-seed
+    folders land under one shared parent instead of directly under
+    experiments/."""
+    parts = _config_name_parts(args, M, include_seed=False)
+    if args.label:
+        parts.append(args.label)
     return '_'.join(parts)
 
 
@@ -212,14 +242,18 @@ def resolve_or_setup_experiment_output(outdir, args, M, device, coarse_grained=F
     force a re-run instead). `loaded` is None for a genuinely new run (a
     fresh folder was created via setup_experiment_output; proceed to call
     run_experiment() with the returned config/exp_dir/etc.).
+
+    exp_dir nests under experiments/<group_name>/<config>/ in both branches
+    (reused and freshly-created) — see build_group_name/setup_experiment_output.
     """
+    group_name = build_group_name(args, M, coarse_grained)
     config_prefix = build_config_name(args, M, coarse_grained, include_timestamp=False)
     resolved = None if args.force_rerun else resolve_config_for_loading(outdir, config_prefix)
 
     if resolved is not None:
         loaded = try_load_experiment(outdir, resolved, device)
         if loaded is not None:
-            exp_dir = outdir / 'experiments' / resolved
+            exp_dir = outdir / 'experiments' / group_name / resolved
             fig_dir = exp_dir / 'figures'
             potentials_dir = exp_dir / 'fitted_potentials' if include_potentials_dir else None
             exp_dir.mkdir(parents=True, exist_ok=True)
@@ -232,7 +266,7 @@ def resolve_or_setup_experiment_output(outdir, args, M, device, coarse_grained=F
 
     config = build_config_name(args, M, coarse_grained, include_timestamp=True)
     exp_dir, fig_dir, potentials_dir, logger = setup_experiment_output(
-        outdir, config, args, extra_metadata=extra_metadata,
+        outdir, config, args, M, extra_metadata=extra_metadata,
         include_potentials_dir=include_potentials_dir,
     )
     return config, exp_dir, fig_dir, potentials_dir, logger, None
