@@ -158,6 +158,9 @@ def parse_args():
                          'logs/ and figures/.')
     p.add_argument('--label', type=str, default=None,
                     help='Optional extra label appended to the config name')
+    p.add_argument('--normalize_potentials', action='store_true',
+                    help='Apply fit_micro() physical normalization to each potential '
+                         'that supports it before fitting (see run_experiment)')
     p.add_argument('--force_rerun', action='store_true',
                     help='Ignore any existing saved results and rerun from scratch')
     p.add_argument('--no_save_aux_moments', action='store_true',
@@ -367,7 +370,7 @@ def main():
         result = run_experiment(args, M, config, x1, filters,
                                 t[:t_final], logger, outdir, device,
                                 filters_Q=filters_Q, filters_Phi=filters_Phi,
-                                normalize_potentials=False,
+                                normalize_potentials=args.normalize_potentials,
                                 potentials_save_dir=potentials_dir,
                                 )
 
