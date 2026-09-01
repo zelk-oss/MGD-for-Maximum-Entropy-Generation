@@ -239,7 +239,7 @@ def resolve_or_setup_experiment_output(outdir, args, M, device, coarse_grained=F
 
 
 def run_experiment(args, M, config, x1, filters, t, logger, outdir, device,
-                   filters_Q=None, filters_Phi=None, 
+                   filters_Q=None, filters_Phi=None, normalize_potentials=False,
                    potentials_save_dir=None,
                    ):
     if not args.force_rerun:
@@ -259,9 +259,11 @@ def run_experiment(args, M, config, x1, filters, t, logger, outdir, device,
         scalar_param=None, parallel=False,
     )
 
-    #for pot in potentials.values():          # <-- add this
-    #    if hasattr(pot, 'fit_micro'):        # <-- add this
-    #        pot.fit_micro(x1)                # <-- add this
+    if normalize_potentials: 
+        for pot in potentials.values():          # <-- add this
+            if hasattr(pot, 'fit_micro'):        # <-- add this
+                pot.fit_micro(x1)                # <-- add this
+                print(f"Successfully normalized potential {pot} with attribute fit_micro")
 
 
     batch_size = args.batch_size or x1.shape[0]

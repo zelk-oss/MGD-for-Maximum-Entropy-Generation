@@ -12,7 +12,7 @@
     "Scattering_Fourth_Order_Mod2_Real_Q1",
     "Scattering_Fourth_Order_Mod2_Imag_Q1"
   ],
-  "nt": 300,
+  "nt": 500,
   "sigma": 1.0,
   "schedule_exponent": 2,
   "interpolant": "Cos",
@@ -25,11 +25,11 @@
   "moment_threshold": 1e-08,
   "n_acf_lags": 40,
   "outdir": null,
-  "label": "notebook_check",
+  "label": "NORM_all_orders",
   "force_rerun": false,
   "no_save_aux_moments": false,
   "seed": 0,
-  "config_name": "gaussiansynth_H0.5_intermittency0.0_M128_J7_Q1_sigma1.0_nt300_n1_1000_lam5e-06_seed_0_termsf930d93e_notebook_check",
+  "config_name": "gaussiansynth_H0.5_intermittency0.0_M128_J7_Q1_sigma1.0_nt500_n1_1000_lam5e-06_seed_0_termsf930d93e_NORM_all_orders",
   "B": 1000,
   "channels": 1
 }

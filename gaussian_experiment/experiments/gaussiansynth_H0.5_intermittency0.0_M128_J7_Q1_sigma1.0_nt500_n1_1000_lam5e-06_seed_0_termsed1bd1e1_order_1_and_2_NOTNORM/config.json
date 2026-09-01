@@ -23,11 +23,11 @@
   "moment_threshold": 1e-08,
   "n_acf_lags": 40,
   "outdir": null,
-  "label": "order_1_2_fit_micro_test",
+  "label": "order_1_and_2_NOTNORM",
   "force_rerun": false,
   "no_save_aux_moments": false,
   "seed": 0,
-  "config_name": "gaussiansynth_H0.5_intermittency0.0_M128_J7_Q1_sigma1.0_nt500_n1_1000_lam5e-06_seed_0_termsed1bd1e1_order_1_2_fit_micro_test",
+  "config_name": "gaussiansynth_H0.5_intermittency0.0_M128_J7_Q1_sigma1.0_nt500_n1_1000_lam5e-06_seed_0_termsed1bd1e1_order_1_and_2_NOTNORM",
   "B": 1000,
   "channels": 1
 }

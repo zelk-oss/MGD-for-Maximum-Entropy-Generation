@@ -529,6 +529,7 @@ def compute_stdk(potentials, x1, unbiased=True):
 # ---------------------------------------------------------------------
 # 5a. Tidy dataframe for one REAL-valued potential
 # ---------------------------------------------------------------------
+# SCRITTA MALE MA CORRETTA!!! ORDER=4 è quello giusto quando usiamo i potenziali col modulo quadro 
 def compute_norm_jab(x1, filters, s1_arr, s2_arr, order=2):
     """
     norm_jab[i] = (E[|Wx_s1|^2] * E[|Wx_s2|^2]) ** (order/4), Wx_s = single-
@@ -549,19 +550,27 @@ def compute_norm_jab(x1, filters, s1_arr, s2_arr, order=2):
 
 
 def build_theta_dataframe(theta_final, potentials, target_key, x1, filters,
-                           m_k=None, norm_order=None, known_dims=None, verbose=False):
+                           m_k=None, std_k=None, norm_order=None, normalize_by='auto',
+                           known_dims=None, verbose=False):
     """
-    Builds a tidy dataframe for a single, real-valued target_key. Decodes
+    Builds a tidy dataframe for a single, real-valued target_key --
+    theta_t1 is always the RAW, unnormalized fit -- plus theta_t1_normalized,
+    a second column whose convention is picked by `normalize_by`. Decodes
     (j, s1, s2) indices if the potential has scattering index structure,
-    otherwise builds a generic coefficient table.
+    otherwise builds a generic coefficient table. The two columns are kept
+    apart deliberately: 'norm_jab' and 'm_k' are NOT interchangeable (see
+    build_complex_theta_dataframe's docstring for the 2026-08-31 finding that
+    comparing them on one axis, e.g. "order 4's mean is 1.6x the others'", is
+    invalid -- they're different units).
 
-    Normalization (theta_t1_normalized):
-    - Potentials WITH scattering index structure (.indices): the physical
-      micro-norm convention theta_physical = theta_fitted *
-      (E[|Wx_s1|^2]*E[|Wx_s2|^2])**(norm_order/4), via compute_norm_jab,
-      evaluated at each coefficient's own (s1, s2) scales. decode_jab and
-      decode_mod2_stq decode the SAME (fine pair s1,s2 in [0,J*Q); coarse
-      shared j in [0,num_filters)) layout for every
+    normalize_by:
+    - 'auto' (default, backward-compatible): 'norm_jab' if target_key's
+      potential exposes scattering .indices, else 'm_k' -- whichever
+      convention this function has always used for a given potential shape.
+    - 'norm_jab': theta_fitted * (E[|Wx_s1|^2]*E[|Wx_s2|^2])**(norm_order/4),
+      via compute_norm_jab, evaluated at each coefficient's own (s1, s2)
+      scales. decode_jab and decode_mod2_stq decode the SAME (fine pair
+      s1,s2 in [0,J*Q); coarse shared j in [0,num_filters)) layout for every
       Scattering_Fourth_Order_{Real,Imag,Mod2_Real,Mod2_Imag}_1d potential
       (see _decode_scattering_jsk) -- so compute_norm_jab always evaluates
       against potential.filters_Q (the fine bank), NOT potential.filters,
@@ -569,31 +578,84 @@ def build_theta_dataframe(theta_final, potentials, target_key, x1, filters,
       every one of these classes (verified against its source: self.norm
       has shape (J*Q,), an outer product over that axis, merely broadcast
       -- not varied -- across the coarse axis). Using potential.filters
-      here instead would silently compute the wrong micro-norm.
+      here instead would silently compute the wrong micro-norm. Requires the
+      potential to expose .indices (raises otherwise -- there's no (s1, s2)
+      to evaluate compute_norm_jab at).
         norm_order=2 -> sqrt(E1*E2)  for plain Real/Imag potentials
         norm_order=4 -> E1*E2        for Mod2_Real/Mod2_Imag potentials
       If norm_order is left as None, it's inferred from the name: 4 if
       'Mod2' is in target_key, else 2 -- pass it explicitly if that
       heuristic is wrong for a given potential's naming.
-    - Potentials WITHOUT .indices (L_6, L_2_lowpass, Scalar_*): there's no
-      per-coefficient (s1, s2) to feed compute_norm_jab, so this falls back
-      to the old theta_fitted * m_k convention if `m_k` is supplied, or NaN
-      if it isn't.
+    - 'm_k': theta_fitted * m_k[this potential's coefficients] (compute_mk's
+      E_x1[potential.forward(x1)], sliced), with any resulting zero mapped to
+      NaN -- a zero product reads as "undefined ratio" here, not a genuine
+      zero, matching this function's pre-existing convention. Requires `m_k`
+      to be supplied (raises otherwise). Works regardless of .indices -- m_k
+      needs no per-coefficient (s1, s2), just the potential's own forward()
+      average. This is a raw empirical "typical energy contribution"
+      diagnostic, NOT an algebraic rescaling like norm_jab -- don't
+      plot/compare it against a norm_jab-normalized theta as if they were
+      the same unit.
+    - 'std_k': theta_fitted * std_k[this potential's coefficients]
+      (compute_stdk's Std_x1[potential.forward(x1)], sliced), same zero->NaN
+      handling as 'm_k'. Requires `std_k` to be supplied (raises otherwise).
+      Same idea as build_octave_energy_comparison's energy_kind='std' (see
+      compute_stdk's docstring) but asking a DIFFERENT question from 'm_k':
+      "is this coefficient's theta large relative to how much the underlying
+      statistic actually fluctuates on real data" rather than "relative to
+      its raw average magnitude". A third, non-interchangeable unit -- don't
+      mix it into a comparison with 'norm_jab' or 'm_k' either.
+    - 'raw': theta_t1_normalized = theta_t1, i.e. a no-op. Use this once the
+      potential feeding theta_final was itself fit_micro'd pre-SDE, so theta
+      loaded from disk is already the physical quantity and re-normalizing
+      here a second time would double-apply it -- a one-line
+      `normalize_by='raw'` at the call site instead of a manual post-hoc
+      `df[norm_col] = df[value_col]` override.
     """
     theta_raw, potential, start, dim = load_theta_for_potential(
         theta_final, potentials, target_key, known_dims, verbose
     )
     final_theta = theta_raw[-1] if theta_raw.ndim == 2 else theta_raw
 
-    if hasattr(potential, 'indices'):
-        is_mod2 = 'Mod2' in target_key
+    has_indices = hasattr(potential, 'indices')
+    if has_indices:
         j_arr, s1_arr, s2_arr = _decode_scattering_jsk(potential, verbose=verbose)
-        pot_filters = getattr(potential, 'filters_Q', filters)
+    else:
+        j_arr = s1_arr = s2_arr = None
 
+    mode = normalize_by
+    if mode == 'auto':
+        mode = 'norm_jab' if has_indices else 'm_k'
+
+    if mode == 'norm_jab':
+        if not has_indices:
+            raise ValueError(
+                f"normalize_by='norm_jab' requires '{target_key}' to expose scattering "
+                f".indices (needed to decode per-coefficient (s1, s2)) -- it doesn't. "
+                f"Use normalize_by='m_k', 'std_k', or 'raw' instead."
+            )
+        is_mod2 = 'Mod2' in target_key
+        pot_filters = getattr(potential, 'filters_Q', filters)
         order = norm_order if norm_order is not None else (4 if is_mod2 else 2)
         norm = compute_norm_jab(x1, pot_filters, s1_arr, s2_arr, order=order)
         final_theta_normalized = final_theta * norm
+    elif mode in ('m_k', 'std_k'):
+        stat = m_k if mode == 'm_k' else std_k
+        if stat is None:
+            final_theta_normalized = np.full(dim, np.nan)
+        else:
+            stat_slice = stat[start:start + dim]
+            norm_stat = final_theta * stat_slice
+            final_theta_normalized = np.where(norm_stat != 0, norm_stat, np.nan)
+    elif mode == 'raw':
+        final_theta_normalized = final_theta
+    else:
+        raise ValueError(
+            f"normalize_by must be one of 'auto', 'norm_jab', 'm_k', 'std_k', 'raw', "
+            f"got {normalize_by!r}"
+        )
 
+    if has_indices:
         df = pd.DataFrame({
             'potential': target_key,
             'coeff_idx': np.arange(dim),
@@ -602,12 +664,6 @@ def build_theta_dataframe(theta_final, potentials, target_key, x1, filters,
             'theta_t1_normalized': final_theta_normalized,
         })
     else:
-        if m_k is not None:
-            mk_slice = m_k[start:start + dim]
-            norm_mk = final_theta * mk_slice
-            final_theta_normalized = np.where(norm_mk != 0, norm_mk, np.nan)
-        else:
-            final_theta_normalized = np.full(dim, np.nan)
         df = pd.DataFrame({
             'potential': target_key,
             'coeff_idx': np.arange(dim),
@@ -621,18 +677,25 @@ def build_theta_dataframe(theta_final, potentials, target_key, x1, filters,
 # 5b. Tidy dataframe for a REAL+i*IMAG pair, combined as a complex vector
 # ---------------------------------------------------------------------
 def build_complex_theta_dataframe(theta_final, potentials, real_key, imag_key, x1, filters,
-                                   combined_name=None, m_k=None, norm_order=None,
-                                   known_dims=None, verbose=False):
+                                   combined_name=None, m_k=None, std_k=None, norm_order=None,
+                                   normalize_by='auto', known_dims=None, verbose=False):
     """
     Pairs `real_key` and `imag_key` coefficient-by-coefficient into
-    theta_complex = theta_real + i*theta_imag, and returns a tidy dataframe
-    with the shared (j, k', k) index structure (taken from the real
-    potential).
+    theta_complex = theta_real + i*theta_imag -- always the RAW, unnormalized
+    fit -- and returns a tidy dataframe with the shared (j, k', k) index
+    structure (taken from the real potential) plus theta_complex_normalized,
+    a second column whose convention is picked by `normalize_by`. The two
+    columns are deliberately kept apart because 'norm_jab' and 'm_k' are NOT
+    interchangeable (see below) -- comparing them as if they were is the
+    mistake flagged in the 2026-08-31 session (an "order 4 is 1.6x bigger"
+    reading that mixed a norm_jab-normalized potential against an
+    m_k-normalized one on one axis).
 
-    Normalization (theta_complex_normalized):
-    - If the real potential has scattering index structure (.indices): the
-      SAME physical micro-norm convention as build_theta_dataframe --
-      theta_physical = theta_complex * (E[|Wx_s1|^2]*E[|Wx_s2|^2])**(norm_order/4),
+    normalize_by:
+    - 'auto' (default, backward-compatible): 'norm_jab' if the real potential
+      exposes scattering .indices, else 'm_k' -- whichever convention this
+      function has always used for a given potential shape.
+    - 'norm_jab': theta_complex * (E[|Wx_s1|^2]*E[|Wx_s2|^2])**(norm_order/4),
       via compute_norm_jab, evaluated ONCE at the REAL potential's own
       (s1, s2) scales. If 'Mod2' is in real_key, uses decode_mod2_stq (s1,s2
       are FINE, first-layer indices in [0,J*Q); j (the shared axis) is the
@@ -645,6 +708,11 @@ def build_complex_theta_dataframe(theta_final, potentials, real_key, imag_key, x
       each complex coefficient's (s1, s2) is shared between its real and
       imaginary parts, so this one real-valued norm array multiplies
       directly into the complex vector -- no separate real/imag norm needed.
+      This is the algebraic identity theta_raw . phi_raw(x) ===
+      (theta_raw . norm_jab) . (phi_raw(x) / norm_jab) -- theta re-expressed
+      as if the fit had used the spectrum-normalized coefficient. Requires
+      the real potential to expose .indices (raises otherwise -- there's no
+      (s1, s2) to evaluate compute_norm_jab at).
         norm_order=2 -> sqrt(E1*E2)  for plain Real/Imag potential pairs
         norm_order=4 -> E1*E2        for Mod2_Real/Mod2_Imag pairs -- this
                          is the one for Scattering_Fourth_Order_Mod2_Real_Q1
@@ -653,13 +721,35 @@ def build_complex_theta_dataframe(theta_final, potentials, real_key, imag_key, x
       If norm_order is left as None, it's inferred from the name: 4 if
       'Mod2' is in real_key, else 2 -- pass it explicitly if that heuristic
       is wrong for a given pair's naming.
-    - If the real potential has no .indices: there's no (s1, s2) to feed
-      compute_norm_jab, so this falls back to the old
-      theta_complex * (mk_re + i*mk_im) convention if `m_k` is supplied
-      (mk_re/mk_im sliced the same way theta_re/theta_im were -- valid here
-      because reaching this branch already guarantees dim_re == dim_im, see
-      below), or leaves theta_complex_normalized as NaN+NaNj if `m_k` isn't
-      given either.
+    - 'm_k': theta_complex * (mk_re + i*mk_im), where mk_re/mk_im are
+      compute_mk's E_x1[potential.forward(x1)] sliced the same way
+      theta_re/theta_im were (mk_im is expanded onto pot_re's index layout
+      first, same as theta_im, whenever both potentials expose .indices --
+      see expand_imag_to_real_indices below). Requires `m_k` to be supplied
+      (raises otherwise: there's nothing to build this normalization from).
+      Works regardless of .indices -- unlike 'norm_jab', m_k is just an
+      average of the potential's own forward() output, so it needs no
+      per-coefficient (s1, s2). This is a raw empirical "typical energy
+      contribution" diagnostic, NOT an algebraic rescaling like norm_jab --
+      don't plot/compare it against a norm_jab-normalized theta as if they
+      were the same unit.
+    - 'std_k': theta_complex * (stdk_re + i*stdk_im), same construction as
+      'm_k' but from compute_stdk's Std_x1[potential.forward(x1)] instead of
+      its mean. Requires `std_k` to be supplied (raises otherwise). Same idea
+      as build_octave_energy_comparison's energy_kind='std' (see
+      compute_stdk's docstring), asking a DIFFERENT question from 'm_k': "is
+      this coefficient's theta large relative to how much the underlying
+      statistic actually fluctuates on real data" rather than "relative to
+      its raw average magnitude". A third, non-interchangeable unit -- don't
+      mix it into a comparison with 'norm_jab' or 'm_k' either.
+    - 'raw': theta_complex_normalized = theta_complex, i.e. a no-op. Use this
+      once the potentials feeding theta_final were themselves fit_micro'd
+      pre-SDE, so theta loaded from disk is already the physical quantity and
+      re-normalizing here a second time would double-apply it. This is here
+      so that switch is a one-line `normalize_by='raw'` at the call site
+      instead of a manual post-hoc `df[norm_col] = df[value_col]` override in
+      a notebook -- and just as easy to revert if fit_micro normalization
+      isn't actually wired into the run that produced theta_final yet.
 
     All downstream aggregation (aggregate_theta_across_seeds) takes
     |theta_complex|, i.e. the modulus over BOTH components jointly, not the
@@ -667,21 +757,25 @@ def build_complex_theta_dataframe(theta_final, potentials, real_key, imag_key, x
     """
     combined_name = combined_name or real_key.replace('_Real', '').replace('Real_', '')
     is_mod2 = 'Mod2' in real_key
+    index_convention = 'mod2' if is_mod2 else 'jab'
 
     theta_re, pot_re, start_re, dim_re = load_theta_for_potential(
         theta_final, potentials, real_key, known_dims, verbose)
     theta_im, pot_im, start_im, dim_im = load_theta_for_potential(
         theta_final, potentials, imag_key, known_dims, verbose)
 
+    real_has_indices = hasattr(pot_re, 'indices')
+    both_have_indices = real_has_indices and hasattr(pot_im, 'indices')
+
     # The imaginary branch typically has FEWER coefficients than the real one
     # (e.g. diagonal terms are identically zero for Im(z*conj(z)) and get
     # pruned out), so we can't assume matching shapes or identical `.indices`.
     # Expand theta_im onto pot_re's own index layout, zero-filling wherever
     # pot_re has a coefficient pot_im doesn't.
-    if hasattr(pot_re, 'indices') and hasattr(pot_im, 'indices'):
+    if both_have_indices:
         theta_im_expanded = expand_imag_to_real_indices(
             pot_im, pot_re, theta_im, verbose=verbose,
-            index_convention='mod2' if is_mod2 else 'jab',
+            index_convention=index_convention,
         )
     elif dim_re == dim_im:
         theta_im_expanded = theta_im
@@ -696,14 +790,50 @@ def build_complex_theta_dataframe(theta_final, potentials, real_key, imag_key, x
     theta_im_final = theta_im_expanded[-1] if theta_im_expanded.ndim == 2 else theta_im_expanded
     theta_complex = theta_re_final + 1j * theta_im_final
 
-    if hasattr(pot_re, 'indices'):
+    if real_has_indices:
         j_arr, s1_arr, s2_arr = _decode_scattering_jsk(pot_re, verbose=verbose)
-        pot_filters = getattr(pot_re, 'filters_Q', filters)
+    else:
+        j_arr = s1_arr = s2_arr = None
 
+    mode = normalize_by
+    if mode == 'auto':
+        mode = 'norm_jab' if real_has_indices else 'm_k'
+
+    if mode == 'norm_jab':
+        if not real_has_indices:
+            raise ValueError(
+                f"normalize_by='norm_jab' requires '{real_key}' to expose scattering "
+                f".indices (needed to decode per-coefficient (s1, s2)) -- it doesn't. "
+                f"Use normalize_by='m_k', 'std_k', or 'raw' instead."
+            )
+        pot_filters = getattr(pot_re, 'filters_Q', filters)
         order = norm_order if norm_order is not None else (4 if is_mod2 else 2)
         norm = compute_norm_jab(x1, pot_filters, s1_arr, s2_arr, order=order)
         theta_complex_normalized = theta_complex * norm
+    elif mode in ('m_k', 'std_k'):
+        stat = m_k if mode == 'm_k' else std_k
+        if stat is None:
+            theta_complex_normalized = np.full(dim_re, np.nan + 1j * np.nan)
+        else:
+            stat_re = stat[start_re:start_re + dim_re]
+            stat_im = stat[start_im:start_im + dim_im]
+            if both_have_indices:
+                stat_im = expand_imag_to_real_indices(
+                    pot_im, pot_re, stat_im, verbose=verbose,
+                    index_convention=index_convention,
+                )
+            # else: dim_re == dim_im is guaranteed (the only way to reach
+            # here without raising above), so stat_re/stat_im already align.
+            theta_complex_normalized = theta_complex * (stat_re + 1j * stat_im)
+    elif mode == 'raw':
+        theta_complex_normalized = theta_complex
+    else:
+        raise ValueError(
+            f"normalize_by must be one of 'auto', 'norm_jab', 'm_k', 'std_k', 'raw', "
+            f"got {normalize_by!r}"
+        )
 
+    if real_has_indices:
         df = pd.DataFrame({
             'potential': combined_name,
             'coeff_idx': np.arange(dim_re),
@@ -712,14 +842,6 @@ def build_complex_theta_dataframe(theta_final, potentials, real_key, imag_key, x
             'theta_complex_normalized': theta_complex_normalized,
         })
     else:
-        if m_k is not None:
-            # dim_re == dim_im is guaranteed here -- the only way to reach
-            # this branch (pot_re has no .indices) without raising above.
-            mk_re = m_k[start_re:start_re + dim_re]
-            mk_im = m_k[start_im:start_im + dim_im]
-            theta_complex_normalized = theta_complex * (mk_re + 1j * mk_im)
-        else:
-            theta_complex_normalized = np.full(dim_re, np.nan + 1j * np.nan)
         df = pd.DataFrame({
             'potential': combined_name,
             'coeff_idx': np.arange(dim_re),
