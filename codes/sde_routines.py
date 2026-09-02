@@ -525,11 +525,20 @@ class SDE(torch.nn.Module):
 
         print("Stacking outputs")
 
+        # barphi_e/barphi_p start with one extra entry appended BEFORE the loop
+        # (the t=0 seed, `compute_moments(x_0)`/`compute_moments(x_k)` above), so
+        # `[1:]` drops that redundant seed and leaves one entry per loop iteration.
+        # eta_k_list/theta_k_list/dH_k_list have NO such pre-loop seed -- they
+        # start as empty lists and are only appended inside the loop -- so slicing
+        # them with `[1:]` as well silently discarded their genuine first step
+        # (k=0) and left them 2 shorter than `t` instead of 1 shorter. Fixed: no
+        # slice for these three, so all five end up the same length, one entry
+        # per loop iteration, aligned with `t[1:]`.
         barphi_e = torch.stack(barphi_e)[1:]
         barphi_p = torch.stack(barphi_p)[1:]
-        eta_k_list = torch.stack(eta_k_list)[1:]
-        theta_k_list = torch.stack(theta_k_list)[1:]
-        dH_k_list = torch.cat(dH_k_list)[1:]
+        eta_k_list = torch.stack(eta_k_list)
+        theta_k_list = torch.stack(theta_k_list)
+        dH_k_list = torch.cat(dH_k_list)
 
         self._print_memory("Everything stacked")
 

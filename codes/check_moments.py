@@ -1401,8 +1401,81 @@ def plot_entropy_bound_evolution(dH_t_bound, H_t_bound, H_t_gaussian, t):
         plt.plot(t[1:-1], H_t_gaussian[1:-1], label=''r'$H(p_t^\text{gaussian})$')
     plt.xlabel('t')
     plt.legend(loc='best')
-    
+
     plt.show()
+
+
+def plot_negentropy_convergence(summary_df, x_ref, theta_key='theta_t', ax_pair=None):
+    """Reproduce the paper's negentropy-vs-sigma^2 / convergence-vs-sigma^2
+    figure pair from a ``utils_entropy.summarize_log_Z_bound`` DataFrame.
+
+    Negentropy is defined as ``H(g) - H_*^sigma`` with ``g`` the Gaussian
+    matching the DATA's own covariance (``utils_entropy.data_gaussian_entropy``),
+    not the standard-normal ``H(p_0)`` an earlier snippet used -- those
+    coincide only if the data were whitened to unit covariance first. Because
+    ``H_*^sigma`` is a LOWER bound on ``H(p_1^sigma)``, the negentropy
+    plotted here is an UPPER bound on the true negentropy, not an estimate.
+
+    Both panels are reported as a RATE (divided by d) for consistency (an
+    earlier snippet divided the convergence panel by d but not the
+    negentropy panel, which made the two panels' numbers not directly
+    comparable across different d).
+    """
+    from utils_entropy import data_gaussian_entropy
+
+    sub = summary_df[summary_df['theta_key'] == theta_key].sort_values('sigma2')
+    if sub.empty:
+        raise ValueError(f"No rows for theta_key={theta_key!r} in summary_df")
+
+    H_g = data_gaussian_entropy(x_ref)
+    d = int(np.prod(x_ref.shape[1:]))
+
+    negentropy_rate = (H_g - sub['H_bound'].to_numpy()) / d
+    sigma2 = sub['sigma2'].to_numpy()
+
+    idx_max = int(np.argmax(sigma2))
+    H_max = sub['H_bound'].to_numpy()[idx_max]
+    conv_rate = np.abs(H_max - sub['H_bound'].to_numpy()) / d
+
+    if ax_pair is None:
+        fig, ax_pair = plt.subplots(1, 2, figsize=(11, 4.5))
+    ax0, ax1 = ax_pair
+
+    ax0.plot(sigma2, negentropy_rate, 'o--', color='tab:blue')
+    ax0.set_xlabel(r'$\sigma^2$')
+    ax0.set_ylabel(r'$d^{-1}(H(g) - H_*^\sigma)$  (upper bound on true negentropy rate)')
+    ax0.set_title(f'Negentropy rate ({theta_key})')
+    ax0.grid(True, ls=':', alpha=0.4)
+
+    mask = np.arange(len(sigma2)) != idx_max
+    ax1.loglog(sigma2[mask], conv_rate[mask], 'o', color='tab:blue')
+    ax1.set_xlabel(r'$\sigma^2$')
+    ax1.set_ylabel(r'$d^{-1}|H_*^{\sigma_{\max}} - H_*^\sigma|$')
+    ax1.set_title(fr'Convergence rate ($\sigma^2_{{\max}}$={sigma2[idx_max]:.3g})')
+    ax1.grid(True, which='both', ls=':', alpha=0.4)
+
+    return ax0, ax1
+
+
+def plot_log_Z_gap_vs_sigma2(summary_df, log_Z_reference, theta_key='theta_t', ax=None):
+    """log-log plot of ``log_Z_reference - log_Z_bound`` vs. sigma^2 -- the
+    conjectured O(sigma^-2) decay check."""
+    sub = summary_df[summary_df['theta_key'] == theta_key].sort_values('sigma2')
+    gap = log_Z_reference - sub['log_Z_bound'].to_numpy()
+    sigma2 = sub['sigma2'].to_numpy()
+
+    if ax is None:
+        fig, ax = plt.subplots(figsize=(6, 4.5))
+    ax.loglog(sigma2, gap, 'o-', color='tab:blue', label='data')
+    x_line = np.geomspace(sigma2.min(), sigma2.max(), 50)
+    c = gap[0] * sigma2[0]
+    ax.plot(x_line, c / x_line, 'k--', lw=1, label=r'$\sigma^{-2}$ reference')
+    ax.set_xlabel(r'$\sigma^2$')
+    ax.set_ylabel(r'$\log Z_{ref} - \log Z^\sigma$')
+    ax.legend(frameon=False)
+    ax.grid(True, which='both', ls=':', alpha=0.4)
+    return ax
+
 
 def plot_moment_matching(barphi_e, barphi_p, t, threshold, save=None):
     """
