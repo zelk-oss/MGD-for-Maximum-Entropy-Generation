@@ -40,6 +40,7 @@ from codes.ortho_wavelet.ReadyToUseWavelets import *
 #################################################################################
 #### designing and running experiment. works the same for lagrangian turbulence and jets 
 import hashlib
+import contextlib
 
 # ── logging ───────────────────────────────────────────────────────────────────
 def setup_logging(log_dir: Path, config: str) -> logging.Logger:
@@ -61,6 +62,25 @@ def setup_logging(log_dir: Path, config: str) -> logging.Logger:
     logger.addHandler(sh)
 
     return logger
+
+
+@contextlib.contextmanager
+def logged_run(logger):
+    """Wrap the body of main() in `with logged_run(logger):` so run.log
+    always ends with an explicit success/failure line and total duration,
+    instead of just stopping mid-stream on an uncaught exception (e.g. the
+    SDE time-budget guard in sde_routines.py) with the actual error visible
+    only in the SLURM stderr file, separate from run.log.
+    """
+    t0 = timer.time()
+    logger.info('Run started')
+    try:
+        yield
+    except Exception:
+        logger.exception('Run FAILED after %.1f s', timer.time() - t0)
+        raise
+    else:
+        logger.info('Run succeeded in %.1f s', timer.time() - t0)
 
 
 # ── experiment output setup ─────────────────────────────────────────────────

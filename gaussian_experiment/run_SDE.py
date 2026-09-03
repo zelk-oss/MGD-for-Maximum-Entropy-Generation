@@ -357,31 +357,31 @@ def main():
     logger.info('x1 (increments, normalized) final shape: %s', tuple(x1.shape))
     logger.info('Hurst = %s, intermittency = %s', args.hurst, args.intermittency)
 
-    plot_increment_diagnostics(x1, args, fig_dir, config)
-    logger.info('Saved increment sanity-check figure to %s', fig_dir / 'increment_diagnostics.png')
+    with logged_run(logger):
+        plot_increment_diagnostics(x1, args, fig_dir, config)
+        logger.info('Saved increment sanity-check figure to %s', fig_dir / 'increment_diagnostics.png')
 
-    filters, filters_Phi = return_Filters(M, args.J, 1, device=device, include_phi=True)
-    filters_Q = return_Filters(M, args.J, args.Q, device=device)  # unused downstream — see note below
+        filters, filters_Phi = return_Filters(M, args.J, 1, device=device, include_phi=True)
+        filters_Q = return_Filters(M, args.J, args.Q, device=device)  # unused downstream — see note below
 
-    t = 1 - (1 - torch.linspace(0, 1, args.nt + 1)) ** args.schedule_exponent
+        t = 1 - (1 - torch.linspace(0, 1, args.nt + 1)) ** args.schedule_exponent
 
-    t_rounded = torch.round(t, decimals=4)
-    t_final = int((t_rounded == 1.0).nonzero(as_tuple=True)[0][0])
-    logger.info(f"t_final = {t_final}/{len(t)} (last t = {t[t_final-1].item():.6f}, "
-        f"dropping {len(t) - t_final} redundant trailing points at 1.0000)")
+        t_rounded = torch.round(t, decimals=4)
+        t_final = int((t_rounded == 1.0).nonzero(as_tuple=True)[0][0])
+        logger.info(f"t_final = {t_final}/{len(t)} (last t = {t[t_final-1].item():.6f}, "
+            f"dropping {len(t) - t_final} redundant trailing points at 1.0000)")
 
-    if loaded is not None:
-        result = loaded
-    else:
-        result = run_experiment(args, M, config, x1, filters,
-                                t[:t_final], logger, outdir, device,
-                                filters_Q=filters_Q, filters_Phi=filters_Phi,
-                                normalize_potentials=args.normalize_potentials,
-                                potentials_save_dir=potentials_dir,
-                                )
+        if loaded is not None:
+            result = loaded
+        else:
+            result = run_experiment(args, M, config, x1, filters,
+                                    t[:t_final], logger, outdir, device,
+                                    filters_Q=filters_Q, filters_Phi=filters_Phi,
+                                    normalize_potentials=args.normalize_potentials,
+                                    potentials_save_dir=potentials_dir,
+                                    )
 
-    save_diagnostics(x1, result, t, args, config, fig_dir, logger)
-    logger.info('Done.')
+        save_diagnostics(x1, result, t, args, config, fig_dir, logger)
 
 
 if __name__ == '__main__':
