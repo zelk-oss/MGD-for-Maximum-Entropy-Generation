@@ -349,6 +349,43 @@ def plot_theta_trajectory(theta_t, term_names, fig_dir, config):
     plt.close(fig)
 
 
+def plot_theta_reg_overlay(theta_t, Theta_reg, t, term_names, fig_dir, config):
+    """Overlay the raw per-step MGD theta_t against the time-regularised
+    Theta_reg, to see what regularisation does to the trajectory.
+
+    Theta_reg is solved on its own coarser grid (t_reg inside
+    forward_regularised, codes/sde_routines.py) that isn't returned/saved
+    anywhere -- only Theta_reg itself is. Its x-axis below is therefore an
+    evenly-spaced PROXY over the same [t[1], t[-1]] range, not the true
+    (possibly non-uniform, close-node-dropped) t_reg -- good for comparing
+    shape/behaviour, not for reading off an exact t value.
+    """
+    theta_t = theta_t.detach().cpu()
+    Theta_reg = Theta_reg.detach().cpu()
+    t = t.detach().cpu()
+
+    t_theta = t[1:1 + theta_t.shape[0]]
+    t_reg_proxy = torch.linspace(t_theta[0].item(), t_theta[-1].item(), Theta_reg.shape[0])
+
+    fig, ax = plt.subplots(figsize=(7, 4.5))
+    colors = plt.rcParams['axes.prop_cycle'].by_key()['color']
+    for i in range(theta_t.shape[-1]):
+        label = term_names[i] if i < len(term_names) else f'coef_{i}'
+        color = colors[i % len(colors)]
+        ax.plot(t_theta, theta_t[:, i], color=color, lw=1.2, alpha=0.6,
+                label=f'{label} (theta_t)')
+        ax.plot(t_reg_proxy, Theta_reg[:, i], color=color, lw=2.0, ls='--',
+                marker='o', ms=3, label=f'{label} (Theta_reg, proxy t)')
+    ax.axhline(0, color='grey', lw=0.5)
+    ax.set_xlabel('t   (Theta_reg x-axis is an evenly-spaced proxy -- see docstring)')
+    ax.set_ylabel(r'$\theta$')
+    ax.legend(fontsize=8)
+    ax.set_title(config)
+    fig.tight_layout()
+    fig.savefig(fig_dir / 'theta_reg_overlay.png', dpi=150, bbox_inches='tight')
+    plt.close(fig)
+
+
 def save_diagnostics(x1, result, args, config, fig_dir, logger):
     term_names = list(get_scalar_potentials(args.terms).keys())
 
