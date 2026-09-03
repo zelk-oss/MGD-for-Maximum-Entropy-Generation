@@ -1,0 +1,26 @@
+{
+  "timestamp": null,
+  "n1": 3000,
+  "data_sigma": 1.0,
+  "terms": [
+    "x2"
+  ],
+  "nt": 800,
+  "sigma": 0.4184852381887263,
+  "schedule_exponent": 2,
+  "interpolant": "Cos",
+  "regularization": 0.1,
+  "lam": 5e-06,
+  "n_subsample": 100,
+  "batch_size": null,
+  "n_bins": 100,
+  "moment_threshold": 1e-08,
+  "outdir": "/home/chiaraz/phd/MGD-for-Maximum-Entropy-Generation/theta_interpretation",
+  "label": "entropy_convergence",
+  "force_rerun": false,
+  "no_save_aux_moments": false,
+  "seed": 0,
+  "config_name": "thetainterp_sigmadata1.0_sigma0.4184852381887263_nt800_n1_3000_lam5e-06_seed_0_terms8e683187_entropy_convergence",
+  "B": 3000,
+  "channels": 1
+}

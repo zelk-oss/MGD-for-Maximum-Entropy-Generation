@@ -15,6 +15,22 @@ that script isn't tracked in this repo. Don't assume a specific launch
 script or invocation exists — ask for the exact submission command if you
 need it rather than guessing one.
 
+## Local runs: smoke tests only, never full experiments
+
+Claude may run `run_jet_SDE.py`/`run_SDE.py` (any of the four entry points)
+locally, or execute a notebook that calls into them (e.g. via `jupyter
+nbconvert --execute`), **only as a smoke test** — the sole purpose is
+confirming the code path runs without error, not producing a numerically
+meaningful result. Concretely: tiny values (`n1`/`M` in the tens to low
+hundreds, `nt` in the tens, a single seed, at most 1-2 points in any swept
+parameter) and a runtime of well under a minute. Never size a local run to
+actually be informative about the science (real `n1`/`nt`/sweep sizes,
+multi-seed sweeps, multi-minute runtimes) — that's a full experiment, and
+full experiments only run on Jean Zay via SLURM, regardless of whether this
+machine is technically fast enough to finish them locally. If it's unclear
+whether a given size counts as a smoke test, ask before running rather than
+guessing.
+
 # Conventions
 
 - Experiment/config naming comes from `build_config_name()` in

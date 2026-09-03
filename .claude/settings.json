@@ -9,6 +9,14 @@
       "Edit(codes/saved_results/**)",
       "Edit(**/experiments/*/figures/**)"
     ],
-    "allow": []
+    "allow": [],
+    "ask": [
+      "Bash(jupyter nbconvert*)",
+      "Bash(jupyter execute*)",
+      "Bash(python *run_SDE.py*)",
+      "Bash(python *run_jet_SDE.py*)",
+      "Bash(*run_SDE.py*)",
+      "Bash(*run_jet_SDE.py*)"
+    ]
   }
 }
