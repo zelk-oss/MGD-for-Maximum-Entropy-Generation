@@ -297,7 +297,37 @@ class SDE(torch.nn.Module):
     # Main function
     # ------------------------------------------------------------------------------------------------------------------
 
-    def forward(self, param_storage_frequency=1):
+    def _check_time_budget(self, loop_t0, n_done, time_limit_min,
+                            min_iters=30, margin=0.9):
+        """
+        Abort the SDE loop early if the average iteration time seen so far,
+        extrapolated to the full loop, would blow through the SLURM time
+        budget. No-op if `time_limit_min` is None (the default — opt-in per
+        run) or before `min_iters` iterations have completed, since early
+        iterations are slower (CUDA warm-up) and noisy.
+
+        `margin` reserves headroom under `time_limit_min` for the work that
+        happens after this loop (regularised solve, save_results I/O), which
+        isn't accounted for by iteration count alone.
+        """
+        if time_limit_min is None or n_done < min_iters:
+            return
+        elapsed = time.time() - loop_t0
+        avg_iter_s = elapsed / n_done
+        total_iters = len(self.t) - 1
+        projected_s = avg_iter_s * total_iters
+        budget_s = time_limit_min * 60 * margin
+        if projected_s > budget_s:
+            raise RuntimeError(
+                f"Aborting SDE loop: projected to take {projected_s / 3600:.2f}h "
+                f"({avg_iter_s:.2f}s/it x {total_iters} it, measured over "
+                f"{n_done} iterations) which exceeds {margin:.0%} of the "
+                f"{time_limit_min / 60:.1f}h time budget (--time_limit_min "
+                f"{time_limit_min}). Aborting now instead of letting SLURM kill "
+                f"the job at the wall-clock limit with nothing saved."
+            )
+
+    def forward(self, param_storage_frequency=1, time_limit_min=None):
         """
         Integrate the SDE over the time grid and collect the trajectories.
  
@@ -349,12 +379,13 @@ class SDE(torch.nn.Module):
         theta_k_list = []
         dH_k_list    = []
 
+        loop_t0 = time.time()
         for k, t_k in tqdm(enumerate(self.t[:-1])):
 
             #Fiting
             #self.fit(self.x_k)
-            
-            
+
+
             self.x_k, y_k, I_k, eta_k, theta_k, dH_k, bk= self.iteration_step_projection(self.x_k, k)
 
             if (k + 1) % param_storage_frequency == 0:
@@ -363,6 +394,8 @@ class SDE(torch.nn.Module):
                 dH_k_list.append(dH_k)
                 barphi_e.append(self.compute_moments(I_k).mean(0))
                 barphi_p.append(self.compute_moments(self.x_k).mean(0))
+
+            self._check_time_budget(loop_t0, k + 1, time_limit_min)
 
         # Store final parameters and statistics
         eta_k_list.append(eta_k)
@@ -426,7 +459,8 @@ class SDE(torch.nn.Module):
         return (t[keep], [M[i] for i in keep], [Gf[i] for i in keep],
                 [bb[i] for i in keep], [cc[i] for i in keep])
 
-    def forward_regularised(self, lam=1.0, n_subsample=1, param_storage_frequency=1):
+    def forward_regularised(self, lam=1.0, n_subsample=1, param_storage_frequency=1,
+                             time_limit_min=None):
         """
         As forward, but stores the regularised-problem quantities ON THE WALKERS X_t = x_k
         and solves A Theta = f (section 4) on a coarse grid after the loop.
@@ -462,6 +496,7 @@ class SDE(torch.nn.Module):
 
   
 
+        loop_t0 = time.time()
         for k, t_k in tqdm(enumerate(self.t[:-1])):
             h = self.t[k + 1] - self.t[k]
             self.x_k, y_k, I_k, eta_k, theta_k, dH_k, bk = self.iteration_step_projection(self.x_k, k)
@@ -498,6 +533,8 @@ class SDE(torch.nn.Module):
                 eta_k_list.append(eta_k); theta_k_list.append(theta_k); dH_k_list.append(dH_k)
                 barphi_e.append(self.compute_moments(I_k).mean(0))
                 barphi_p.append(self.compute_moments(self.x_k).mean(0))
+
+            self._check_time_budget(loop_t0, k + 1, time_limit_min)
 
         if cnt > 0:                                                    # final partial block
             M.append(accM / cnt); Gf.append(accG / cnt)

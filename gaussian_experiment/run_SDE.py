@@ -163,6 +163,12 @@ def parse_args():
                          'that supports it before fitting (see run_experiment)')
     p.add_argument('--force_rerun', action='store_true',
                     help='Ignore any existing saved results and rerun from scratch')
+    p.add_argument('--time_limit_min', type=float, default=None,
+                    help='SLURM wall-clock budget in minutes. If set, the SDE loop '
+                         'aborts (raises) once the projected total runtime, '
+                         'extrapolated from the average iteration time after a '
+                         '30-iteration warm-up, exceeds 90%% of this budget. '
+                         'Disabled (no check) when omitted.')
     p.add_argument('--no_save_aux_moments', action='store_true',
                     help='Disable saving of barphi_e / barphi_p aux moments')
     p.add_argument('--seed', type=int, default=0, help='Random seed')

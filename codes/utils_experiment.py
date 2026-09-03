@@ -312,6 +312,7 @@ def run_experiment(args, M, config, x1, filters, t, logger, outdir, device,
     )
     xt, barphi_e, barphi_p, eta_t, theta_t, dH_t_bound, Theta_reg = Solver.forward_regularised(
         lam=args.lam, n_subsample=args.n_subsample,
+        time_limit_min=getattr(args, 'time_limit_min', None),
     )
     logger.info('SDE integration finished in %.1f s', timer.time() - t0)
 
