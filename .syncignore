@@ -11,7 +11,14 @@
 # individually but numerous, and not needed to judge run health at a
 # glance the way the log/config already are. Deliberately does NOT match
 # the top-level figures/ directory, which holds the actual paper figures.
-**/experiments/*/figures/
+#
+# "**" (not a single "*") between experiments/ and figures/: since
+# build_group_name() (codes/utils_experiment.py) nests seed sweeps as
+# experiments/<group_name>/<config_name>/figures/, a single "*" only
+# matched the old flat experiments/<config_name>/figures/ layout and
+# silently stopped excluding these once the group-name folder was added
+# -- "**" matches regardless of how many directory levels sit in between.
+**/experiments/**/figures/
 turbulence/figures/
 
 # Heavy numeric run-output (Lagrange multiplier arrays, sampling-time
