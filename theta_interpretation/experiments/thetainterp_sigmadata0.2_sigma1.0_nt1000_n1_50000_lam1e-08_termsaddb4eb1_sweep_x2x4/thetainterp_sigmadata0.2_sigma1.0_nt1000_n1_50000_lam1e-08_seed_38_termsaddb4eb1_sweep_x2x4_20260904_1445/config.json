@@ -1,0 +1,27 @@
+{
+  "timestamp": "20260904_1445",
+  "n1": 50000,
+  "data_sigma": 0.2,
+  "terms": [
+    "x2",
+    "x4"
+  ],
+  "nt": 1000,
+  "sigma": 1.0,
+  "schedule_exponent": 2,
+  "interpolant": "Cos",
+  "regularization": 0.001,
+  "lam": 1e-08,
+  "n_subsample": 1,
+  "batch_size": null,
+  "n_bins": 30,
+  "moment_threshold": 1e-08,
+  "outdir": "/lustre/fswork/projects/rech/wbg/ukv59en/MGD-for-Maximum-Entropy-Generation/theta_interpretation",
+  "label": "sweep_x2x4",
+  "force_rerun": false,
+  "no_save_aux_moments": false,
+  "seed": 38,
+  "config_name": "thetainterp_sigmadata0.2_sigma1.0_nt1000_n1_50000_lam1e-08_seed_38_termsaddb4eb1_sweep_x2x4_20260904_1445",
+  "B": 50000,
+  "channels": 1
+}
