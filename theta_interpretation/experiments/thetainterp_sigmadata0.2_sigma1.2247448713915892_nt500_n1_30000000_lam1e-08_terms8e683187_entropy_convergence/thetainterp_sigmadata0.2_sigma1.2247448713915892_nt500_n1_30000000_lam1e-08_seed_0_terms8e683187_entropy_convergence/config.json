@@ -1,0 +1,26 @@
+{
+  "timestamp": null,
+  "n1": 30000000,
+  "data_sigma": 0.2,
+  "terms": [
+    "x2"
+  ],
+  "nt": 500,
+  "sigma": 1.2247448713915892,
+  "schedule_exponent": 2,
+  "interpolant": "Cos",
+  "regularization": 1e-07,
+  "lam": 1e-08,
+  "n_subsample": 1,
+  "batch_size": null,
+  "n_bins": 30,
+  "moment_threshold": 1e-08,
+  "outdir": "/lustre/fswork/projects/rech/wbg/ukv59en/MGD-for-Maximum-Entropy-Generation/theta_interpretation",
+  "label": "entropy_convergence",
+  "force_rerun": false,
+  "no_save_aux_moments": false,
+  "seed": 0,
+  "config_name": "thetainterp_sigmadata0.2_sigma1.2247448713915892_nt500_n1_30000000_lam1e-08_seed_0_terms8e683187_entropy_convergence",
+  "B": 30000000,
+  "channels": 1
+}
