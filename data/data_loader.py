@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import gzip
+import os
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Literal, Optional
@@ -23,8 +24,11 @@ def load_SNP(nb_copy=1):
 def load_turbulence_1d(sous_ech = 0):
 
 
-    data_path = '/lustre/fswork/projects/rech/wbg/ukv59en/conditional_mgd/data/data_files/turbulence_1d_period.pt'
-    
+    data_path = os.environ.get(
+        'TURBULENCE_1D_DATA_PATH',
+        '/lustre/fswork/projects/rech/wbg/ukv59en/conditional_mgd/data/data_files/turbulence_1d_period.pt',
+    )
+
     Data = torch.load(data_path)
     Data = Data.to(torch.float32)
   
