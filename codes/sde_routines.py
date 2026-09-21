@@ -474,6 +474,14 @@ class SDE(torch.nn.Module):
 
         Coarse grid keeps the points t[n_subsample*j]; metrics and second members are
         averaged over the n_subsample neighbouring (valid) fine steps.
+
+        Returns (..., Theta_reg, t_reg): t_reg is the actual (non-uniform) coarse
+        time grid Theta_reg was solved on -- distinct from the fine grid `t` passed
+        in, since `n_subsample` blocking and `_cut_close_time_nodes` pruning near
+        t=1 (where the Cos schedule's steps shrink) both remove points irregularly.
+        Callers must save t_reg alongside Theta_reg if they want to plot/interpret
+        Theta_reg on its correct time axis later -- it cannot be reconstructed from
+        `t` + `n_subsample` alone.
         """
         assert self.interpolant == 'Cos', "this routine assumes the Cos schedule"
         assert self.x_k.shape[0] == self.x_0.shape[0], "need n_rep == nb_interpolants to pair X_t with Z"
@@ -589,6 +597,7 @@ class SDE(torch.nn.Module):
             theta_k_list,
             dH_k_list,
             Theta_reg[1:],
+            np.asarray(t_reg[1:], dtype=float),
         )
 
     def _solve_regularised(self, t, M, Gf, bb, cc, lam):

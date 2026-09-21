@@ -288,12 +288,12 @@ def run_experiment(args, config, x1, t, logger, outdir, device, potentials_save_
         device=device, regularization=args.regularization, interpolant=args.interpolant,
         potentials_save_dir=potentials_save_dir,
     )
-    xt, barphi_e, barphi_p, eta_t, theta_t, dH_t_bound, Theta_reg = Solver.forward_regularised(
+    xt, barphi_e, barphi_p, eta_t, theta_t, dH_t_bound, Theta_reg, t_reg = Solver.forward_regularised(
         lam=args.lam, n_subsample=args.n_subsample,
     )
     logger.info('SDE integration finished in %.1f s', timer.time() - t0)
 
-    save_results_theta_reg(xt, theta_t, dH_t_bound, t, outdir, config, Theta_reg=Theta_reg)
+    save_results_theta_reg(xt, theta_t, dH_t_bound, t, outdir, config, Theta_reg=Theta_reg, t_reg=t_reg)
 
     if not args.no_save_aux_moments:
         torch.save(
@@ -302,7 +302,7 @@ def run_experiment(args, config, x1, t, logger, outdir, device, potentials_save_
         )
 
     return {
-        'xt': xt, 'theta_t': theta_t, 'Theta_reg': Theta_reg, 't': t,
+        'xt': xt, 'theta_t': theta_t, 'Theta_reg': Theta_reg, 't': t, 't_reg': t_reg,
         'dH_t_bound': dH_t_bound, 'barphi_e': barphi_e, 'barphi_p': barphi_p,
         'loaded': False,
     }

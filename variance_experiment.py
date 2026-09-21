@@ -269,7 +269,7 @@ def run_one_trial(
     )
 
     t0 = timer.time()
-    xt, barphi_e, barphi_p, eta_t, theta_t, dH_t_bound, Theta_reg = Solver.forward_regularised(
+    xt, barphi_e, barphi_p, eta_t, theta_t, dH_t_bound, Theta_reg, t_reg = Solver.forward_regularised(
         lam=args.lam, n_subsample=args.n_subsample
     )
     logger.info(
@@ -283,6 +283,7 @@ def run_one_trial(
     return {
         'theta_mgd': theta_mgd,   # (T_mgd, r)
         'theta_reg': theta_reg,   # (T_reg, r)
+        't_reg': np.asarray(t_reg),  # Theta_reg's own (non-uniform) coarse time grid
     }
 
 

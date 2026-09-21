@@ -110,6 +110,7 @@ def save_results_theta_reg(
     root,
     config,
     Theta_reg=None,  # Set to None by default
+    t_reg=None,      # Theta_reg's own (non-uniform) coarse time grid, see SDE.forward_regularised
 ):
     base = root / 'saved_results'
 
@@ -129,6 +130,17 @@ def save_results_theta_reg(
         except RuntimeError as e:
             # Catch the OOM (or any other PyTorch error) so the run doesn't crash entirely
             print(f"Warning: Failed to save Theta_reg. Error: {e}")
+
+    # 3. t_reg is new (older runs never saved it) -- write it to its own subfolder,
+    # created on demand since it doesn't exist yet in any saved_results/ tree.
+    if t_reg is not None:
+        try:
+            t_reg_dir = base / 'sampling_times_regularised'
+            t_reg_dir.mkdir(parents=True, exist_ok=True)
+            t_reg_tensor = t_reg if torch.is_tensor(t_reg) else torch.as_tensor(t_reg)
+            torch.save(t_reg_tensor.cpu(), t_reg_dir / f'{config}.pt')
+        except RuntimeError as e:
+            print(f"Warning: Failed to save t_reg. Error: {e}")
 
 def _load_tensor(path_no_ext: Path):
     """Load a tensor saved under `path_no_ext`'s name, preferring the current
@@ -156,6 +168,18 @@ def load_results(root: Path, exact_config: str) -> Tuple[Any, Any, Any, Any, Any
         Theta_reg = None # Always return 5 items to prevent unpacking crashes
 
     return (x_t, theta_t, dH_t_bound, t, Theta_reg)
+
+
+def load_t_reg(root: Path, exact_config: str):
+    """Load Theta_reg's own coarse time grid, saved by save_results_theta_reg since
+    the t_reg fix -- returns None (not an error) for any run saved before that
+    change, since sampling_times_regularised/<config>.pt simply won't exist for it.
+    Callers must treat None as "approximate Theta_reg's time axis instead", not as
+    a failure."""
+    path = root / 'saved_results' / 'sampling_times_regularised' / f'{exact_config}.pt'
+    if not path.exists():
+        return None
+    return torch.load(path)
 
 def normalize(Data):
     """Standardize ``Data`` to zero mean and unit std, cast to float32.

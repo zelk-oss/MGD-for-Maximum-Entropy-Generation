@@ -226,12 +226,18 @@ def try_load_experiment(outdir, config, device):
         loaded = load_results(outdir, config)
         xt, theta_t, dH_t_bound, t_loaded, Theta_reg = loaded
 
+        # None for any run saved before the t_reg fix -- callers must fall back to
+        # approximating Theta_reg's time axis (e.g. evenly spaced between t[0]/t[-1])
+        # when this is None, rather than assuming it's always available.
+        t_reg = load_t_reg(outdir, config)
+
         out = {
             'xt': xt.to(device) if torch.is_tensor(xt) else xt,
             'theta_t': theta_t,
             'dH_t_bound': dH_t_bound,
             't': t_loaded.to(device) if torch.is_tensor(t_loaded) else t_loaded,
             'Theta_reg': Theta_reg,
+            't_reg': t_reg.to(device) if torch.is_tensor(t_reg) else t_reg,
             'loaded': True,
         }
         aux_path = outdir / 'saved_results' / 'aux_moments' / f'{config}_aux_moments.pt'
@@ -330,14 +336,14 @@ def run_experiment(args, M, config, x1, filters, t, logger, outdir, device,
         device=device, regularization=args.regularization, interpolant=args.interpolant,
         potentials_save_dir=potentials_save_dir,
     )
-    xt, barphi_e, barphi_p, eta_t, theta_t, dH_t_bound, Theta_reg = Solver.forward_regularised(
+    xt, barphi_e, barphi_p, eta_t, theta_t, dH_t_bound, Theta_reg, t_reg = Solver.forward_regularised(
         lam=args.lam, n_subsample=args.n_subsample,
         time_limit_min=getattr(args, 'time_limit_min', None),
     )
     logger.info('SDE integration finished in %.1f s', timer.time() - t0)
 
     # Pass the global outdir as 'root' so it targets the original global directories
-    save_results_theta_reg(xt, theta_t, dH_t_bound, t, outdir, config, Theta_reg=Theta_reg)
+    save_results_theta_reg(xt, theta_t, dH_t_bound, t, outdir, config, Theta_reg=Theta_reg, t_reg=t_reg)
 
     if not args.no_save_aux_moments:
         torch.save(
@@ -346,7 +352,7 @@ def run_experiment(args, M, config, x1, filters, t, logger, outdir, device,
         )
 
     return {
-        'xt': xt, 'theta_t': theta_t, 'Theta_reg': Theta_reg, 't': t,
+        'xt': xt, 'theta_t': theta_t, 'Theta_reg': Theta_reg, 't': t, 't_reg': t_reg,
         'dH_t_bound': dH_t_bound, 'barphi_e': barphi_e, 'barphi_p': barphi_p,
         'loaded': False,
     }
