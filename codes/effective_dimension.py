@@ -308,7 +308,10 @@ def denoiser_d_eff(x, theta_reg, t_reg, potentials, n_mc=64, generator=None):
     out = np.zeros((n_t, n_x))
     for i in range(n_t):
         ai, taui = a[i], tau[i]
-        theta_i = theta_reg[i].to(x.dtype)          # potentials' grad() requires x's own dtype
+        # potentials' grad() requires x's own dtype AND device -- theta_reg is
+        # typically loaded with map_location='cpu' while x/potentials may live
+        # on cuda (e.g. on Jean Zay), so both must be cast here, not just dtype.
+        theta_i = theta_reg[i].to(device=x.device, dtype=x.dtype)
         xi = torch.randn((n_mc,) + sig_shape, generator=generator, dtype=x.dtype, device=x.device)
         y = x.unsqueeze(0) + np.sqrt(taui) * xi                       # (n_mc, n_x, C, T)
         sy = np.sin(ai) * y
@@ -357,9 +360,12 @@ def energy_d_eff(x, theta_reg, t_reg, potentials, m_t_reg, H_bound_t_reg, d,
     n_t, n_x = len(t_reg), x.shape[0]
     sig_shape = x.shape
 
-    theta_reg = theta_reg.double()
-    m_t_reg = m_t_reg.to(theta_reg.dtype)
-    logZ = H_bound_t_reg + torch.einsum('tr,tr->t', theta_reg, m_t_reg).numpy()
+    # Same device caveat as denoiser_d_eff: theta_reg/m_t_reg are typically
+    # loaded/computed on CPU while x/potentials may live on cuda -- move both
+    # onto x's device (kept double: theta^T phi/m is a large-cancellation sum).
+    theta_reg = theta_reg.to(device=x.device, dtype=torch.float64)
+    m_t_reg = m_t_reg.to(device=x.device, dtype=torch.float64)
+    logZ = H_bound_t_reg + torch.einsum('tr,tr->t', theta_reg, m_t_reg).detach().cpu().numpy()
 
     U = np.zeros((n_t, n_x))
     for i in range(n_t):
