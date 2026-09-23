@@ -1,0 +1,233 @@
+\documentclass[11pt]{article}
+\usepackage[margin=2.5cm]{geometry}
+\usepackage{amsmath,amssymb}
+\usepackage{booktabs}
+\usepackage{array}
+\usepackage{xcolor}
+\usepackage{hyperref}
+\usepackage{listings}
+\usepackage{microtype}
+
+\newcommand{\E}{\mathbb{E}}
+\newcommand{\code}[1]{\texttt{#1}}
+\let\origunderscore\_
+\renewcommand{\_}{\origunderscore\allowbreak}
+\newcommand{\deff}{d_{\mathrm{eff}}}
+
+\lstset{basicstyle=\ttfamily\small, breaklines=true}
+\emergencystretch=3em
+
+\title{Effective dimensionality $\deff(x,\tau)$ from MGD's fitted $\theta_t$}
+\author{Generated with Claude Code, from a code-reading session on 2026-09-23}
+\date{}
+
+\begin{document}
+\maketitle
+
+\section*{Purpose}
+
+Guth et al.\ define a local effective dimensionality $\deff(x,\tau)$ of a
+distribution's support, at a point $x$ and noise scale $\tau$, from the
+score of the variance-exploding (VE) noised distribution at $x$. This note
+derives $\deff$ directly in terms of MGD's own fitted quantities --
+$\theta_t$, $\varphi$, $\nabla\varphi$ -- so it can be computed as pure
+post-processing of an already-completed MGD run, with no new
+sampling/fitting. Implementation: \code{codes/effective\_dimension.py}.
+Notebook: \code{turbulence/effective\_dimension\_deff.ipynb}.
+
+\section{Guth's $\deff$: recap}
+
+Let $q_\tau$ be the law of $y = x + \sqrt\tau\,\xi$, $\xi\sim\mathcal N(0,I_d)$,
+$x$ drawn from the data. Two equivalent definitions:
+
+\begin{align}
+  \text{energy form:} \qquad
+  \deff(x,\tau) &= d - \partial_{s}\, \E_y\!\big[U(y,\tau)\mid x\big], \qquad s = \tfrac12\log\tau,
+  \label{eq:energy-def}\\[2mm]
+  \text{denoiser form:} \qquad
+  \deff(x,\tau) &= \frac1\tau\,\E_y\!\big[\lVert x - \E[x\mid y]\rVert^2 \mid x\big],
+  \label{eq:denoiser-def}
+\end{align}
+where $U(\cdot,\tau) = -\log q_\tau(\cdot)$ and, by Tweedie's formula,
+$\E[x\mid y] = y + \tau\,\nabla_y\log q_\tau(y)$. Both reduce to $d$ for an
+isotropic Gaussian and to (less than) $d$ when the data lies near a
+lower-dimensional manifold, at scales $\tau$ finer than the manifold's local
+curvature.
+
+\section{MGD's schedule and sign convention}
+
+MGD's Cos stochastic interpolant (\code{sde\_routines.py}, \code{compute\_}
+\code{interpolant}, \code{interpolant='Cos'} -- the only schedule
+\code{forward\_regularised} supports) is
+\begin{equation}
+  I_t = \cos(\alpha_t)\,x_0 + \sin(\alpha_t)\,x_1, \qquad \alpha_t = \tfrac{\pi t}{2},
+  \qquad x_0\sim\mathcal N(0,I_d),\ x_1 = x\ \text{(data)}.
+\end{equation}
+
+\paragraph{Sign convention.} This codebase fits $\theta_t$ for
+$p_\theta(x)\propto\exp(+\theta^\top\varphi(x))$ -- the \emph{opposite} of
+the MGD paper's $\exp(-\theta^\top\varphi(x))$. This is audited directly
+against the code in \code{codes/utils\_entropy.py} (``Sign convention
+audit''): the corrector step in \code{iteration\_step\_projection} is
+$x_{k+1} = y_k + \nabla\varphi^\top\theta_{\mathrm{raw}}$ (a \emph{plus}),
+giving a continuous-time drift $\sigma^2\nabla\varphi^\top\theta_t$ that
+must equal $\sigma^2\nabla\log p_t$ for the transport to preserve $p_t$, so
+\begin{equation}
+  \nabla_x \log p_t(x) \;=\; +\,\theta_t^\top \nabla\varphi(x).
+  \label{eq:score-sign}
+\end{equation}
+Independently corroborated by $dH_k = -\theta_k^\top \dot m_t$ (the entropy
+increment already computed in \code{iteration\_step\_projection}) and by
+$\log Z_{\theta_1} \gtrsim H_{\mathrm{bound}} + \theta_1^\top m_1$ (MGD
+Eq.~8/30 as implemented in \code{utils\_entropy.log\_Z\_bound}). Every
+formula below is re-derived directly in this $(+)$ convention -- not by
+substituting $\theta_{\mathrm{paper}} = -\theta_{\mathrm{code}}$ into the
+paper's stated formulas.
+
+\section{The VE rescaling}
+
+Define $y_t := I_t/\sin(\alpha_t) = x_1 + \cot(\alpha_t)\,x_0$. Conditional
+on $x_1 = x$,
+\begin{equation}
+  y_t \mid x \;\sim\; \mathcal N\!\big(x,\ \tau(t)\,I_d\big), \qquad
+  \tau(t) = \cot^2(\alpha_t),
+  \label{eq:tau-of-t}
+\end{equation}
+monotonically decreasing from $\tau(0)=\infty$ to $\tau(1)=0$. So MGD's Cos
+schedule already sweeps every VE noise scale, and $t_{\mathrm{reg}}$ (the
+grid $\theta_t$ is fit on) IS a $\tau$-grid via Eq.~\ref{eq:tau-of-t}.
+
+Write $q_\tau$ (Guth's VE marginal, density in $y$) in terms of $p_t$ (MGD's
+marginal, density in $I_t$) by the change of variables $I_t = \sin(\alpha_t)\,y$:
+\begin{equation}
+  q_\tau(y) = \sin^d(\alpha_t)\; p_t\big(\sin(\alpha_t)\,y\big).
+\end{equation}
+Differentiating and using Eq.~\ref{eq:score-sign} (evaluated at $I_t = \sin(\alpha_t) y$):
+\begin{equation}
+  \nabla_y \log q_\tau(y) \;=\; \sin(\alpha_t)\,\nabla_x\log p_t(\sin(\alpha_t) y)
+  \;=\; +\sin(\alpha_t)\,\theta_t^\top \nabla\varphi\big(\sin(\alpha_t)\,y\big).
+  \label{eq:score-rescaled}
+\end{equation}
+The extra $\sin(\alpha_t)$ factor is the chain-rule term the derivation asked to
+double-check -- confirmed, with the $(+)$ sign from Eq.~\ref{eq:score-sign} (a
+paper-convention derivation would carry a minus here).
+
+\emph{Practical note.} $\sin(\alpha_t)\,y = \sin(\alpha_t)\,x + \cos(\alpha_t)\,\xi$
+for $y = x+\sqrt\tau\,\xi$ (since $\sqrt\tau = \cot\alpha_t$) -- literally
+\code{compute\_interpolant}'s own Cos schedule with $x$ as a single-point data
+endpoint and $\xi$ as fresh noise. So every $\varphi/\nabla\varphi$
+evaluation below stays inside the numerical range the fit itself already
+explores; nothing is evaluated off-distribution in an uncontrolled way.
+
+\section{Denoiser form}
+
+Substituting Eq.~\ref{eq:score-rescaled} into Tweedie's formula,
+$x - \E[x\mid y] = -\sqrt\tau\,\xi - \tau\,\nabla_y\log q_\tau(y)$, so the
+$1/\tau$ in Eq.~\ref{eq:denoiser-def} cancels analytically:
+\begin{equation}
+  \boxed{\ \deff(x,\tau) \;=\; \E_\xi\Big[\ \big\lVert\, \xi + \sqrt\tau\,\sin(\alpha_t)\,
+  \theta_t^\top \nabla\varphi\big(\sin(\alpha_t)\,y\big) \,\big\rVert^2\ \Big], \qquad
+  y = x + \sqrt\tau\,\xi. \ }
+  \label{eq:deff-denoiser}
+\end{equation}
+No $\log Z_t$, no $m_t$, no normalisation constant -- only $\theta_t$ and
+$\nabla\varphi$. This is the primary estimator
+(\code{effective\_dimension.denoiser\_d\_eff}).
+
+\section{Energy form}
+
+From $U(y,\tau) = -\log q_\tau(y)$,
+\begin{equation}
+  U(y,\tau) \;=\; -\theta_t^\top\varphi\big(\sin(\alpha_t) y\big) \;+\; \log Z_t
+  \;-\; d\log\sin(\alpha_t).
+  \label{eq:energy}
+\end{equation}
+The last term is analytic in $t$; the first two are not, so
+Eq.~\ref{eq:energy-def}'s $\partial_s$ is taken numerically, by
+finite-differencing $\E_y[U(y,\tau)\mid x]$ directly across the
+$t_{\mathrm{reg}}$ grid (converted to $s=\tfrac12\log\tau(t)$), rather than
+splitting analytic/Monte-Carlo pieces
+(\code{effective\_dimension.energy\_d\_eff}).
+
+\paragraph{$\log Z_t$: a bound, not an exact value.} MGD's Prop.~4.3/Eq.~30
+gives, in this code's convention,
+\begin{equation}
+  \log Z_t \;\gtrsim\; H_{\mathrm{bound}}(t) + \theta_t^\top m_t, \qquad
+  H_{\mathrm{bound}}(t) = H(p_0) + \int_0^t dH_s\,ds,
+  \label{eq:logZ-bound}
+\end{equation}
+generalised from MGD's stated $t=1$ endpoint to any $t$ (the integral is
+just truncated earlier). This is a \emph{lower} bound on $\log Z_t$, so
+\textbf{the energy-form $\deff$ inherits that bound's bias} -- it is a
+secondary cross-check on the denoiser form, not an independent estimate.
+$H_{\mathrm{bound}}(t)$ is built by trapezoid-integrating the already-saved
+$dH_t^{\mathrm{bound}}$ (\code{effective\_dimension.h\_bound\_at}); $m_t$ is
+either the saved \code{aux\_moments} (the run's own realised target moments)
+or, if not pulled from the cluster yet, recomputed directly from the data
+and schedule, $m_t = \E_{Z}[\varphi(\cos\alpha_t\,Z + \sin\alpha_t\,x_1)]$ --
+independent of any saved particle trajectory, so no SDE rerun either way
+(\code{effective\_dimension.recompute\_m\_t}).
+
+\section{Dictionary}
+
+\begin{center}
+\begin{tabular}{@{}ll@{}}
+\toprule
+Guth et al. & MGD (this codebase) \\
+\midrule
+VE noise scale $\tau$ & $\tau(t) = \cot^2(\alpha_t)$, $\alpha_t=\pi t/2$ \\
+score $\nabla_y\log q_\tau(y)$ & $+\sin(\alpha_t)\,\theta_t^\top\nabla\varphi(\sin(\alpha_t) y)$ \\
+energy $U(y,\tau)$ & $-\theta_t^\top\varphi(\sin(\alpha_t) y) + \log Z_t - d\log\sin(\alpha_t)$ \\
+$\log Z_\tau$ & $H_{\mathrm{bound}}(t) + \theta_t^\top m_t$ \emph{(bound, Eq.~\ref{eq:logZ-bound})} \\
+noised sample $y=x+\sqrt\tau\,\xi$ & $\sin(\alpha_t)\,y = $ \code{compute\_interpolant}$(x,\xi)$ \\
+per-$\tau$ fit & $\theta_t \equiv$ \code{Theta\_reg[i]}, grid $t_{\mathrm{reg}}$ \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+\section{What's used from a saved run}
+
+\begin{itemize}
+  \item \code{Theta\_reg}, shape $(n_t, r)$ -- the regularised $\theta_t$ trajectory
+        (\code{codes/regularised\_theta.py}); used exclusively (not the raw,
+        finer $\theta_t$) for a single self-consistent grid and to avoid a
+        pre-fix off-by-one alignment issue present in some saved runs' raw
+        $\theta_t$/\code{dH\_t\_bound} pairing.
+  \item $t_{\mathrm{reg}}$ -- \code{Theta\_reg}'s own coarse time grid; not saved
+        for the $d{=}256$ runs on disk as of this writing, so it is
+        reconstructed offline (\code{reconstruct\_t\_reg}) by replaying
+        \code{SDE.forward\_regularised}'s block-accumulation and
+        near-node-pruning exactly, from the saved fine grid $t$ alone --
+        verified to reproduce the on-disk \code{Theta\_reg} length exactly.
+  \item Each run's \code{fitted\_potentials/} -- $\varphi,\nabla\varphi$ with the
+        SAME pruned active-statistic set the fit used (some potentials
+        auto-prune during \code{fit()}; skipping this step silently
+        mis-indexes every $\theta$ coefficient).
+  \item \code{dH\_t\_bound} + the fine grid $t$ -- integrated to $H_{\mathrm{bound}}(t)$
+        (Eq.~\ref{eq:logZ-bound}), needed only by the energy form.
+  \item \code{aux\_moments} (\code{barphi\_e}) if pulled from the cluster, else
+        $m_t$ recomputed from the run's own $x_1$ -- needed only by the
+        energy form.
+\end{itemize}
+
+\section{Caveats}
+
+\begin{itemize}
+  \item The energy form differentiates a bound on a Monte-Carlo-noisy curve;
+        expect it visibly noisier than the denoiser form at matched sample
+        counts, and treat disagreements between the two as informative
+        about the bound's tightness rather than as a bug.
+  \item $\theta_t$ becomes numerically extreme as $t\to1$ ($\tau\to0$): every
+        seed inspected so far has one dominant, near-null-direction
+        coefficient at the finest scale. This is harmless for the actual
+        energy/score (both stay smooth off-support -- checked directly),
+        but $\theta_t^\top\varphi$ and $\theta_t^\top\nabla\varphi$ must be
+        computed in double precision, not the float32 the values are stored in.
+  \item The finest available $\tau$ is set by how close to $t=1$ the run's
+        schedule and \code{n\_subsample} block reach, not by an arbitrary
+        choice -- see \code{codes/effective\_dimension.py}'s
+        \code{reconstruct\_t\_reg} for the exact grid actually available for
+        a given run.
+\end{itemize}
+
+\end{document}

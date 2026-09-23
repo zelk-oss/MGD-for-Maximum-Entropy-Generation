@@ -1038,16 +1038,6 @@ from filters_1d import init_band_pass
 from filters_bank import return_Filters
 
 
-
-import numpy as np
-import torch
-from scipy.special import gammaln, gammainc
-from scipy.optimize import minimize
-import matplotlib
-matplotlib.use("Agg")
-import matplotlib.pyplot as plt
-
-
 class Scalar_GGD_KRegion():
     def __init__(self, filters,
                  num_regions=4,
