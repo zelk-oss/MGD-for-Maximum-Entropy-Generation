@@ -133,6 +133,13 @@ def parse_args():
                          'regularization strength -- not the MRW intermittency)')
     p.add_argument('--n_subsample', type=int, default=100,
                     help='n_subsample passed to Solver.forward_regularised')
+    p.add_argument('--reg_solver', type=str, default='dense', choices=['dense', 'thomas'],
+                    help="Solver for Theta_reg: 'dense' (legacy float32 dense solve) or "
+                         "'thomas' (float64 block-Thomas on CPU, O(n r^2) memory; use "
+                         "with --n_subsample 1 for no block averaging)")
+    p.add_argument('--reg_ridge', type=float, default=0.0,
+                    help='thomas only: M_k += reg_ridge * diag(M_k) in the Theta_reg '
+                         'problem (0 = off)')
 
     # Batch
     p.add_argument('--batch_size', type=int, default=None,

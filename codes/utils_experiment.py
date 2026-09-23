@@ -163,6 +163,13 @@ def _config_name_parts(args, M, include_seed=True):
         f'n1_{args.n1}',
         f'lam{args.lam}',
     ]
+    # Non-default regularised solver gets its own tag (dense runs keep their old
+    # names). Needed because loading matches by name prefix: without it a thomas
+    # run would silently reload a dense run with the same parameters.
+    if getattr(args, 'reg_solver', 'dense') != 'dense':
+        parts.append(f'{args.reg_solver}_nsub{args.n_subsample}')
+        if getattr(args, 'reg_ridge', 0.0):
+            parts.append(f'ridge{args.reg_ridge}')
     if include_seed:
         parts.append(f'seed_{args.seed}')
     parts.append(f'terms{terms_hash}')
@@ -339,6 +346,8 @@ def run_experiment(args, M, config, x1, filters, t, logger, outdir, device,
     xt, barphi_e, barphi_p, eta_t, theta_t, dH_t_bound, Theta_reg, t_reg = Solver.forward_regularised(
         lam=args.lam, n_subsample=args.n_subsample,
         time_limit_min=getattr(args, 'time_limit_min', None),
+        reg_solver=getattr(args, 'reg_solver', 'dense'),
+        reg_ridge=getattr(args, 'reg_ridge', 0.0),
     )
     logger.info('SDE integration finished in %.1f s', timer.time() - t0)
 

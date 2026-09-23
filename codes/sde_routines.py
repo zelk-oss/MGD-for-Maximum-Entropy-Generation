@@ -460,7 +460,7 @@ class SDE(torch.nn.Module):
                 [bb[i] for i in keep], [cc[i] for i in keep])
 
     def forward_regularised(self, lam=1.0, n_subsample=1, param_storage_frequency=1,
-                             time_limit_min=None):
+                             time_limit_min=None, reg_solver='dense', reg_ridge=0.0):
         """
         As forward, but stores the regularised-problem quantities ON THE WALKERS X_t = x_k
         and solves A Theta = f (section 4) on a coarse grid after the loop.
@@ -482,8 +482,25 @@ class SDE(torch.nn.Module):
         Callers must save t_reg alongside Theta_reg if they want to plot/interpret
         Theta_reg on its correct time axis later -- it cannot be reconstructed from
         `t` + `n_subsample` alone.
+
+        reg_solver selects the solve of A Theta = f:
+          'dense'  -- legacy: dense (n*r)^2 float32 solve on the device, with
+                      self.regularization added after Jacobi scaling, and nodes
+                      closer than ~1e-5 cut. Unchanged, so old runs reproduce.
+          'thomas' -- block-Thomas in float64 on CPU, O(n r^2) memory, no Schur
+                      ridge, only exact-duplicate times cut. Per-block matrices
+                      are offloaded to CPU during the loop, so n_subsample=1
+                      (no block averaging, Guth's system on the full grid) fits.
+        reg_ridge (thomas only): M_k += reg_ridge * diag(M_k), a ridge on the data
+        term of the original problem; 0 disables it.
         """
         assert self.interpolant == 'Cos', "this routine assumes the Cos schedule"
+        if reg_solver not in ('dense', 'thomas'):
+            raise ValueError(f"reg_solver must be 'dense' or 'thomas', got {reg_solver!r}")
+        if reg_solver == 'dense' and reg_ridge:
+            raise ValueError("reg_ridge is only implemented for reg_solver='thomas'")
+        # thomas: keep per-block matrices on CPU so the full fine grid fits
+        store = (lambda x: x.detach().cpu()) if reg_solver == 'thomas' else (lambda x: x)
         assert self.x_k.shape[0] == self.x_0.shape[0], "need n_rep == nb_interpolants to pair X_t with Z"
         #self.fit(self.x_1)
         #self._sync_potential_dims()  
@@ -533,8 +550,8 @@ class SDE(torch.nn.Module):
                     accM += Mk; accG += Gk; accb += bk; accc += ck
                 cnt += 1
                 if cnt == n_subsample:
-                    M.append(accM / cnt); Gf.append(accG / cnt)
-                    bb.append(accb / cnt); cc.append(accc / cnt)
+                    M.append(store(accM / cnt)); Gf.append(store(accG / cnt))
+                    bb.append(store(accb / cnt)); cc.append(store(accc / cnt))
                     cnt = 0
 
             if (k + 1) % param_storage_frequency == 0:
@@ -545,8 +562,8 @@ class SDE(torch.nn.Module):
             self._check_time_budget(loop_t0, k + 1, time_limit_min)
 
         if cnt > 0:                                                    # final partial block
-            M.append(accM / cnt); Gf.append(accG / cnt)
-            bb.append(accb / cnt); cc.append(accc / cnt)
+            M.append(store(accM / cnt)); Gf.append(store(accG / cnt))
+            bb.append(store(accb / cnt)); cc.append(store(accc / cnt))
 
         #Theta_reg_thomas = self._solve_regularised_thomas(t_used[1:], M[1:], Gf[1:], bb[1:], cc[1:], lam)
 
@@ -556,15 +573,22 @@ class SDE(torch.nn.Module):
         print("Preparing regularised solve")
         self._print_memory("Before _solve_regularised")
 
+        # dense: the ~1e-5 cut keeps its float32 solve conditioned (legacy behaviour).
+        # thomas (float64): drop only exact-duplicate times, which would give dt = 0.
         t_reg, M_reg, Gf_reg, bb_reg, cc_reg = self._cut_close_time_nodes(
-            t_used[1:], M[1:], Gf[1:], bb[1:], cc[1:]
+            t_used[1:], M[1:], Gf[1:], bb[1:], cc[1:],
+            min_dt=1e-12 if reg_solver == 'thomas' else None,
         )
 
         print("Dropped close-in-time nodes:", len(t_used) - 1 - len(t_reg))
         print("Last times:", t_reg[-5:])
         print("Last dt:", np.diff(t_reg[-5:]))
 
-        Theta_reg = self._solve_regularised(t_reg, M_reg, Gf_reg, bb_reg, cc_reg, lam)
+        if reg_solver == 'thomas':
+            Theta_reg = self._solve_regularised_thomas(
+                t_reg, M_reg, Gf_reg, bb_reg, cc_reg, lam, ridge=reg_ridge)
+        else:
+            Theta_reg = self._solve_regularised(t_reg, M_reg, Gf_reg, bb_reg, cc_reg, lam)
 
         self._print_memory("After _solve_regularised")
 
@@ -638,66 +662,111 @@ class SDE(torch.nn.Module):
 
         return (z / S).reshape(n, r) 
     
-    def _solve_regularised_thomas(self, t, M, Gf, bb, cc, lam, eps_reg_theta=1e-6):
+    def _solve_regularised_thomas(self, t, M, Gf, bb, cc, lam, eps_reg_theta=0.0,
+                                  ridge=0.0, dtype=torch.float64, device='cpu'):
         """
         Same block-tridiagonal system as _solve_regularised, solved via block-Thomas
         elimination with block-Jacobi preconditioning instead of a dense (n*r, n*r)
-        solve. Memory: O(n * r**2) instead of O(n**2 * r**2). At lam=0 this reduces
-        exactly to compute_theta's preconditioned per-step solve.
+        solve. Memory: O(n * r**2) instead of O(n**2 * r**2) -- the only O(n r^2)
+        buffer is the elimination factor c', so the full fine grid (n_subsample=1)
+        fits in host RAM. At lam=0 this reduces to the per-step solves M_k theta_k = b_k.
+
+        Blocks are built on the fly from M/Gf/bb/cc (any device/dtype, typically
+        float32 on CPU) and all arithmetic is in `dtype` on `device` (float64 CPU by
+        default): with the lam/dt^2 coupling large on a fine grid, the Schur
+        complements D_k - L c' cancel O(lam/dt^2) terms down to O(M), which float32
+        cannot resolve.
+
+        A is SPD (M PSD + lam * time-Laplacian (x) G PSD), so the Schur complements
+        stay SPD and elimination without pivoting across blocks is stable.
+
+        ridge : M_k += ridge * diag(M_k) -- a ridge on the data term of the original
+                problem (same system for any solver). 0 disables it.
+        eps_reg_theta : legacy ridge added to each Schur complement, relative to its
+                mean diagonal. It is NOT a regularisation of the original problem and
+                biases Theta when M, G are ill-conditioned; keep 0 unless debugging.
+
+        Prints the relative residual of the Jacobi-scaled system as a solve check.
         """
-        t = np.asarray(t, dtype=float)
-        n, r, dev = len(t), self.num_potentials, self.device
+        t = np.asarray(t, dtype=np.float64)
+        n, r = len(t), self.num_potentials
         dt = np.diff(t)
-        w  = [lam / dk ** 2 for dk in dt]
+        if (dt <= 0).any():
+            raise ValueError("t must be strictly increasing for the regularised solve")
+        w = lam / dt ** 2                                  # time-coupling weights
+        g = lam / dt                                       # weights of the c terms
 
-        D = [M[k].clone() for k in range(n)]
-        for k in range(n - 1):
-            D[k]     = D[k]     + w[k] * Gf[k]
-            D[k + 1] = D[k + 1] + w[k] * Gf[k]
-        U = [-w[k] * Gf[k] for k in range(n - 1)]
-        L = [Uk.transpose(0, 1) for Uk in U]
+        get = lambda X: X.to(device=device, dtype=dtype)
+        sym = lambda X: (X + X.T) / 2
 
-        f = [bb[k].clone() for k in range(n)]
-        for k in range(n - 1):
-            f[k]     = f[k]     - (lam / dt[k]) * cc[k]
-            f[k + 1] = f[k + 1] + (lam / dt[k]) * cc[k]
+        def Mb(k):
+            m = sym(get(M[k]))
+            return m + ridge * torch.diag(torch.diagonal(m)) if ridge else m
 
-        # block-Jacobi preconditioning, mirrors compute_eta / compute_theta
-        S = [torch.diagonal(Dk).clamp_min(1e-30).sqrt() for Dk in D]
-        for k in range(n):
-            D[k] = D[k] / (S[k][:, None] * S[k][None, :])
-            D[k] = (D[k] + D[k].T) / 2
-            f[k] = f[k] / S[k]
-        for k in range(n - 1):
-            U[k] = U[k] / (S[k][:, None] * S[k + 1][None, :])
-            L[k] = U[k].transpose(0, 1)
+        def Gb(k):
+            return sym(get(Gf[k]))
 
-        eye = torch.eye(r, device=dev, dtype=D[0].dtype)
-        c_prime, d_prime = [None] * max(n - 1, 0), [None] * n
-
-        denom0 = D[0] + eps_reg_theta * D[0].diagonal().abs().mean() * eye
-        if n > 1:
-            sol0 = torch.linalg.solve(denom0, torch.cat([U[0], f[0][:, None]], dim=1))
-            c_prime[0], d_prime[0] = sol0[:, :-1], sol0[:, -1]
-        else:
-            d_prime[0] = torch.linalg.solve(denom0, f[0])
-
-        for k in range(1, n):
-            denom = D[k] - L[k - 1] @ c_prime[k - 1]
-            rhs   = f[k] - L[k - 1] @ d_prime[k - 1]
-            denom = denom + eps_reg_theta * denom.diagonal().abs().mean() * eye
+        def Db(k):                                         # diagonal block A[k, k]
+            D = Mb(k)
+            if k > 0:
+                D = D + w[k - 1] * Gb(k - 1)
             if k < n - 1:
-                sol = torch.linalg.solve(denom, torch.cat([U[k], rhs[:, None]], dim=1))
+                D = D + w[k] * Gb(k)
+            return D
+
+        def fb(k):                                         # second member f[k]
+            f = get(bb[k]).reshape(-1)
+            if k < n - 1:
+                f = f - g[k] * get(cc[k]).reshape(-1)
+            if k > 0:
+                f = f + g[k - 1] * get(cc[k - 1]).reshape(-1)
+            return f
+
+        # block-Jacobi scales (sqrt of diag of A), needed one block ahead for U_k
+        S = torch.stack([torch.diagonal(Db(k)).clamp_min(1e-300).sqrt() for k in range(n)])
+
+        def Ub(k):                                         # scaled A[k, k+1] = -w_k G_k
+            return -w[k] * Gb(k) / (S[k][:, None] * S[k + 1][None, :])
+
+        eye = torch.eye(r, device=device, dtype=dtype)
+        c_prime = torch.empty((max(n - 1, 0), r, r), device=device, dtype=dtype)
+        d_prime = torch.empty((n, r), device=device, dtype=dtype)
+
+        for k in range(n):
+            D = sym(Db(k) / (S[k][:, None] * S[k][None, :]))
+            rhs = fb(k) / S[k]
+            if k > 0:
+                L = Ub(k - 1).T                            # scaled A[k, k-1]
+                D = D - L @ c_prime[k - 1]
+                rhs = rhs - L @ d_prime[k - 1]
+            if eps_reg_theta:
+                D = D + eps_reg_theta * D.diagonal().abs().mean() * eye
+            if k < n - 1:
+                sol = torch.linalg.solve(D, torch.cat([Ub(k), rhs[:, None]], dim=1))
                 c_prime[k], d_prime[k] = sol[:, :-1], sol[:, -1]
             else:
-                d_prime[k] = torch.linalg.solve(denom, rhs)
+                d_prime[k] = torch.linalg.solve(D, rhs)
 
-        Theta_scaled = [None] * n
+        Theta_scaled = torch.empty((n, r), device=device, dtype=dtype)
         Theta_scaled[-1] = d_prime[-1]
         for k in range(n - 2, -1, -1):
             Theta_scaled[k] = d_prime[k] - c_prime[k] @ Theta_scaled[k + 1]
+        del c_prime
 
-        return torch.stack([Theta_scaled[k] / S[k] for k in range(n)])
+        # solve check: residual of the scaled system  S^-1 (A Theta - f)
+        res2 = f2 = 0.0
+        for k in range(n):
+            Ax = (Db(k) / (S[k][:, None] * S[k][None, :])) @ Theta_scaled[k]
+            if k < n - 1:
+                Ax = Ax + Ub(k) @ Theta_scaled[k + 1]
+            if k > 0:
+                Ax = Ax + Ub(k - 1).T @ Theta_scaled[k - 1]
+            fk = fb(k) / S[k]
+            res2 += float(((Ax - fk) ** 2).sum()); f2 += float((fk ** 2).sum())
+        print(f"Thomas solve: n={n}, r={r}, relative scaled residual "
+              f"{(res2 / max(f2, 1e-300)) ** 0.5:.2e}, finite={bool(torch.isfinite(Theta_scaled).all())}")
+
+        return Theta_scaled / S
 
 
     def iteration_step_projection(self, x_k, k):
