@@ -18,7 +18,8 @@
 \emergencystretch=3em
 
 \title{Effective dimensionality $\deff(x,\tau)$ from MGD's fitted $\theta_t$}
-\author{Generated with Claude Code, from a code-reading session on 2026-09-23}
+\author{Generated with Claude Code, from code-reading and debugging sessions,
+  2026-09-23 to 2026-09-24}
 \date{}
 
 \begin{document}
@@ -135,6 +136,7 @@ $\nabla\varphi$. This is the primary estimator
 (\code{effective\_dimension.denoiser\_d\_eff}).
 
 \section{Energy form}
+\label{sec:energy-bound}
 
 From $U(y,\tau) = -\log q_\tau(y)$,
 \begin{equation}
@@ -167,6 +169,113 @@ or, if not pulled from the cluster yet, recomputed directly from the data
 and schedule, $m_t = \E_{Z}[\varphi(\cos\alpha_t\,Z + \sin\alpha_t\,x_1)]$ --
 independent of any saved particle trajectory, so no SDE rerun either way
 (\code{effective\_dimension.recompute\_m\_t}).
+
+\paragraph{Empirical confirmation (2026-09-24, real 50-seed $d{=}256$
+sweep).} The bound-bias prediction above was checked against a real,
+full-resolution run (not a synthetic test): 50 seeds, real \code{aux\_moments}
+pulled from the cluster, the full $t_{\mathrm{reg}}$ grid ($197$ nodes), 128
+Monte-Carlo draws per node. Two signatures both hold, matching what a
+one-sided lower bound predicts (rather than the sign-inconsistent, chaotic
+pattern a residual implementation bug would produce):
+\begin{itemize}
+  \item \textbf{Consistent sign.} The energy form comes out \emph{lower}
+        than the denoiser form in $74\%$ of all (seed, point, $\tau$)
+        comparisons overall, reaching $100\%$ at the coarsest end of the
+        grid.
+  \item \textbf{Growing magnitude.} The median gap grows from about $-15$
+        near $\tau\approx 50$ to about $-87$ near $\tau\approx 1.2\times
+        10^{-3}$, with its spread growing alongside (median
+        $\mathrm{std}$ across seeds rising from $\sim 5$ to $\sim 100$+ over
+        the same range) -- consistent with the bound's slack accumulating
+        as an (unlogged) Fisher-divergence-type residual along the
+        transport, which generically grows with $t$.
+\end{itemize}
+Since the residual reflects how well the fitted score $\theta_t^\top
+\nabla\varphi$ matches the true score at each step, \textbf{a better-converged
+fit (finer $t$-grid, more potentials, better regularisation, \ldots) should
+directly tighten $H_{\mathrm{bound}}(t)$ and shrink this gap} -- it is a
+property of the fit's quality, not a fixed offset.
+
+\section{Validation against a closed-form Gaussian test}
+\label{sec:gaussian-test}
+
+To separate genuine implementation bugs from the expected bound bias above,
+both estimators were checked against an exact, independently-derived ground
+truth -- no SDE, no fitting, no $\theta_t$ from any real run. For
+$x\sim\mathcal N(0,\Sigma)$, $y=x+\sqrt\tau\,\xi$, $q_\tau=\mathcal
+N(0,\Sigma+\tau I)$ exactly, so Tweedie's formula gives (diagonal basis,
+$\Sigma=\mathrm{diag}(\sigma_i^2)$):
+\begin{equation}
+  \deff(x,\tau) \;=\; \sum_i \frac{\tau x_i^2 + \sigma_i^4}{(\sigma_i^2+\tau)^2},
+  \label{eq:gaussian-oracle}
+\end{equation}
+verified against brute-force $(\Sigma+\tau I)^{-1}$ linear algebra (agrees
+to $\sim 10^{-16}$) and its $\tau\to0$ ($\to d$) and isotropic-expectation
+($\to d\sigma^2/(\sigma^2+\tau)$) limits. For \emph{this} synthetic data MGD's
+own $p_t$ is also exactly Gaussian, so $\theta_t=-d/(2v(t))$ and $\log
+Z_t=\tfrac{d}{2}\log(2\pi v(t))$, $v(t)=\cos^2\alpha_t+\sin^2\alpha_t\,
+\sigma_{\mathrm{data}}^2$, are exact too (single-coefficient potential
+$\varphi(x)=\overline{x^2}$) -- feeding these directly into the
+\emph{unmodified} \code{denoiser\_d\_eff}/\code{energy\_d\_eff} isolates
+implementation bugs with zero fitting noise and zero bound bias.
+
+Using the real production grid ($d{=}256$, $t_{\mathrm{reg}}$ reconstructed
+from \code{nt=40000}, \code{n\_subsample=200}): \textbf{denoiser\_d\_eff
+matched the oracle to $<0.5\%$ relative error everywhere} ($10$ decades of
+$\tau$, $|\theta|$ up to $512$) -- its implementation is correct.
+\code{energy\_d\_eff}, despite the exact inputs, showed errors up to
+$1320\%$, concentrated at the \emph{coarsest} end of the grid.
+
+\subsection{Root cause: $s=\tfrac12\log\tau$ is highly non-uniform, and it
+was differentiated naively}
+
+$\tau(t)=\cot^2(\alpha_t)$ diverges (logarithmically, in $s$) at both
+$t\to0$ and $t\to1$, so $s(t)$ is intrinsically badly stretched near the
+ends of the range \emph{regardless of the $t$-schedule} -- confirmed
+directly: a perfectly \emph{uniform}-in-$t$ grid has an even worse
+max/min local-$\Delta s$ ratio ($340\times$) than the actual Cos-schedule
+production grid ($67\times$, since bunching points near $t=1$ partially
+compensates). Differentiating $\E_y[U]$ across this grid with a raw
+finite difference (\code{numpy.gradient}, which defaults to
+\code{edge\_order=1}) has two compounding failure modes, both confirmed in
+isolation:
+\begin{itemize}
+  \item[(A)] \textbf{Boundary truncation bias.} \code{edge\_order=1} is
+        only first-order accurate at the array's first/last nodes -- on a
+        noiseless synthetic quadratic in $s$, this alone produces a
+        $6.4\%$ error at the boundary (exact at every interior node).
+  \item[(B)] \textbf{Monte-Carlo noise amplification} (the dominant
+        effect): $U(t)$ is itself MC-estimated, and dividing its noise by
+        a small local $\Delta s$ amplifies it. An $n_{\mathrm{mc}}$ sweep
+        at the worst node showed the error shrinking monotonically as
+        $n_{\mathrm{mc}}$ grew ($0.77\to0.29\to0.23$ over
+        $4$k$\to$16k$\to$32k), confirming noise, not just truncation.
+\end{itemize}
+The natural first fix, \code{edge\_order=2}, removes (A) exactly (boundary
+error drops to machine precision on the noiseless check) but \textbf{does
+not help, and can make the realistic case worse} (max relative error
+$17.9$ vs.\ $10.4$) -- its wider stencil has larger coefficients under
+uneven spacing, amplifying (B) more than it fixes (A).
+
+\subsection{Fix: a local polynomial derivative}
+
+\code{energy\_d\_eff} now differentiates $\E_y[U]$ via
+\code{effective\_dimension.local\_poly\_derivative}: at each node, a
+weighted-least-squares quadratic is fit through a window of $2h+1$
+\emph{neighbouring indices} (shifted, not shrunk, at the array edges, so
+every node -- including the boundary -- gets a full window) and
+differentiated analytically. This fixes (A) exactly (machine precision on
+the noiseless check, any window size) and reduces (B) by averaging over
+several points rather than two. Validated on the Gaussian test
+($h=5$, the shipped default): overall median relative error dropped
+$\sim6\times$ ($1.4\%\to0.22\%$), and the fraction of the grid accurate to
+$<1\%$ roughly doubled ($39\%\to70\%$ of nodes, with the ``becomes
+reliable'' point moving from $t\approx0.80$ down to $t\approx0.41$). The
+few nodes at the very coarsest end of the grid remain the least reliable
+part of an energy-form curve on principle -- no local model, however
+fit, is well-conditioned there -- and should be read with that in mind;
+the denoiser form has no such issue, since it involves no differentiation
+step at all.
 
 \section{Dictionary}
 
@@ -213,21 +322,49 @@ per-$\tau$ fit & $\theta_t \equiv$ \code{Theta\_reg[i]}, grid $t_{\mathrm{reg}}$
 \section{Caveats}
 
 \begin{itemize}
-  \item The energy form differentiates a bound on a Monte-Carlo-noisy curve;
-        expect it visibly noisier than the denoiser form at matched sample
-        counts, and treat disagreements between the two as informative
-        about the bound's tightness rather than as a bug.
+  \item \textbf{The energy form's remaining disagreement with the denoiser
+        form is, at this point, believed to be the expected bound bias}
+        (Section~\ref{sec:energy-bound}'s empirical confirmation), not a
+        residual implementation bug -- Section~\ref{sec:gaussian-test}'s
+        controlled test found and fixed a genuine differentiation bug, and
+        what is left afterward is sign-consistent and grows smoothly with
+        $t$, the signature the bound predicts rather than of noise/bugs.
+        This conclusion rests on one 50-seed sweep at one $(\sigma,\lambda)$
+        setting, not a systematic sweep -- treat it as the working
+        hypothesis, not a closed case.
   \item $\theta_t$ becomes numerically extreme as $t\to1$ ($\tau\to0$): every
         seed inspected so far has one dominant, near-null-direction
         coefficient at the finest scale. This is harmless for the actual
         energy/score (both stay smooth off-support -- checked directly),
         but $\theta_t^\top\varphi$ and $\theta_t^\top\nabla\varphi$ must be
-        computed in double precision, not the float32 the values are stored in.
+        computed in double precision, not the float32 the values are stored
+        in. The Gaussian test only exercised $|\theta|$ up to $512$, well
+        below the real runs' $\sim10^{16}$ near $t\to1$ -- this specific
+        extreme-magnitude regime is \emph{not} covered by the validation in
+        Section~\ref{sec:gaussian-test} and remains a plausible contributor
+        to disagreement at the very smallest $\tau$, not yet isolated from
+        the bound bias there.
   \item The finest available $\tau$ is set by how close to $t=1$ the run's
         schedule and \code{n\_subsample} block reach, not by an arbitrary
         choice -- see \code{codes/effective\_dimension.py}'s
         \code{reconstruct\_t\_reg} for the exact grid actually available for
         a given run.
+\end{itemize}
+
+\section*{Implementation changelog}
+
+\begin{itemize}
+  \item \emph{2026-09-23:} \code{denoiser\_d\_eff}/\code{energy\_d\_eff} cast
+        $\theta_t$ to \code{x.dtype} for \code{potentials.grad()} but not to
+        \code{x.device} -- harmless on a single-device (CPU) run, but a hard
+        crash on Jean Zay, where $\theta_t$/$m_t$ load onto CPU
+        (\code{map\_location='cpu'}) while \code{x}/the potentials live on
+        \code{cuda}. Fixed: both are now moved to \code{x.device} inside
+        each function.
+  \item \emph{2026-09-24:} the differentiation bug and fix described in
+        Section~\ref{sec:gaussian-test} (\code{local\_poly\_derivative}
+        replacing a raw \code{numpy.gradient} call in
+        \code{energy\_d\_eff}).
 \end{itemize}
 
 \end{document}

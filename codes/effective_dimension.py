@@ -324,14 +324,110 @@ def denoiser_d_eff(x, theta_reg, t_reg, potentials, n_mc=64, generator=None):
 
 
 # ============================================================================
+# Local-polynomial derivative w.r.t. s (used by the energy form's d/ds step)
+# ============================================================================
+
+def local_poly_derivative(s, U, half_window=5, degree=2):
+    """d(U)/d(s) at each node, via a local weighted-least-squares polynomial
+    fit (degree `degree`) over a window of `2*half_window+1` NEIGHBORING
+    INDICES, differentiated analytically at each node.
+
+    Replaces a raw two/three-point finite difference (e.g. np.gradient) for
+    exactly this problem: s = (1/2) log(tau(t)) is HIGHLY non-uniformly
+    spaced (tau = cot^2(alpha_t) diverges logarithmically at both t->0 and
+    t->1, so even a perfectly-uniform-in-t grid has wildly uneven spacing in
+    s -- measured directly, up to ~340x on a uniform-in-t grid, vs ~67x on
+    the production Cos-schedule grid, which actually PARTLY compensates by
+    refining t near t=1). A bare finite difference over such uneven spacing
+    has two failure modes, both confirmed on an exact (noiseless) synthetic
+    check and on the real energy_d_eff pipeline with Monte-Carlo noise:
+
+      (A) numpy's np.gradient defaults to edge_order=1 (first-order-accurate
+          one-sided differences at the array's first/last elements) -- a
+          real O(local ds) truncation bias, worst exactly where ds is
+          largest. A local polynomial fit uses a full window (shifted, not
+          shrunk) at every node including the edges, and is exact on a
+          noiseless quadratic test at EVERY node (~1e-13, vs ~6% relative
+          error with np.gradient's default at the boundary).
+      (B) the *dominant* real-world effect: U(t) is itself a Monte-Carlo
+          estimate (finite n_mc), and dividing its noise by a small local ds
+          amplifies it -- np.gradient's edge_order=2 (a natural first guess
+          at fixing (A)) makes this WORSE, not better, since its wider
+          stencil has larger coefficients under uneven spacing. Averaging
+          over `2*half_window+1` neighbors via least squares directly cuts
+          this noise (measured: ~2-4x lower overall error vs np.gradient
+          depending on half_window, see notes/effective_dimension_MGD.tex).
+
+    CAVEAT, not fully resolved by this function alone: the few nodes at the
+    LARGEST-tau end of the production t_reg grid (where local ds in s is
+    largest by construction) remain the least reliable stretch of the curve
+    regardless of half_window -- a local quadratic is a poor model there no
+    matter how many neighbors it's fit over, since they all sit far away in
+    s. Treat that end of an energy_d_eff curve as low-confidence; the
+    denoiser form has no such issue (no differentiation step at all).
+
+    Parameters
+    ----------
+    s : array_like, shape (n_t,)
+        Strictly monotonic (increasing OR decreasing) -- need not be
+        uniformly spaced. No sorting is performed: t_reg is already sorted
+        and s(t) is monotonic in t, so a window of adjacent INDICES in
+        t_reg's own order is exactly the right local neighborhood in s too.
+    U : array_like, shape (n_t, ...)
+        Any trailing shape; the derivative is taken along axis 0.
+    half_window : int, optional
+        Window is `2*half_window+1` neighboring indices, shifted (not
+        shrunk) at the array edges so every node gets a full window.
+    degree : int, optional
+        Local polynomial degree (2 = quadratic, matching the analysis in
+        notes/effective_dimension_MGD.tex).
+
+    Returns
+    -------
+    numpy.ndarray, same shape as U.
+    """
+    s = np.asarray(s, dtype=np.float64)
+    n = len(s)
+    out_shape = np.asarray(U).shape
+    U2 = np.asarray(U, dtype=np.float64).reshape(n, -1)
+    out = np.zeros_like(U2)
+
+    for i in range(n):
+        lo, hi = i - half_window, i + half_window + 1
+        if lo < 0:
+            hi -= lo
+            lo = 0
+        if hi > n:
+            lo -= (hi - n)
+            hi = n
+        lo = max(lo, 0)
+        window = slice(lo, hi)
+        deg = min(degree, (hi - lo) - 1)          # can't fit degree > (#points - 1)
+
+        ds = s[window] - s[i]                     # center at the node -> derivative = linear coeff
+        A = np.vander(ds, deg + 1, increasing=True)
+        coeffs, *_ = np.linalg.lstsq(A, U2[window], rcond=None)   # (deg+1, m)
+        out[i] = coeffs[1] if deg >= 1 else 0.0
+
+    return out.reshape(out_shape)
+
+
+# ============================================================================
 # d_eff -- energy form
 # ============================================================================
 
 def energy_d_eff(x, theta_reg, t_reg, potentials, m_t_reg, H_bound_t_reg, d,
-                  n_mc=64, generator=None):
+                  n_mc=64, generator=None, half_window=5):
     """Guth's energy-form d_eff(x, tau) = d - d/ds E_y[U(y,tau) | x],
-    s = (1/2) log tau, evaluated by finite-differencing E_y[U] directly on
-    the t_reg grid (rather than splitting analytic/MC pieces).
+    s = (1/2) log tau, evaluated by differentiating E_y[U] directly on the
+    t_reg grid (rather than splitting analytic/MC pieces), via
+    local_poly_derivative -- NOT a raw two/three-point finite difference
+    (np.gradient): s is highly non-uniformly spaced and U is itself
+    Monte-Carlo noisy, and a bare finite difference badly amplifies that
+    noise plus carries an O(local ds) boundary bias; see
+    local_poly_derivative's docstring for the two confirmed failure modes
+    and notes/effective_dimension_MGD.tex for the numbers. `half_window`
+    is passed straight through to it.
 
     U(y,tau) = -theta_t^T phi(sin(alpha_t) y) + logZ_t - d*log(sin(alpha_t))
              (code's (+) convention -- the sign on the phi term and on
@@ -379,8 +475,5 @@ def energy_d_eff(x, theta_reg, t_reg, potentials, m_t_reg, H_bound_t_reg, d,
         mean_phi_term = (phi_sy @ theta_i).mean(0).detach().cpu().numpy()
         U[i] = -mean_phi_term + logZ[i] - d * np.log(np.sin(ai))
 
-    order = np.argsort(s)                       # s is decreasing in t_reg; sort ascending for np.gradient
-    dUds_sorted = np.gradient(U[order], s[order], axis=0)
-    dUds = np.empty_like(dUds_sorted)
-    dUds[order] = dUds_sorted
+    dUds = local_poly_derivative(s, U, half_window=half_window, degree=2)
     return d - dUds
