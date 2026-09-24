@@ -126,6 +126,19 @@ def parse_args():
     p.add_argument('--reg_ridge', type=float, default=0.0,
                     help='thomas only: M_k += reg_ridge * diag(M_k) in the Theta_reg '
                          'problem (0 = off)')
+    p.add_argument('--solve_float64', action='store_true',
+                    help='Per-step eta/theta solves in float64 (needed only for small '
+                         '--regularization, ridge near float32 rounding); adds _f64 to the name')
+    p.add_argument('--save_reg_system', action='store_true',
+                    help='Save the regularised system (t_reg, M, G, b, c) before the '
+                         'solve, for offline lam re-tuning with codes/resolve_theta_reg.py '
+                         '(~ nt * r^2 * 8 bytes: ~24 GB for nt=40000, r=272)')
+    p.add_argument('--reg_system_dir', type=str, default=None,
+                    help='Where --save_reg_system writes (default '
+                         '<outdir>/saved_results/reg_system), e.g. a $SCRATCH path')
+    p.add_argument('--skip_reg_solve', action='store_true',
+                    help='Skip the in-run Theta_reg solve (requires --save_reg_system); '
+                         'roughly halves peak host RAM, solve offline instead')
 
     # Batch
     p.add_argument('--batch_size', type=int, default=None,

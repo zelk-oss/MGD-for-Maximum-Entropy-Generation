@@ -23,3 +23,9 @@ lagrange_multipliers
 lagrange_multipliers_regularised
 sampling_times
 entropy_bounds
+
+# Offline lam re-tuning (codes/resolve_theta_reg.py): the saved regularised
+# systems are ~24 GB per run (--save_reg_system), and the per-lam Theta_reg
+# solutions ~90 MB each. Fetch specific ones with pull_results.
+reg_system
+theta_reg_lamsweep

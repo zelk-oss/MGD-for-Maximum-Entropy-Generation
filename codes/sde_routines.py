@@ -150,11 +150,15 @@ class SDE(torch.nn.Module):
         x_k=None,
         use_coshgt_s0=True,
         potentials_save_dir=None,  
+        solve_float64=False,
     ):
         super().__init__()
 
         self.x_1 = x_1
         self.original_signal_shape = self.x_1.shape
+        # per-step eta/theta solves in float64 (G and rhs upcast, result cast back);
+        # only matters for small `regularization` (ridge near float32 rounding ~1e-7)
+        self.solve_float64 = solve_float64
 
         match len(self.x_1.shape):
             case 2:
@@ -460,7 +464,8 @@ class SDE(torch.nn.Module):
                 [bb[i] for i in keep], [cc[i] for i in keep])
 
     def forward_regularised(self, lam=1.0, n_subsample=1, param_storage_frequency=1,
-                             time_limit_min=None, reg_solver='dense', reg_ridge=0.0):
+                             time_limit_min=None, reg_solver='dense', reg_ridge=0.0,
+                             reg_system_path=None, solve_reg=True):
         """
         As forward, but stores the regularised-problem quantities ON THE WALKERS X_t = x_k
         and solves A Theta = f (section 4) on a coarse grid after the loop.
@@ -493,12 +498,21 @@ class SDE(torch.nn.Module):
                       (no block averaging, Guth's system on the full grid) fits.
         reg_ridge (thomas only): M_k += reg_ridge * diag(M_k), a ridge on the data
         term of the original problem; 0 disables it.
+
+        reg_system_path: if set, the assembled system (t_reg, M, G, b, c on the grid
+        the solver sees) is written there BEFORE the solve, so lam can be re-tuned
+        offline (codes/resolve_theta_reg.py) without re-running the SDE -- lam never
+        enters the SDE evolution. solve_reg=False skips the in-run solve (Theta_reg
+        is returned as None); only meaningful together with reg_system_path.
         """
         assert self.interpolant == 'Cos', "this routine assumes the Cos schedule"
         if reg_solver not in ('dense', 'thomas'):
             raise ValueError(f"reg_solver must be 'dense' or 'thomas', got {reg_solver!r}")
         if reg_solver == 'dense' and reg_ridge:
             raise ValueError("reg_ridge is only implemented for reg_solver='thomas'")
+        if not solve_reg and reg_system_path is None:
+            raise ValueError("solve_reg=False without reg_system_path would discard the "
+                             "regularised system entirely")
         # thomas: keep per-block matrices on CPU so the full fine grid fits
         store = (lambda x: x.detach().cpu()) if reg_solver == 'thomas' else (lambda x: x)
         assert self.x_k.shape[0] == self.x_0.shape[0], "need n_rep == nb_interpolants to pair X_t with Z"
@@ -584,7 +598,15 @@ class SDE(torch.nn.Module):
         print("Last times:", t_reg[-5:])
         print("Last dt:", np.diff(t_reg[-5:]))
 
-        if reg_solver == 'thomas':
+        if reg_system_path is not None:                  # before the solve: survives a solve OOM
+            self._save_reg_system(reg_system_path, t_reg, M_reg, Gf_reg, bb_reg, cc_reg,
+                                  lam=lam, n_subsample=n_subsample, reg_solver=reg_solver)
+
+        if not solve_reg:
+            print("Skipping in-run regularised solve (solve_reg=False); "
+                  "solve offline with codes/resolve_theta_reg.py")
+            Theta_reg = None
+        elif reg_solver == 'thomas':
             Theta_reg = self._solve_regularised_thomas(
                 t_reg, M_reg, Gf_reg, bb_reg, cc_reg, lam, ridge=reg_ridge)
         else:
@@ -620,9 +642,38 @@ class SDE(torch.nn.Module):
             eta_k_list,
             theta_k_list,
             dH_k_list,
-            Theta_reg[1:],
+            Theta_reg[1:] if Theta_reg is not None else None,
             np.asarray(t_reg[1:], dtype=float),
         )
+
+    def _save_reg_system(self, path, t, M, Gf, bb, cc, **meta):
+        """
+        Write the regularised system A Theta = f exactly as the solver receives it:
+        grid t (float64) and per-node M, G, b, c (float32, CPU), plus metadata.
+        codes/resolve_theta_reg.py rebuilds Theta_reg from this for any lam; like
+        forward_regularised, it drops the first node (Theta[1:], t[1:]).
+
+        Written to a temporary file and renamed, so an interrupted write never
+        leaves a truncated file under the final name.
+        """
+        path = Path(path)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        cpu32 = lambda X: X.detach().to('cpu', torch.float32)
+        system = {
+            't': torch.as_tensor(np.asarray(t, dtype=np.float64)),
+            'M': [cpu32(X) for X in M],
+            'G': [cpu32(X) for X in Gf],
+            'b': [cpu32(X).reshape(-1) for X in bb],
+            'c': [cpu32(X).reshape(-1) for X in cc],
+            'num_potentials': int(self.num_potentials),
+            'meta': dict(meta),
+        }
+        tmp = path.with_name(path.name + '.tmp')
+        t0 = time.time()
+        torch.save(system, tmp)
+        tmp.replace(path)
+        print(f"Saved regularised system ({len(system['t'])} nodes, r={self.num_potentials}) "
+              f"to {path} in {time.time() - t0:.0f} s")
 
     def _solve_regularised(self, t, M, Gf, bb, cc, lam):
         t = np.asarray(t, dtype=float)
@@ -741,11 +792,18 @@ class SDE(torch.nn.Module):
                 rhs = rhs - L @ d_prime[k - 1]
             if eps_reg_theta:
                 D = D + eps_reg_theta * D.diagonal().abs().mean() * eye
-            if k < n - 1:
-                sol = torch.linalg.solve(D, torch.cat([Ub(k), rhs[:, None]], dim=1))
-                c_prime[k], d_prime[k] = sol[:, :-1], sol[:, -1]
-            else:
-                d_prime[k] = torch.linalg.solve(D, rhs)
+            try:
+                if k < n - 1:
+                    sol = torch.linalg.solve(D, torch.cat([Ub(k), rhs[:, None]], dim=1))
+                    c_prime[k], d_prime[k] = sol[:, :-1], sol[:, -1]
+                else:
+                    d_prime[k] = torch.linalg.solve(D, rhs)
+            except torch.linalg.LinAlgError as e:
+                raise torch.linalg.LinAlgError(
+                    f"Thomas: singular block at node {k}/{n} (t={t[k]:.6f}), lam={lam:g}, "
+                    f"ridge={ridge:g}. With lam=0 the blocks are the bare M_k, which can be "
+                    f"exactly rank-deficient (e.g. statistics with identical gradients); "
+                    f"use ridge > 0.") from e
 
         Theta_scaled = torch.empty((n, r), device=device, dtype=dtype)
         Theta_scaled[-1] = d_prime[-1]
@@ -763,8 +821,9 @@ class SDE(torch.nn.Module):
                 Ax = Ax + Ub(k - 1).T @ Theta_scaled[k - 1]
             fk = fb(k) / S[k]
             res2 += float(((Ax - fk) ** 2).sum()); f2 += float((fk ** 2).sum())
+        self.last_reg_residual = (res2 / max(f2, 1e-300)) ** 0.5
         print(f"Thomas solve: n={n}, r={r}, relative scaled residual "
-              f"{(res2 / max(f2, 1e-300)) ** 0.5:.2e}, finite={bool(torch.isfinite(Theta_scaled).all())}")
+              f"{self.last_reg_residual:.2e}, finite={bool(torch.isfinite(Theta_scaled).all())}")
 
         return Theta_scaled / S
 
@@ -871,17 +930,26 @@ class SDE(torch.nn.Module):
         I_k              = self.compute_interpolant(k)
         rhs_dt_phi_I_k   = self.compute_rhs_dt_phi_I_t(I_k, k)
         G_k              = self.compute_G(x_k)
-        
-        ################################Regularization###################################
-        D_k12 = torch.diag(G_k).sqrt()
-        G_k = G_k /(D_k12[:,None]*D_k12[None,:])
-        G_k = (G_k+G_k.T)/2
-        G_k+= self.regularization*torch.eye(G_k.shape[-1],).to(G_k.dtype).to(G_k.device)
-        
-        # double precision to avoid fit colinearity 
-        eta_k = torch.linalg.solve(G_k, (rhs_dt_phi_I_k/D_k12[:,None]))[:, 0]
-        eta_k = eta_k/D_k12
+        live             = self._live_potentials(G_k, rhs_dt_phi_I_k, k, 'eta')
 
+        def _solve(G_k, rhs_dt_phi_I_k):
+            out_dtype = G_k.dtype
+            if self.solve_float64:
+                G_k, rhs_dt_phi_I_k = G_k.double(), rhs_dt_phi_I_k.double()
+            ################################Regularization###################################
+            D_k12 = torch.diag(G_k).sqrt()
+            G_k = G_k /(D_k12[:,None]*D_k12[None,:])
+            G_k = (G_k+G_k.T)/2
+            G_k+= self.regularization*torch.eye(G_k.shape[-1],).to(G_k.dtype).to(G_k.device)
+
+            # double precision to avoid fit colinearity
+            eta_k = torch.linalg.solve(G_k, (rhs_dt_phi_I_k/D_k12[:,None]))[:, 0]
+            return (eta_k/D_k12).to(out_dtype)
+
+        if live.all():
+            return _solve(G_k, rhs_dt_phi_I_k)
+        eta_k = torch.zeros(G_k.shape[0], dtype=G_k.dtype, device=G_k.device)
+        eta_k[live] = _solve(G_k[live][:, live], rhs_dt_phi_I_k[live])
         return eta_k
 
 
@@ -953,18 +1021,55 @@ class SDE(torch.nn.Module):
         I_k                      = self.compute_interpolant(k + 1)
         rhs_constraint_correction = self.compute_rhs_constraint_correction(y_k, I_k)
         G_k                      = self.compute_G(y_k)
-        #return torch.linalg.solve(G_k, rhs_constraint_correction)
-        
-        ################################Regularization###################################
-        D_k12 = torch.diag(G_k)**0.5 
-        G_k = G_k /(D_k12[:,None]*D_k12[None,:])
-        G_k = (G_k+G_k.T)/2
-        G_k+= self.regularization*torch.eye(G_k.shape[-1],).to(G_k.dtype).to(G_k.device)
-        
-        theta_k = torch.linalg.solve(G_k, rhs_constraint_correction/D_k12)
-        theta_k = theta_k/D_k12
-        
+        live                     = self._live_potentials(G_k, rhs_constraint_correction, k, 'theta')
+
+        def _solve(G_k, rhs_constraint_correction):
+            out_dtype = G_k.dtype
+            if self.solve_float64:
+                G_k, rhs_constraint_correction = G_k.double(), rhs_constraint_correction.double()
+            ################################Regularization###################################
+            D_k12 = torch.diag(G_k)**0.5
+            G_k = G_k /(D_k12[:,None]*D_k12[None,:])
+            G_k = (G_k+G_k.T)/2
+            G_k+= self.regularization*torch.eye(G_k.shape[-1],).to(G_k.dtype).to(G_k.device)
+
+            theta_k = torch.linalg.solve(G_k, rhs_constraint_correction/D_k12)
+            return (theta_k/D_k12).to(out_dtype)
+
+        if live.all():
+            return _solve(G_k, rhs_constraint_correction), rhs_constraint_correction
+        theta_k = torch.zeros(G_k.shape[0], dtype=G_k.dtype, device=G_k.device)
+        theta_k[live] = _solve(G_k[live][:, live], rhs_constraint_correction[live])
         return theta_k, rhs_constraint_correction
+
+    def _live_potentials(self, G_k, rhs, k, name):
+        """
+        Guard for the Jacobi-rescaled solves in compute_eta / compute_theta.
+
+        A potential whose gradient is zero on every walker (e.g. a Scalar_*_gaussianK
+        region that has emptied) has G_kk == 0 exactly; the rescaling then divides
+        0 by 0 and the solve fails as "singular" (seen near t=1 in turbulence runs,
+        jobs 115127/115128). Such a potential cannot move the walkers at this step,
+        so its coefficient is set to 0 and the solve runs on the others; steps where
+        every diagonal is positive are untouched (bit-identical to before).
+
+        Non-finite G or rhs is NOT masked: it means the walkers or a potential blew
+        up, so it raises with the step and the offending potential indices.
+        """
+        if not (torch.isfinite(G_k).all() and torch.isfinite(rhs).all()):
+            bad = ~(torch.isfinite(G_k).all(1) & torch.isfinite(rhs.reshape(G_k.shape[0], -1)).all(1))
+            raise FloatingPointError(
+                f"{name} solve at step {k}: non-finite Gram/rhs for potentials "
+                f"{bad.nonzero().flatten().tolist()[:20]} (walkers or potentials produced NaN/inf)")
+        live = torch.diag(G_k) > 0
+        dead = tuple((~live).nonzero().flatten().tolist())
+        warned = getattr(self, '_dead_potentials_warned', {})
+        if dead and warned.get(name) != dead:                  # print when the dead set changes
+            print(f"[{name}] step {k}: {len(dead)} potential(s) with zero gradient on every "
+                  f"walker {list(dead)[:20]} -> coefficient set to 0 while they stay dead")
+        warned[name] = dead
+        self._dead_potentials_warned = warned
+        return live
 
         
 

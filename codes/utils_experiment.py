@@ -170,6 +170,9 @@ def _config_name_parts(args, M, include_seed=True):
         parts.append(f'{args.reg_solver}_nsub{args.n_subsample}')
         if getattr(args, 'reg_ridge', 0.0):
             parts.append(f'ridge{args.reg_ridge}')
+    # float64 per-step solves change the trajectory, so they get a tag too
+    if getattr(args, 'solve_float64', False):
+        parts.append('f64')
     if include_seed:
         parts.append(f'seed_{args.seed}')
     parts.append(f'terms{terms_hash}')
@@ -337,17 +340,33 @@ def run_experiment(args, M, config, x1, filters, t, logger, outdir, device,
     nb_workers = x1.shape[0]
     nb_interpolants = x1.shape[0]
 
+    # --save_reg_system: dump the regularised system for offline lam re-tuning
+    # (codes/resolve_theta_reg.py). --reg_system_dir lets the ~r^2*nt*8-byte dump
+    # live elsewhere (e.g. $SCRATCH) than the run's saved_results/.
+    reg_system_path = None
+    if getattr(args, 'save_reg_system', False):
+        reg_dir = getattr(args, 'reg_system_dir', None)
+        reg_dir = Path(reg_dir) if reg_dir else Path(outdir) / 'saved_results' / 'reg_system'
+        reg_system_path = reg_dir / f'{config}.pt'
+        logger.info('Regularised system will be saved to %s', reg_system_path)
+    solve_reg = not getattr(args, 'skip_reg_solve', False)
+    if not solve_reg:
+        logger.info('Skipping in-run Theta_reg solve (--skip_reg_solve)')
+
     t0 = timer.time()
     Solver = SDE(
         x1, nb_workers, nb_interpolants, t, args.sigma, potentials, batch_size,
         device=device, regularization=args.regularization, interpolant=args.interpolant,
         potentials_save_dir=potentials_save_dir,
+        solve_float64=getattr(args, 'solve_float64', False),
     )
     xt, barphi_e, barphi_p, eta_t, theta_t, dH_t_bound, Theta_reg, t_reg = Solver.forward_regularised(
         lam=args.lam, n_subsample=args.n_subsample,
         time_limit_min=getattr(args, 'time_limit_min', None),
         reg_solver=getattr(args, 'reg_solver', 'dense'),
         reg_ridge=getattr(args, 'reg_ridge', 0.0),
+        reg_system_path=reg_system_path,
+        solve_reg=solve_reg,
     )
     logger.info('SDE integration finished in %.1f s', timer.time() - t0)
 
