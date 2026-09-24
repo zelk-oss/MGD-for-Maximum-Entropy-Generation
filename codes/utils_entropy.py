@@ -192,7 +192,7 @@ paper's ``theta_t``, i.e. the code's exponential family is
 Independently corroborated by ``dH_k = -theta_k @ dt_phi_I_k`` (the
 already-implemented entropy-bound integrand computed in
 ``iteration_step_projection``, line ~713 -- see ``entropy_bound`` below) and
-by ``turbulence/bimodal_experiment/bimodal_theta.ipynb`` cells 4/14/15,
+by ``bimodal_experiment/bimodal_theta.ipynb`` cells 4/14/15,
 which fit the MGD paper's 1D bimodal case directly and compare the *raw,
 unnegated* fitted theta to ``expected_theta = [beta/2, 5*beta, 0, -beta]``
 -- the coefficients of ``+phi(x)`` in ``-U(x) = log(p(x)) + const``.

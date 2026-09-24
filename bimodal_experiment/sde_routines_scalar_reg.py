@@ -1,3 +1,9 @@
+import resource
+import sys
+import time
+import types
+from pathlib import Path
+
 import torch
 import numpy as np
 import matplotlib.pyplot as plt
@@ -6,6 +12,15 @@ from scipy.integrate import trapezoid
 from scipy import stats
 
 from potentials_new import *
+
+# shared regularised solver: codes/sde_routines.py needs the project root, codes/ and
+# data/ importable. Appended (not prepended) so this folder's modules win any name clash.
+_project_root = Path(__file__).resolve().parent.parent
+for _p in (_project_root, _project_root / 'codes', _project_root / 'data'):
+    if _p.is_dir() and str(_p) not in sys.path:
+        sys.path.append(str(_p))
+
+from codes.sde_routines import SDE  # noqa: E402
 
 def sigt(t):
     """Time-dependent noise scaling function: (1-t)^2"""
@@ -91,117 +106,39 @@ def moments_matrix(x, potentials):
     return torch.stack([potential(x).reshape(-1) for potential in potentials], dim=1)
 
 
-def _solve_regularised(t, M, Gf, bb, cc, lam, num_potentials, device='cpu', regularization=0.0):
+def solve_regularised(system, lam, ridge=0.0):
     """
-    Scalar (d = 1) port of SDE._solve_regularised.
-
-    Assembles and solves the block-tridiagonal-in-time system
-
-        (data)        M[k] Theta[k]
-        (smoothness)  + lam/dt^2 * Gf[k] (Theta[k] - Theta[k+1])  (and the symmetric term)
-                      = bb[k] + lam/dt * (cc terms)
-
-    as one dense (n*r, n*r) linear solve, with diagonal (Jacobi) preconditioning
-    mirroring compute_eta_t_partial / the corrector solve. At lam = 0 this reduces
-    exactly to the per-step theta solve.
+    Theta_reg for one saved/assembled system, with the shared float64 block-Thomas
+    solver SDE._solve_regularised_thomas from codes/sde_routines.py (the same call
+    as codes/resolve_theta_reg.py). Like forward_regularised, drops the first row.
+    Returns (Theta_reg, t_reg, relative scaled residual).
     """
-    t = np.asarray(t, dtype=float)
-    n, r, dev = len(t), num_potentials, device
-    dt = np.diff(t)
-    A = torch.zeros((n, r, n, r)).to(dev)
-    f = torch.zeros((n, r)).to(dev)
-    for k in range(n):
-        A[k, :, k, :] += M[k]
-        f[k]          += bb[k]
-    for k in range(n - 1):
-        w = lam / dt[k] ** 2
-        A[k,     :, k,     :] += w * Gf[k]
-        A[k + 1, :, k + 1, :] += w * Gf[k]
-        A[k,     :, k + 1, :] -= w * Gf[k]
-        A[k + 1, :, k,     :] -= w * Gf[k]
-        f[k]     -= (lam / dt[k]) * cc[k]
-        f[k + 1] += (lam / dt[k]) * cc[k]
-
-    # --- diagonal (Jacobi) preconditioning, mirrors the per-step solves ---
-    A_flat = A.reshape(n * r, n * r)
-    f_flat = f.reshape(n * r)
-    S = torch.diagonal(A_flat).clamp_min(1e-30).sqrt()        # per-(k, potential) scale
-    A_flat = A_flat / (S[:, None] * S[None, :])
-    A_flat = (A_flat + A_flat.T) / 2
-    f_flat = f_flat / S
-    if regularization:
-        A_flat = A_flat + regularization * torch.eye(n * r, device=dev, dtype=A_flat.dtype)
-
-    z = torch.linalg.solve(A_flat, f_flat)
-    return (z / S).reshape(n, r)
-
-
-def _solve_regularised_thomas(t, M, Gf, bb, cc, lam, num_potentials, device='cpu', eps_reg_theta=1e-6):
-    """
-    Scalar (d = 1) port of SDE._solve_regularised_thomas.
-
-    Same block-tridiagonal system as _solve_regularised, solved via block-Thomas
-    elimination with block-Jacobi preconditioning instead of a dense (n*r, n*r)
-    solve. Memory: O(n * r**2) instead of O(n**2 * r**2). At lam = 0 this reduces
-    exactly to the per-step preconditioned theta solve.
-    """
-    t = np.asarray(t, dtype=float)
-    n, r, dev = len(t), num_potentials, device
-    dt = np.diff(t)
-    w  = [lam / dk ** 2 for dk in dt]
-
-    D = [M[k].clone() for k in range(n)]
-    for k in range(n - 1):
-        D[k]     = D[k]     + w[k] * Gf[k]
-        D[k + 1] = D[k + 1] + w[k] * Gf[k]
-    U = [-w[k] * Gf[k] for k in range(n - 1)]
-    L = [Uk.transpose(0, 1) for Uk in U]
-
-    f = [bb[k].clone() for k in range(n)]
-    for k in range(n - 1):
-        f[k]     = f[k]     - (lam / dt[k]) * cc[k]
-        f[k + 1] = f[k + 1] + (lam / dt[k]) * cc[k]
-
-    # block-Jacobi preconditioning, mirrors the per-step solves
-    S = [torch.diagonal(Dk).clamp_min(1e-30).sqrt() for Dk in D]
-    for k in range(n):
-        D[k] = D[k] / (S[k][:, None] * S[k][None, :])
-        D[k] = (D[k] + D[k].T) / 2
-        f[k] = f[k] / S[k]
-    for k in range(n - 1):
-        U[k] = U[k] / (S[k][:, None] * S[k + 1][None, :])
-        L[k] = U[k].transpose(0, 1)
-
-    eye = torch.eye(r, device=dev, dtype=D[0].dtype)
-    c_prime, d_prime = [None] * max(n - 1, 0), [None] * n
-
-    denom0 = D[0] + eps_reg_theta * D[0].diagonal().abs().mean() * eye
-    if n > 1:
-        sol0 = torch.linalg.solve(denom0, torch.cat([U[0], f[0][:, None]], dim=1))
-        c_prime[0], d_prime[0] = sol0[:, :-1], sol0[:, -1]
-    else:
-        d_prime[0] = torch.linalg.solve(denom0, f[0])
-
-    for k in range(1, n):
-        denom = D[k] - L[k - 1] @ c_prime[k - 1]
-        rhs   = f[k] - L[k - 1] @ d_prime[k - 1]
-        denom = denom + eps_reg_theta * denom.diagonal().abs().mean() * eye
-        if k < n - 1:
-            sol = torch.linalg.solve(denom, torch.cat([U[k], rhs[:, None]], dim=1))
-            c_prime[k], d_prime[k] = sol[:, :-1], sol[:, -1]
-        else:
-            d_prime[k] = torch.linalg.solve(denom, rhs)
-
-    Theta_scaled = [None] * n
-    Theta_scaled[-1] = d_prime[-1]
-    for k in range(n - 2, -1, -1):
-        Theta_scaled[k] = d_prime[k] - c_prime[k] @ Theta_scaled[k + 1]
-
-    return torch.stack([Theta_scaled[k] / S[k] for k in range(n)])
+    solver_self = types.SimpleNamespace(num_potentials=system['num_potentials'])
+    t = system['t'].double().numpy()
+    Theta = SDE._solve_regularised_thomas(
+        solver_self, t, system['M'], system['G'], system['b'], system['c'], lam, ridge=ridge)
+    return Theta[1:], torch.as_tensor(t[1:]), solver_self.last_reg_residual
 
 
 def solve_sde(x1, n1, t, sigmas, potential_names=['x', 'x_abs', 'x2'], device='cpu', std_init=1, xt=None,
-              lam=1.0, n_subsample=1, regularization=0.0, reg_eps=1e-8):
+              lam=1.0, n_subsample=1, regularization=0.0, reg_eps=1e-8,
+              solve_reg=True, return_system=False):
+    """
+    Scalar MGD run that also assembles Guth et al.'s time-regularised theta system
+    (as SDE.forward_regularised) and, if solve_reg, solves it for `lam` with the
+    shared float64 block-Thomas solver (solve_regularised).
+
+    Returns (x0, xt, barphi_e, barphi_p, eta_t, theta_t, dH_t, theta_reg_t), with
+    theta_reg_t = None when solve_reg=False; return_system=True appends the system
+    dict (SDE._save_reg_system format), so lam can be chosen after the run
+    (select_lambda.py) -- lam never enters the SDE evolution.
+
+    n_subsample > 1 averages the per-step ingredients over blocks of that many
+    steps; each block is labelled at the mean time of its steps.
+    """
+    if regularization:
+        raise ValueError("the dense-solve `regularization` ridge is gone; the shared "
+                         "Thomas solver takes an explicit ridge (solve_regularised)")
 
     nt = len(t)-1
 
@@ -227,26 +164,32 @@ def solve_sde(x1, n1, t, sigmas, potential_names=['x', 'x_abs', 'x2'], device='c
 
     num_potentials = len(potentials)
 
-    eta_t_list = []
-    theta_t_list = []
-
-    dH_t_list = []
+    # per-step outputs preallocated on the device and copied to the host once at
+    # the end: no per-step host allocations or device syncs over the nt steps
+    buf = lambda *shape: torch.empty((nt,) + shape, device=x0.device, dtype=x0.dtype)
+    eta_buf, theta_buf, dH_buf = buf(num_potentials), buf(num_potentials), buf()
     ratio = []
 
     # --- regularised theta problem: accumulators for the block-tridiagonal system ---
     # Mirrors SDE.forward_regularised. Quantities are collected at the *predicted*
     # walker y_k (target time t[i+1]). With n_subsample > 1 the fine-step ingredients
     # are averaged into coarse blocks.
-    M_blocks, Gf_blocks, bb_blocks, cc_blocks, t_used = [], [], [], [], []
+    M_buf, G_buf = buf(num_potentials, num_potentials), buf(num_potentials, num_potentials)
+    b_buf, c_buf = buf(num_potentials), buf(num_potentials)
+    t_used, nb = [], 0                       # block times, number of blocks filled
     accM = accG = accb = accc = None
+    acct = 0.0
     cnt = 0
     adot = 0.5 * np.pi                       # d/dt of the Cos-schedule angle a_t = (pi/2) t
 
     sigma = sigmas[0]
-    
+    loop_t0 = time.time()
+
     for i in range(nt):
         if i % 200 == 0:
-            print(f"Step {i}/{nt}")
+            # ru_maxrss is in kB on Linux: peak host memory of this process so far
+            print(f"Step {i}/{nt}  {time.time() - loop_t0:.0f} s  "
+                  f"host maxRSS {resource.getrusage(resource.RUSAGE_SELF).ru_maxrss / 1e6:.2f} GB", flush=True)
 
         h = t[i+1] - t[i]
         sigma_i = sigma                      # diffusion coefficient D used at this step
@@ -267,63 +210,76 @@ def solve_sde(x1, n1, t, sigmas, potential_names=['x', 'x_abs', 'x2'], device='c
             # which is the scalar-file analogue of the class's 1/(h sigma**2).
             bb_k = b_k / (h * sigma_i)
 
-            z2    = x0 ** 2                                  # ||Z||^2 per sample (d = 1)
-            X_eff = (y_k - cos_a * x0) / sin_a              # reconstructed data endpoint X
-            zx    = x0 * X_eff                              # Z . X per sample
-            tau   = -adot * (tan_a * (1.0 - z2) + zx)       # tau_k^i               (N,)
-            cc_k  = (mom * tau[:, None]).mean(0)            # E[phi(y_k) tau]       (r,)
+            if cos_a > reg_eps:
+                z2    = x0 ** 2                              # ||Z||^2 per sample (d = 1)
+                X_eff = (y_k - cos_a * x0) / sin_a          # reconstructed data endpoint X
+                zx    = x0 * X_eff                          # Z . X per sample
+                tau   = -adot * (tan_a * (1.0 - z2) + zx)   # tau_k^i               (N,)
+                cc_k  = (mom * tau[:, None]).mean(0)        # E[phi(y_k) tau]       (r,)
+            else:
+                # t = 1: tan a diverges. The solver never reads the last node's c
+                # (c_k couples nodes k and k+1), so the node is kept for its data
+                # term M, b and its c is zeroed.
+                cc_k  = torch.zeros(num_potentials, device=mom.device, dtype=mom.dtype)
 
             if cnt == 0:
-                t_used.append(t_node)                       # coarse node at target time
                 accM, accG = M_k.clone(), Gf_k.clone()
                 accb, accc = bb_k.clone(), cc_k.clone()
+                acct = t_node
             else:
                 accM = accM + M_k; accG = accG + Gf_k
                 accb = accb + bb_k; accc = accc + cc_k
+                acct += t_node
             cnt += 1
             if cnt == n_subsample:
-                M_blocks.append(accM / cnt);  Gf_blocks.append(accG / cnt)
-                bb_blocks.append(accb / cnt); cc_blocks.append(accc / cnt)
+                t_used.append(acct / cnt)                   # block labelled at its mean time
+                M_buf[nb], G_buf[nb] = accM / cnt, accG / cnt
+                b_buf[nb], c_buf[nb] = accb / cnt, accc / cnt
+                nb += 1
                 cnt = 0
 
         sigma = sigmas[i+1]
         #ratio.append(torch.sqrt((etat_t@H@etat_t)/(etat_t2@H@etat_t2.T)))
         
-        eta_t_list.append(etat_t.cpu().detach())
-        theta_t_list.append(etat_t2.cpu().detach())
-
-        dH_t_list.append(dH_t.cpu().detach().numpy())
+        eta_buf[i], theta_buf[i], dH_buf[i] = etat_t.detach(), etat_t2.detach(), dH_t.detach()
 
         # Store statistics
         barphi_e[i + 1, :] = barphi(torch.cos(.5*torch.pi*t[i+1]) * x0 +  torch.sin(.5*torch.pi*t[i+1]) * x1, potentials) # barphi((1 - t[i + 1]) * x0 + t[i + 1] * x1, 0)
         barphi_p[i + 1, :] = barphi(xt, potentials)
 
     if cnt > 0:                                             # final partial block
-        M_blocks.append(accM / cnt);  Gf_blocks.append(accG / cnt)
-        bb_blocks.append(accb / cnt); cc_blocks.append(accc / cnt)
+        t_used.append(acct / cnt)
+        M_buf[nb], G_buf[nb] = accM / cnt, accG / cnt
+        b_buf[nb], c_buf[nb] = accb / cnt, accc / cnt
+        nb += 1
 
     #plt.plot(ratio)
     #plt.show()
 
-    # --- solve the time-regularised theta problem with both solvers ---
+    # --- time-regularised theta system, in the SDE._save_reg_system format ---
     # (same [1:] front-trimming as SDE.forward_regularised: drop the first coarse
-    #  node before the solve, then drop the first row of the solution).
-    theta_reg_t = _solve_regularised(
-        t_used[1:], M_blocks[1:], Gf_blocks[1:], bb_blocks[1:], cc_blocks[1:],
-        lam, num_potentials, device=device, regularization=regularization)
-    #theta_reg_thomas_t = _solve_regularised_thomas(t_used[1:], M_blocks[1:], Gf_blocks[1:], bb_blocks[1:], cc_blocks[1:], lam, num_potentials, device=device)
+    #  node before the solve; solve_regularised then drops the first solution row).
+    f32 = lambda X: X.detach().to('cpu', torch.float32)
+    system = {
+        't': torch.as_tensor(np.asarray(t_used[1:], dtype=np.float64)),
+        'M': f32(M_buf[1:nb]),                              # (n, r, r)
+        'G': f32(G_buf[1:nb]),                              # (n, r, r)
+        'b': f32(b_buf[1:nb]),                              # (n, r)
+        'c': f32(c_buf[1:nb]),                              # (n, r)
+        'num_potentials': int(num_potentials),
+        'meta': {'n_subsample': n_subsample, 'potential_names': list(potential_names)},
+    }
 
-    theta_reg_t        = theta_reg_t[1:].cpu().detach()
-    #theta_reg_thomas_t = theta_reg_thomas_t[1:].cpu().detach()
+    theta_reg_t = solve_regularised(system, lam)[0] if solve_reg else None
 
-    return (
+    out = (
         x0, xt, barphi_e, barphi_p,
-        torch.stack(eta_t_list, dim=0),
-        torch.stack(theta_t_list, dim=0),
-        dH_t_list,
+        eta_buf.cpu(),
+        theta_buf.cpu(),
+        list(dH_buf.cpu().numpy()),
         theta_reg_t,
-        #theta_reg_thomas_t,
     )
+    return out + (system,) if return_system else out
 
 
 def get_potentials(potential_names, device):

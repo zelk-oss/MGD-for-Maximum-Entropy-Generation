@@ -1,0 +1,180 @@
+\documentclass[11pt,a4paper]{article}
+\usepackage[margin=2.5cm]{geometry}
+\usepackage{amsmath,amssymb}
+\usepackage{booktabs}
+\usepackage{enumitem}
+\usepackage[hidelinks]{hyperref}
+\setlist{itemsep=2pt,topsep=4pt}
+\newcommand{\code}[1]{\texttt{#1}}
+
+\title{Bimodal experiment: MGD vs.\ regularised estimator\\[2pt]\large Recap of the changes of 24 September 2026}
+\author{Chiara Zelco}
+\date{24 September 2026}
+
+\begin{document}
+\maketitle
+
+\section*{Summary}
+The bimodal experiment compares two ways of estimating the parameters $\theta$ of a
+maximum-entropy model: raw MGD, and a \emph{regularised} (REG) version which smooths the
+estimate $\theta(t)$ along the SDE time. For each estimator we measure how much the fitted
+energy fluctuates from one independent run to another, and compare it to the
+Cram\'er--Rao bound. The results obtained in June 2026 have to be redone, because of
+problems in how the regularised estimate was computed. This note explains what was wrong,
+what was changed, and where the new run stands. \textbf{No new scientific result is
+reported here}: the full rerun was launched at the end of the day.
+
+\section{The experiment in a few words}
+\begin{itemize}
+  \item Data: $n_1 = 10^6$ samples from the one-dimensional bimodal density
+        $p(x) \propto \exp(-\beta x^4 + 5\beta x^2 + \tfrac{\beta}{2} x)$,
+        for ten values $\beta = 0.1, 0.3, \dots, 1.9$.
+  \item Model: four potentials $\phi_a(x) = x^a/a$, $a = 1,\dots,4$. The true parameters
+        $\theta^*$ are therefore known exactly, which makes this a good test case.
+  \item For each $\beta$ we repeat the whole MGD procedure $K = 100$ times with different
+        random seeds (new data and new initial noise each time), with $n_t = 50\,000$ SDE steps and $\sigma = 10$.
+  \item From the $K$ final estimates $\hat\theta$ we compute the variance and the error of
+        the fitted energy, for MGD and for REG, and compare with the Cram\'er--Rao bound.
+\end{itemize}
+
+\section{What was wrong in the June runs}
+\begin{enumerate}
+  \item \textbf{Time averaging with a shift.} All June runs grouped the SDE steps in blocks of
+        10 (\code{n\_subsample = 10}) before regularising. Each block was labelled with the time
+        of its \emph{first} step although it contains the average of ten steps, so the
+        regularised curve was shifted in time by half a block.
+  \item \textbf{Low-precision solve.} The regularised problem was solved as one large linear system
+        in single precision (float32). We had already seen elsewhere that this solve becomes
+        unreliable when the matrices are badly conditioned and the smoothing is strong.
+  \item \textbf{Smoothing strength fixed in advance.} The smoothing parameter $\lambda$ was chosen
+        by hand before each run ($10^{-3}$ to $10^{-7}$ depending on the sweep), with no way of
+        checking afterwards whether it was too strong or too weak.
+  \item \textbf{Two conventions mixed in the variance.} The code estimates the coefficients of
+        $x^a/a$, but the Cram\'er--Rao bound and the energy variance were computed with the
+        potentials $x^a$. The variances of $\theta$ and their bound were thus off by a factor
+        $a^2$ per component, and the energy variance mixed the two conventions. This is
+        independent of the regularisation issue, and it affects the June variance plots.
+  \item \textbf{A diverging term at $t = 1$.} One quantity of the regularised system contains
+        $\tan(\pi t/2)$, which is infinite at the last time step. It was never actually used,
+        but it is now set to zero explicitly.
+\end{enumerate}
+
+\section{What was changed}
+
+\subsection*{Organisation of the code}
+\begin{itemize}
+  \item The experiment folder was moved out of \code{turbulence/} to the top level of the
+        repository: \code{bimodal\_experiment/}.
+  \item Its helper file \code{utils.py} was renamed \code{bimodal\_utils.py}, so that it cannot be
+        confused with the shared \code{codes/utils.py}. A dependency on a file missing from the
+        repository (\code{Mala.py}) no longer breaks the import. In the notebooks, only the import line changed.
+\end{itemize}
+
+\subsection*{The regularised estimate}
+\begin{itemize}
+  \item No more time blocks: the regularisation now uses every SDE step (\code{n\_subsample = 1}).
+        If blocks are ever used again, each block is labelled at its mean time.
+  \item The linear system is solved in double precision with the same solver used for the
+        turbulence experiments (a block-tridiagonal ``Thomas'' solver), instead of a separate copy.
+  \item The run no longer solves for a single $\lambda$. It saves the ingredients of the
+        regularised problem, so that it can be solved afterwards for any $\lambda$, without
+        repeating the (expensive) SDE simulation.
+  \item To make this fast, a version of the solver was written that treats all runs and all
+        values of $\lambda$ at once. It gives the same answer as the original solver (relative
+        difference $7\times10^{-13}$ on test problems) and is about 65 times faster: roughly
+        13 minutes per $\beta$ instead of 15 hours.
+\end{itemize}
+
+\subsection*{Choosing $\lambda$ after the run}
+For a grid of 12 values ($\lambda = 0$ and $10^{-8}$ to $10^{-3}$) we solve the regularised
+problem and compare the smoothed curve $\Theta_\lambda(t)$ with the unsmoothed one
+$\Theta_0(t)$. As long as $\lambda$ only removes noise, the difference between the two looks
+like noise: its averages over blocks of 50 steps are small. When $\lambda$ becomes too large,
+the difference contains a slow systematic part (real structure is being erased), and the test
+statistic $E[z^2]$ rises above 1. \textbf{We keep the largest $\lambda$ with $E[z^2] \le 1$ in
+every time window.} This is the same rule as for turbulence, and it does not use the true
+$\theta^*$.
+
+Because $\theta^*$ is known in this experiment, we also record the $\lambda$ that would be best
+in hindsight (the ``oracle'', smallest error with respect to $\theta^*$). It is only used
+to check whether the rule above picks a good value; it cannot be used for turbulence.
+
+\subsection*{How the energy error is measured}
+The fitted energy is $E(x) = \hat\theta \cdot \phi(x)$. Adding a constant to the energy does
+not change the probability distribution, so we measure only the variations of the energy
+\emph{shape}: the energy is centred over $x$ before comparing runs. With $C$ the covariance of
+$\hat\theta$ over the $K$ runs, the energy variance is
+\[
+  \operatorname{Var}(E) = \operatorname{tr}\bigl(C\,\operatorname{Cov}_x[\phi]\bigr),
+  \qquad
+  \text{Cram\'er--Rao bound} = \frac{r}{n_1} = \frac{4}{n_1}.
+\]
+Two versions are reported side by side:
+\begin{itemize}
+  \item \textbf{variance}: runs compared with their own average (spread between runs only);
+  \item \textbf{error (MSE)}: runs compared with the true $\theta^*$ (spread plus bias).
+\end{itemize}
+This distinction matters for REG: smoothing always reduces the variance, but it can introduce
+a bias. The Cram\'er--Rao bound only applies to unbiased estimators, so a REG variance below
+the bound would be a sign of bias, not of a better estimator. Comparing the two numbers shows
+how much of the error is bias.
+
+\section{Running on Jean Zay}
+\begin{itemize}
+  \item \textbf{Account error.} The first submission was refused (``invalid account or
+        partition''). The job settings were replaced by ones known to work.
+  \item \textbf{Memory.} The next attempt (H100) ran out of memory during the first run:
+        memory grew by about 2\,MB per SDE step. The cause could not be identified with certainty;
+        the only change inside the SDE loop since June (a small copy to CPU memory at every step)
+        was removed, and memory is now written in the log every 200 steps.
+  \item \textbf{Runtime.} Done one after the other, the 100 runs of one $\beta$ would take
+        about 11 hours (the June runs took 19\,h). The runs are now spread over
+        100 parallel jobs on V100 GPUs (10 values of $\beta$ $\times$ 10 groups of 10 runs,
+        about 2 hours each), followed by one short job per $\beta$ that collects the runs and
+        chooses $\lambda$. Each run saves its own files, so failed jobs can be resubmitted
+        without redoing finished runs, and splitting the runs gives exactly the same results
+        as running them in sequence.
+\end{itemize}
+
+\section{Test run}
+Before the full launch, a small test was run on Jean Zay ($\beta = 0.5$, $K = 2$ runs,
+$n_t = 5000$ steps). It was meant to check that everything runs, \textbf{not} to produce results:
+a variance from two runs means nothing.
+\begin{itemize}
+  \item Memory stayed flat (0.97\,GB at step 200, 0.98\,GB at step 4800): the leak is gone.
+  \item Speed: about 13\,ms per step, i.e.\ about 11 minutes for a full run of 50\,000 steps.
+  \item Checks: with $\lambda = 0$ the regularised estimate coincides with raw MGD, as it must;
+        the Cram\'er--Rao value is exactly $4/n_1 = 4\times10^{-6}$; the linear solves are
+        accurate to $10^{-11}$.
+  \item The $\lambda$ chosen by the rule ($3\times10^{-5}$) happened to equal the oracle one.
+        With two short runs this is encouraging but not evidence.
+\end{itemize}
+
+\section{Status and next steps}
+\begin{enumerate}
+  \item The full sweep ($10$ values of $\beta$, $K = 100$, $n_t = 50\,000$) was launched on
+        24 September; results are expected a few hours later.
+  \item Collect the results and produce the figures (energy variance and error vs.\ $\beta$ for
+        MGD, REG with the chosen $\lambda$, REG with the oracle $\lambda$, and the bound; error vs.\
+        $\lambda$ for each $\beta$).
+  \item Check whether the rule picks a $\lambda$ close to the oracle one. If it does, this
+        supports using the same rule for turbulence, where no true $\theta$ is available.
+  \item Commit the changes (they are not yet in the git history).
+\end{enumerate}
+
+\appendix
+\section*{Appendix: files}
+{\small\begin{tabular}{@{}ll@{}}
+\toprule
+File & Role \\
+\midrule
+\code{bimodal\_experiment/bimodal\_ensemble\_reg.py} & runs MGD, saves each run; collects the runs \\
+\code{bimodal\_experiment/sde\_routines\_scalar\_reg.py} & 1-D SDE; builds the regularised problem \\
+\code{bimodal\_experiment/select\_lambda.py} & solves for all $\lambda$, chooses $\lambda$ \\
+\code{bimodal\_experiment/launch/bimodal\_sweep.sh} & submits the jobs on Jean Zay \\
+\code{bimodal\_experiment/analyse\_lamsweep.ipynb} & figures \\
+\code{codes/lam\_selection.py} & fast solver and the $\lambda$ rule (shared) \\
+\bottomrule
+\end{tabular}}
+
+\end{document}

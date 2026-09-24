@@ -7,8 +7,6 @@ from scipy.integrate import quad
 from scipy.interpolate import interp1d
 from scipy.special import erfcx, erf, erfinv
 
-from Mala import Mala_Sampler
-
 # 1D data generation
 
 class BimodalGaussianMixture(nn.Module):
@@ -184,6 +182,9 @@ def energy_unbalanced(x, a, b, c):
     return a*x**2+b*x.abs()+c*x
 
 def gen_unbalanced(n_samples, n_steps = 10000, alpha=1, device='cpu'):
+    # Mala.py is not in the repo; imported here so the rest of this module loads without it
+    from Mala import Mala_Sampler
+
     step_size = 1/alpha
     
     x = torch.randn((n_samples,)).to(device)*10
