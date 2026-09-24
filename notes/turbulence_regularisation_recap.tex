@@ -1,0 +1,220 @@
+\documentclass[11pt,a4paper]{article}
+\usepackage[margin=2.5cm]{geometry}
+\usepackage{amsmath,amssymb}
+\usepackage{booktabs}
+\usepackage{enumitem}
+\usepackage{xcolor}
+\usepackage[hidelinks]{hyperref}
+\setlist{itemsep=2pt,topsep=4pt}
+\newcommand{\code}[1]{\texttt{#1}}
+\newcommand{\meas}{\textcolor{teal}{\textsf{[measured]}}}
+\newcommand{\hyp}{\textcolor{orange!80!black}{\textsf{[hypothesis]}}}
+
+\title{Turbulence MGD runs: regularised $\theta$, numerics and moment matching\\[2pt]
+\large Recap of 23--24 September 2026}
+\author{Chiara Zelco}
+\date{24 September 2026}
+
+\begin{document}
+\maketitle
+
+\section*{Summary}
+The goal was to redo the turbulence MGD runs with more particles and to choose the
+regularisation strength $\lambda$ of the time-regularised estimator $\Theta_{\rm reg}(t)$.
+Looking into how $\lambda$ acts led to a chain of findings: the block averaging used so far
+(\code{n\_subsample}) did most of the smoothing, the old dense solver carried a hidden bias,
+and the statistic basis turned out to be exactly rank-deficient. The solver was replaced, $\lambda$ can
+now be chosen \emph{after} a run without re-simulating, and several numerical failure modes
+were fixed. The most important open problem is scientific: in all turbulence runs, including
+the July reference batch, \textbf{the moments are matched to $\sim10^{-3}$ for $t<0.95$ but
+not near $t=1$}. Two batches of runs launched on 24 September test the two main suspects.
+No final $\lambda$ or final potential set is reported here.
+
+Throughout, \meas\ marks something computed on data or in a controlled test, \hyp\ marks
+an interpretation not yet tested directly.
+
+\section{Starting point: the July reference batch}
+51 seeds (300--350) of the full potential set (\code{L\_6}, \code{L\_6\_psi},
+\code{L\_2\_lowpass}, \code{Scalar\_psi\_gaussianK}, \code{Scalar\_morlet\_gaussianK},
+fourth-order \code{Mod2} scattering, real and imaginary, $Q=1$), with $M=256$ (1024-sample
+windows coarse-grained twice), $J=8$, $Q=3$, $\sigma=3.5$, $n_t=40\,000$, $n_1=5000$
+particles, $\lambda=5\cdot10^{-7}$, \code{n\_subsample}$\,=200$, per-step ridge
+(\code{regularization}) $=10^{-2}$. SDE time: 10.6--10.7\,h per seed on H100 \meas.
+
+\section{How $\lambda$ and \code{n\_subsample} act on $\Theta_{\rm reg}$}
+The regularised problem (the time coupling follows Guth et al.'s dual score matching)
+is, in the continuum limit,
+\[
+  M(t)\,\Theta - b(t) \;=\; \lambda\,\frac{d}{dt}\big(G(t)\,\dot\Theta - c(t)\big),
+\]
+with $M=\mathbb E[\nabla\phi\nabla\phi^\top]$ and $G=\mathbb E[\phi\phi^\top]$ on the walkers.
+The grid spacing does not appear: $\lambda$ alone sets a smoothing length
+$\ell\sim\sqrt{\lambda G/M}$.
+\begin{itemize}
+  \item \code{n\_subsample} is \emph{not} part of Guth's method. It was introduced to keep
+        the dense $(n r)^2$ solve in memory, and it averages $M,G,b,c$ over blocks of
+        $n_s$ steps. The block averaging makes it a second smoother (a boxcar of width
+        $\Delta=n_s/n_t$). The effective window is $\approx\max(\Delta,4\ell)$.
+  \item In the July runs, $\lambda=5\cdot10^{-7}$ was essentially \emph{inactive} for $t<0.95$:
+        $\Theta_{\rm reg}$ equals the block average of the per-step $\theta_t$ to within
+        0.15--0.37 block standard errors; $\lambda$ only acts for $t>0.95$, where the Cos
+        schedule makes the steps small (the coupling is $\lambda/dt^2$) \meas\ (4 seeds).
+  \item The per-step $\theta_t$ noise is white (lag-1 autocorrelation of differences
+        $-0.455$, vs.\ $-0.5$ for white noise), so averaging does reduce variance as expected \meas.
+  \item Each block was labelled with its \emph{first} time although it holds the block
+        average: a half-block time shift \meas\ (toy with known $\theta$).
+\end{itemize}
+
+\section{Solver: from dense float32 to block-Thomas float64}
+\paragraph{Problems of the old dense solve} \meas\ (tests with the actual solver code)
+\begin{itemize}
+  \item The ridge $0.01\cdot I$ was added \emph{after} Jacobi rescaling, i.e.\ $0.01\,\mathrm{diag}(A)$
+        in original units, which contains the coupling $\lambda/dt^2$. For $\ell/\Delta\gtrsim2$
+        it shrinks $\Theta$ towards zero (toy with a known $\theta$ of RMS 0.87: RMS error 0.82
+        at $\lambda=5\cdot10^{-5}$, $n_s=10$, vs.\ 0.004 without this ridge). So smaller \code{n\_subsample} was \emph{not} better at fixed $\lambda$.
+  \item It ran in float32; on ill-conditioned systems with large $\lambda$ the error reached
+        640\% (the block-Thomas solver in float32 failed similarly).
+\end{itemize}
+\paragraph{New solver} Block-Thomas elimination, float64, on CPU, $O(n r^2)$ memory,
+no ridge inside the elimination. The system is symmetric positive definite, so no pivoting across
+blocks is needed. Matches the exact solution to $10^{-14}$--$10^{-8}$ even at condition
+number $10^9$ \meas. With \code{n\_subsample}$\,=1$ it solves Guth's system on the full
+grid (no block averaging). On the Gaussian test case $\theta$ is recovered correctly
+(checked on the cluster). Selected with \code{--reg\_solver thomas}; the old path is unchanged.
+
+\section{Choosing $\lambda$ after the run}
+$\lambda$ does not enter the SDE, only the final solve. Runs can therefore save the assembled
+system ($t$, $M_k$, $G_k$, $b_k$, $c_k$; $\sim$25\,GB per run) and re-solve it offline for
+any $\lambda$ (\code{--save\_reg\_system}, \code{codes/resolve\_theta\_reg.py}). The offline
+solve reproduces the in-run one exactly (difference 0.0) \meas. On the cluster: 136\,s per
+$\lambda$ for $r=235$, $n=39\,716$ nodes \meas.
+
+\paragraph{Selection rule} (\code{turbulence/lamtune\_select.ipynb}) Residual
+$R=\Theta_{\rm reg}(\lambda)-\Theta_{\rm reg}(0)$. While $\lambda$ only removes noise, block
+means of $R$ shrink like noise and $\mathbb E[z^2]\lesssim1$; when it removes signal,
+$\mathbb E[z^2]\gg1$. Choose the largest $\lambda$ with $\mathbb E[z^2]\le1$ in every time
+window. On synthetic data with known $\theta(t)$ this threshold landed on the true
+RMS-error optimum; a threshold of 2 overshot by half a decade (1.6$\times$ the optimal error)
+\meas. The reference is $\lambda=0$ of the same solver, not $\theta_t$, whose per-step ridge
+would appear as spurious structure.
+
+\section{Numerical issues found on the turbulence runs}
+\begin{enumerate}
+  \item \textbf{GPU memory.} The order-4 scattering gradient holds $\sim6$ complex tensors of
+        shape $(B,8,8,9,256)$ at once: $\sim6.6$\,MB per sample \meas. Batches of 5000 fit
+        an 80\,GB H100; a 16\,GB V100 needs $\le1000$.
+  \item \textbf{Throughput.} $\approx1.9\cdot10^{-4}$\,s per particle per step on H100,
+        consistent over three batches \meas. Hence $n_1^{\max}\approx 18\,\mathrm h/(n_t\cdot1.9\cdot10^{-4}\,\mathrm s)$:
+        $\sim8500$ at $n_t=40\,000$; $n_1=10\,000$ needs $\sim21$\,h, above the 20\,h limit.
+  \item \textbf{Dead potentials.} Two of five seeds ($n_1=10^4$, $n_t=33\,000$) crashed at
+        step 32\,583 (i.e.\ $t\to1$) with a ``singular'' per-step Gram. With the ridge added after
+        rescaling, a finite matrix cannot be singular, so the cause is a potential whose gradient is exactly
+        zero on all walkers (0/0 in the rescaling) \meas\ (no NaN before the crash). Fix: such a
+        coefficient is set to 0 for that step only; healthy steps are bit-identical to before.
+        Most likely an emptied region of a \code{Scalar\_*\_gaussianK} statistic \hyp.
+  \item \textbf{Rank-deficient statistic basis.} With no ridge at all, every offline solve was
+        singular. The scaled $M_k$ has 2--3 eigenvalues at $10^{-16}$--$10^{-13}$ \meas. Traced to
+        \code{L\_6\_psi}[20--23]: at $M=256$, $J=8$, $Q=3$ the wavelet channels 21, 22, 23 are
+        \emph{exact copies} (all the single frequency bin 1), channel 20 is a near-copy (a
+        $1.1\cdot10^{-4}$ component at bin 2) \meas. Removing exact copies loses nothing
+        ($\theta_a\phi+\theta_b\phi=(\theta_a+\theta_b)\phi$); \code{--deduplicate\_filters} drops them
+        for the channel-list potentials only (25$\to$23 channels). The offline solve uses a ridge
+        $10^{-6}\,\mathrm{diag}(M_k)$ on the data term. The same happens for the Gaussian bank ($M=128$, $J=7$).
+  \item \textbf{Float32 per-step solves.} With near-duplicate statistics, float32 is already
+        $5\cdot10^{-4}$ off at ridge $10^{-4}$ and 66\% off at $10^{-8}$; float64 stays at
+        $\sim2\cdot10^{-8}$ \meas. New option \code{--solve\_float64}.
+  \item \textbf{The basis depends on $n_1$.} The \code{Scalar\_*\_gaussianK} fit keeps a
+        data-dependent number of region statistics: $r=235$ at $n_1=8500$ vs.\ $r=291$ at
+        $n_1=10^4$ \meas. $\theta$ is therefore not comparable coefficient-by-coefficient across $n_1$.
+\end{enumerate}
+
+\section{Moment matching fails near $t=1$}
+Relative error between target ($\bar\phi_e$) and walker ($\bar\phi_p$) moments, as in
+\code{plot\_moment\_matching}:
+\[ \frac{2\,|\bar\phi_e-\bar\phi_p|}{|\bar\phi_e|+|\bar\phi_p|}, \]
+full potential set, 512-sample windows coarse-grained once \meas:
+
+\begin{center}
+\begin{tabular}{lccccc}
+\toprule
+ & \multicolumn{2}{c}{mean error per $t$-window} & \multicolumn{3}{c}{final step, over moments}\\
+\cmidrule(lr){2-3}\cmidrule(lr){4-6}
+run & $t<0.95$ & $[0.95,1]$ & mean & median & p90\\
+\midrule
+$n_1=10^4$, $n_t=33\,000$ (3 seeds) & $1$--$1.8\cdot10^{-3}$ & $0.28$ & 1.87 & 2.00 & 2.00\\
+$n_1=8500$, $n_t=40\,000$ (5 seeds) & $0.9$--$1.5\cdot10^{-3}$ & $0.041$ & 0.28 & $1.2\cdot10^{-3}$ & 1.40\\
+\bottomrule
+\end{tabular}
+\end{center}
+The July batch shows the same problem on its per-run moment-matching figures (not yet
+quantified with the comparison script). A final median of 2.0 is the maximum of this metric.
+
+\paragraph{Interpretation}
+\begin{itemize}
+  \item Not a particle-count problem: more particles improve the empirical moments; the run
+        with \emph{more} particles but \emph{fewer} steps is the worse one \hyp.
+  \item \textbf{Suspect 1: the per-step ridge.} $10^{-2}$ only partly corrects directions in
+        which $G$ is nearly degenerate, and $G$ becomes more degenerate near $t=1$ (duplicate
+        pairs 3$\to$6); the targets also move fastest there, so partial corrections fall behind \hyp.
+  \item \textbf{Suspect 2: time resolution near $t=1$.} Consistent with $n_t=33\,000$ being
+        worse than $40\,000$ \hyp. A larger \code{schedule\_exponent} puts more of the same steps
+        near $t=1$ at no cost.
+  \item \textbf{Suspect 3: statistics dying near $t=1$}, which cannot be corrected at all \hyp.
+\end{itemize}
+
+\section{Runs launched on 24 September}\nopagebreak
+All: \code{--solve\_float64}, \code{--deduplicate\_filters}, $n_t=40\,000$, seed 900, H100.
+\begin{center}\small
+\begin{tabular}{@{}lllccl@{}}
+\toprule
+label & potentials & ridge & exp. & $n_1$ & purpose\\
+\midrule
+\code{diag\_reg*\_sched*} (4 runs) & full & $10^{-2},10^{-4}$ & 2, 3 & 2000 & clean $2\times2$\\
+\code{long\_<set>\_sched3\_reg1e-4} (4) & all 4 sets & $10^{-4}$ & 3 & 8500 & production setting\\
+\code{long\_full\_sched3\_reg1e-2} & full & $10^{-2}$ & 3 & 8500 & full-size $2\times2$\\
+\code{long\_full\_sched2\_reg1e-4} & full & $10^{-4}$ & 2 & 8500 & full-size $2\times2$\\
+\bottomrule
+\end{tabular}
+\end{center}
+(``exp.'' is \code{schedule\_exponent}; ridge is the per-step \code{regularization}.)
+The four potential sets are: full; without \code{L\_2\_lowpass}; without
+\code{Scalar\_morlet\_gaussianK}; without both. The fourth corner of the full-size $2\times2$
+(ridge $10^{-2}$, exponent 2) is the existing $n_1=8500$ batch. The long runs save their system
+for the offline choice of $\lambda$.
+
+\section{Open questions and next steps}
+\begin{enumerate}
+  \item Which of ridge and time grid fixes $t\to1$ (from the $2\times2$ runs)? If neither does,
+        look at the statistics that die near $t=1$.
+  \item $\lambda$ per potential set from the offline sweep; then choose the minimal set from
+        sample quality (spectrum, structure functions, KL), which does not depend on $\lambda$.
+  \item Route to $n_1=10^4$: profile one SDE step. The order-4 gradient computes all $8\times8\times9$
+        channel combinations and keeps only the indexed ones; if it dominates the step time,
+        computing only those is the cheapest speed-up. Otherwise, checkpoint the SDE state
+        and chain jobs to lift the 20\,h limit.
+  \item Near-duplicate statistics (channel 20 vs.\ 21, some \code{Scalar\_psi} region pairs) are
+        kept: they carry a little information. Only their combination is well determined, which
+        matters when interpreting individual $\theta$ coefficients.
+\end{enumerate}
+
+\section*{Code changes (for reference)}
+\begin{itemize}
+  \item \code{codes/sde\_routines.py}: float64 block-Thomas solver; system saving before the solve;
+        dead-potential guard; optional float64 per-step solves.
+  \item New tools:
+        \begin{itemize}
+          \item \code{codes/resolve\_theta\_reg.py} (offline $\lambda$ sweep)
+          \item \code{codes/find\_duplicate\_statistics.py}
+          \item \code{turbulence/compare\_moment\_matching.py}
+          \item \code{turbulence/lamtune\_select.ipynb}
+        \end{itemize}
+  \item \code{codes/filters\_bank.py}, \code{codes/potentials\_builder.py}: \code{deduplicate\_filters}.
+  \item \code{turbulence/launch/}: one tracked script per experiment plus a shared submission file.
+  \item New run-name tags (\code{\_thomas\_nsub<N>}, \code{\_f64}, \code{\_dedupfilt}),
+        so runs with different settings never reload each other.
+        (\code{regularization} and \code{schedule\_exponent} are still not in the name;
+        the launch scripts use distinct labels.)
+  \item Commits \code{7075cfb}, \code{c7bcc39}, \code{0dad74c}.
+\end{itemize}
+
+\end{document}
