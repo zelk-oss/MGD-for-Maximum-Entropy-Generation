@@ -73,3 +73,36 @@ def return_Filters(M,J,Q=1,L=None,high_freq= 0.49,device='cpu',include_phi=False
     return filters
 
 
+
+
+def deduplicate_filters(filters, tol=1e-12):
+    """
+    Drop channels that are exact copies (up to a constant) of an earlier channel.
+
+    filters: (1, C, M) Fourier-domain bank. Channel i is dropped when, in float64,
+    1 - |<f_i, f_j>| / (|f_i| |f_j|) <= tol for some kept j < i, i.e. f_i = c f_j:
+    its filtered signal is a constant multiple of channel j's, so any statistic
+    built on it duplicates channel j's (exact collinearity, no information lost).
+    This happens when a bank asks for more sub-octave wavelets than the frequency
+    grid can resolve -- e.g. M=256, J=8, Q=3: band-pass filters 21, 22, 23 are the
+    same single frequency bin 1 (deficit exactly 0). Filter 20 is kept: it also sits
+    on bin 1 but has a 1.1e-4 component at bin 2 (deficit 6e-9), i.e. a little
+    information of its own. tol=1e-12 keeps the removal strictly lossless; the
+    comparison must be float64 (in float32, 1 - 1e-9 rounds to 1).
+
+    Returns (deduplicated filters, list of kept channel indices).
+    """
+    F = filters.reshape(-1, filters.shape[-1]).to(torch.complex128)
+    norms = F.abs().pow(2).sum(-1).sqrt()
+    keep = []
+    for i in range(F.shape[0]):
+        dup = False
+        for j in keep:
+            if norms[i] > 0 and norms[j] > 0:
+                deficit = 1 - float((F[i].conj() * F[j]).sum().abs() / (norms[i] * norms[j]))
+                if deficit <= tol:
+                    dup = True
+                    break
+        if not dup:
+            keep.append(i)
+    return filters[..., keep, :], keep

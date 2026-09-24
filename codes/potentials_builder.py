@@ -43,7 +43,8 @@ def get_scalar_potentials(terms):
     return potentials
 
 
-def get_1d_potentials(terms, J, filters, Q=1, filters_Q=None, filters_Phi=None,scalar_param=None, parallel=False):
+def get_1d_potentials(terms, J, filters, Q=1, filters_Q=None, filters_Phi=None,scalar_param=None, parallel=False,
+                      deduplicate_filters=False):
     """Build a dict of 1D potentials selected by ``terms``.
 
     Covers wavelet Lp-norm moments (``'L_2'..'L_10'`` and their ``'_phi'``
@@ -84,7 +85,19 @@ def get_1d_potentials(terms, J, filters, Q=1, filters_Q=None, filters_Phi=None,s
     if filters_Q is None:
         filters_Q = filters
         Q = 1 
-    
+
+    # Channel-list potentials (L_6_psi, Scalar_psi_*) only use filters_Q as a set of
+    # channels, so duplicated channels just give duplicated statistics (singular Gram).
+    # deduplicate_filters drops channels proportional to an earlier one for THEM only;
+    # the Scattering_* potentials index filters_Q by (J, Q) position and keep the full bank.
+    filters_Q_channels = filters_Q
+    if deduplicate_filters:
+        from filters_bank import deduplicate_filters as _dedup
+        filters_Q_channels, kept = _dedup(filters_Q)
+        dropped = sorted(set(range(filters_Q.shape[-2])) - set(kept))
+        print(f"[deduplicate_filters] filters_Q: {filters_Q.shape[-2]} -> {len(kept)} channels "
+              f"for channel-list potentials (dropped duplicates {dropped})")
+
     potentials = {}
 
     if 'L_2' in terms:
@@ -103,7 +116,7 @@ def get_1d_potentials(terms, J, filters, Q=1, filters_Q=None, filters_Phi=None,s
         potentials['L_6'] = L2p_norm(3,filters)
 
     if 'L_6_psi' in terms:
-        potentials['L_6_psi'] = L2p_norm(3,filters_Q)
+        potentials['L_6_psi'] = L2p_norm(3,filters_Q_channels)
 
     if 'L_7' in terms:
         potentials['L_7'] = L2p1_norm(3,filters)
@@ -145,12 +158,12 @@ def get_1d_potentials(terms, J, filters, Q=1, filters_Q=None, filters_Phi=None,s
         potentials['Scalar_morlet_quantile_confine'] =Scalar(filters,scalar_param=scalar_param,quantiles = True,confine=True)
 
     if 'Scalar_psi_quantile_confine' in terms:
-        potentials['Scalar_psi_quantile_confine'] =Scalar(filters_Q,scalar_param=scalar_param,quantiles = True,confine=True)
+        potentials['Scalar_psi_quantile_confine'] =Scalar(filters_Q_channels,scalar_param=scalar_param,quantiles = True,confine=True)
 
     # potential to fit wavelet coefficients histogram 
     # generalized gaussian k regions 
     if 'Scalar_psi_gaussianK' in terms:
-        potentials['Scalar_psi_gaussianK'] = Scalar_GGD_KRegion(filters_Q)
+        potentials['Scalar_psi_gaussianK'] = Scalar_GGD_KRegion(filters_Q_channels)
 
     if 'Scalar_morlet_gaussianK' in terms:
         potentials['Scalar_morlet_gaussianK'] = Scalar_GGD_KRegion(filters)
@@ -160,21 +173,21 @@ def get_1d_potentials(terms, J, filters, Q=1, filters_Q=None, filters_Phi=None,s
     """
     # Gaussian and Power Law tails 
     if 'Scalar_psi_windows' in terms: 
-        potentials['Scalar_psi_windows'] = Scalar_GGD_GGD_Pow(filters_Q)
+        potentials['Scalar_psi_windows'] = Scalar_GGD_GGD_Pow(filters_Q_channels)
 
     if 'Scalar_morlet_windows' in terms: 
         potentials['Scalar_morlet_windows'] = Scalar_GGD_GGD_Pow(filters)
 
     # GenGamma and Gaussian:
     if 'Scalar_psi_GenGamma' in terms: 
-        potentials['Scalar_psi_GenGamma'] = Scalar_GGD_GenGamma(filters_Q)
+        potentials['Scalar_psi_GenGamma'] = Scalar_GGD_GenGamma(filters_Q_channels)
 
     if 'Scalar_morlet_GenGamma' in terms: 
         potentials['Scalar_morlet_GenGamma'] = Scalar_GGD_GenGamma(filters)
 
     # three gen gaussians 
     if 'Scalar_psi_GGG' in terms: 
-        potentials['Scalar_psi_GGG'] = Scalar_GGD_GGD_GGD(filters_Q)
+        potentials['Scalar_psi_GGG'] = Scalar_GGD_GGD_GGD(filters_Q_channels)
 
     if 'Scalar_morlet_GGG' in terms: 
         potentials['Scalar_morlet_GGG'] = Scalar_GGD_GGD_GGD(filters)

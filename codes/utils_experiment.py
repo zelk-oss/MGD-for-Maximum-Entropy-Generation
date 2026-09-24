@@ -173,6 +173,9 @@ def _config_name_parts(args, M, include_seed=True):
     # float64 per-step solves change the trajectory, so they get a tag too
     if getattr(args, 'solve_float64', False):
         parts.append('f64')
+    # fewer channels in L_6_psi / Scalar_psi_* -> a different statistic set
+    if getattr(args, 'deduplicate_filters', False):
+        parts.append('dedupfilt')
     if include_seed:
         parts.append(f'seed_{args.seed}')
     parts.append(f'terms{terms_hash}')
@@ -327,6 +330,7 @@ def run_experiment(args, M, config, x1, filters, t, logger, outdir, device,
     potentials = get_1d_potentials(
         args.terms, args.J, filters, args.Q, filters_Q=filters_Q, filters_Phi=filters_Phi,
         scalar_param=None, parallel=False,
+        deduplicate_filters=getattr(args, 'deduplicate_filters', False),
     )
 
     if normalize_potentials: 

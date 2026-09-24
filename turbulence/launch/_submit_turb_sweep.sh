@@ -16,6 +16,7 @@
 #   TIME            SLURM wall time HH:MM:SS; also sets --time_limit_min, so the
 #                   SDE loop aborts cleanly if projected past 90% of it
 # Optional (defaults below): LABEL, REG_SOLVER, REG_RIDGE, SAVE_REG_SYSTEM,
+#   SOLVE_FLOAT64, DEDUPLICATE_FILTERS,
 #   SKIP_REG_SOLVE, REG_SYSTEM_DIR, REGULARIZATION, SCHEDULE_EXPONENT,
 #   INTERPOLANT, BATCH_SIZE, ACCOUNT, CONSTRAINT, PARTITION, CPUS, NGPUS, MODULE
 
@@ -38,6 +39,8 @@ REG_SOLVER="${REG_SOLVER:-thomas}"
 REG_RIDGE="${REG_RIDGE:-0.0}"
 SAVE_REG_SYSTEM="${SAVE_REG_SYSTEM:-false}"
 SKIP_REG_SOLVE="${SKIP_REG_SOLVE:-false}"
+SOLVE_FLOAT64="${SOLVE_FLOAT64:-false}"
+DEDUPLICATE_FILTERS="${DEDUPLICATE_FILTERS:-false}"
 REGULARIZATION="${REGULARIZATION:-0.01}"
 SCHEDULE_EXPONENT="${SCHEDULE_EXPONENT:-2}"
 INTERPOLANT="${INTERPOLANT:-Cos}"
@@ -65,6 +68,8 @@ TIME_LIMIT_MIN=$(( 10#${_h} * 60 + 10#${_m} ))
 EXTRA_FLAGS=""
 [ -n "${LABEL}" ]      && EXTRA_FLAGS+=" --label ${LABEL}"
 [ -n "${BATCH_SIZE}" ] && EXTRA_FLAGS+=" --batch_size ${BATCH_SIZE}"
+[ "${SOLVE_FLOAT64}" = "true" ]       && EXTRA_FLAGS+=" --solve_float64"
+[ "${DEDUPLICATE_FILTERS}" = "true" ] && EXTRA_FLAGS+=" --deduplicate_filters"
 if [ "${SAVE_REG_SYSTEM}" = "true" ]; then
     EXTRA_FLAGS+=" --save_reg_system"
     [ -n "${REG_SYSTEM_DIR}" ] && EXTRA_FLAGS+=" --reg_system_dir ${REG_SYSTEM_DIR}"

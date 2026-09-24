@@ -140,6 +140,11 @@ def parse_args():
     p.add_argument('--reg_ridge', type=float, default=0.0,
                     help='thomas only: M_k += reg_ridge * diag(M_k) in the Theta_reg '
                          'problem (0 = off)')
+    p.add_argument('--deduplicate_filters', action='store_true',
+                    help='Drop filters_Q channels proportional to an earlier one for the '
+                         'channel-list potentials (L_6_psi, Scalar_psi_*): lossless, removes '
+                         'exactly duplicated statistics (e.g. M=256, J=8, Q=3: channels 21-23 '
+                         '== channel 20); adds _dedupfilt to the name')
     p.add_argument('--solve_float64', action='store_true',
                     help='Per-step eta/theta solves in float64 (needed only for small '
                          '--regularization, ridge near float32 rounding); adds _f64 to the name')
@@ -381,7 +386,7 @@ def main():
         logger.info('Saved increment sanity-check figure to %s', fig_dir / 'increment_diagnostics.png')
 
         filters, filters_Phi = return_Filters(M, args.J, 1, device=device, include_phi=True)
-        filters_Q = return_Filters(M, args.J, args.Q, device=device)  # unused downstream — see note below
+        filters_Q = return_Filters(M, args.J, args.Q, device=device)  # used by L_6_psi / Scalar_psi_* (channel lists) and non-_Q1 Scattering_*
 
         t = 1 - (1 - torch.linspace(0, 1, args.nt + 1)) ** args.schedule_exponent
 
