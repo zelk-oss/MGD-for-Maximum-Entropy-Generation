@@ -7,11 +7,21 @@ t[1:]) and computes the same relative error as check_moments.plot_moment_matchin
 
     rel_err = 2 |barphi_e - barphi_p| / (|barphi_e| + |barphi_p|)
 
-on the moments whose final target value barphi_e[-1] exceeds --threshold.
+on the moments whose final target value barphi_e[-1] exceeds --threshold, and the
+error on each moment's own scale,
 
-Reports per variant: the final-step error (mean / median / 90th percentile over
-moments, averaged over seeds, with the across-seed spread) and the mean error per
-t-window; saves a figure with the mean error vs t and the final-error distribution.
+    own = |barphi_e - barphi_p| / max_t |barphi_e|
+
+which is the headline measure since 2026-09-25: the relative error blows up whenever a
+target moment crosses zero (all 45 bulk spikes of long_full_sched3_reg1e-2 were such
+crossings), the own-scale error does not. With ~200 moments the mean is carried by the
+worst few, so the summary is median / p90 / max over moments.
+
+Reports per variant: the final-step own-scale error (median / p90 / max, and moments
+above --target, averaged over seeds with the across-seed spread), the p90 own-scale
+error and the mean relative error per t-window; --top lists the worst moments (named
+from the run's fitted potentials when experiments/<...>/fitted_potentials exists);
+saves a figure with the p90 own-scale error vs t and the final-error distribution.
 
 Usage (from turbulence/):
     python compare_moment_matching.py --labels lamtune_full_nt33000 lamtune_full_n1_8500 \
@@ -45,7 +55,9 @@ def parse_args():
     p.add_argument('--out', type=Path, default=None,
                    help='figure path (default <root>/figures/moment_matching_<labels>.png)')
     p.add_argument('--top', type=int, default=15,
-                   help='list the N moments with the largest final-step error (first seed)')
+                   help='list the N moments with the largest final-step own-scale error (first seed)')
+    p.add_argument('--target', type=float, default=1e-2,
+                   help='own-scale error target: count moments above it at the final step')
     return p.parse_args()
 
 
@@ -81,29 +93,51 @@ def load_rel_err(root, config, threshold):
     idx = np.flatnonzero(keep)                            # original moment indices
     e, p = e[:, keep], p[:, keep]
     rel = 2 * np.abs(e - p) / (np.abs(e) + np.abs(p))
-    return t, rel, int(keep.sum()), len(keep), e, p, idx
+    own = np.abs(e - p) / np.abs(e).max(0)
+    return t, rel, own, int(keep.sum()), len(keep), e, p, idx
 
 
-def print_outliers(e, p, rel, idx, top):
-    """Largest final-step errors, with the target's size relative to its own path.
+def moment_names(root, config, n_expected):
+    """index -> potential name, from the run's fitted potentials; None if unavailable.
 
-    |e(1)| / max_t |e(t)| << 1 means the moment ends near zero, so the relative
-    error there is dominated by the denominator, not by a real mismatch.
-    abs/scale = |e(1) - p(1)| / max_t |e(t)| is the error on the moment's own scale.
+    The count is checked: without the fitted state (e.g. a local copy whose
+    fitted_potentials/ is empty) the rebuild keeps every Scalar_*_gaussianK region and
+    gives MORE statistics (301 vs 233 for long_full_*), which would mislabel every index.
+    """
+    try:
+        import sys
+        project = Path(__file__).resolve().parent.parent
+        for d in (project, project / 'codes', project / 'data'):   # codes/__init__ needs codes/ too
+            if str(d) not in sys.path:
+                sys.path.insert(0, str(d))
+        from codes.find_duplicate_statistics import statistic_labels
+        labels, _ = statistic_labels(root, config)
+    except Exception as exc:                  # no fitted_potentials here (e.g. local copy)
+        print(f'    (no moment names: {type(exc).__name__}: {exc})')
+        return None
+    if labels is None or len(labels) != n_expected:
+        print(f'    (no moment names: rebuilt potentials give {None if labels is None else len(labels)} '
+              f'statistics, the run has {n_expected} -- fitted_potentials/ missing or incomplete here)')
+        return None
+    return labels
+
+
+def print_outliers(e, p, rel, own, idx, top, names=None):
+    """The `top` moments with the largest final-step own-scale error.
+
+    rel = the relative error; |e(1)|/max|e| << 1 means the target ends near zero, so its
+    relative error says little. sign flips = how often the target changes sign.
     """
     scale = np.abs(e).max(0)
-    order = np.argsort(rel[-1])[::-1][:top]
-    print(f'    top {len(order)} final-step errors (first seed):')
-    print(f'      {"moment":>6} {"rel":>7} {"e(1)":>11} {"p(1)":>11} '
-          f'{"|e(1)|/max|e|":>13} {"abs/scale":>10} {"sign(e) flips":>13}')
+    order = np.argsort(own[-1])[::-1][:top]
+    print(f'    top {len(order)} final-step errors on the own scale (first seed):')
+    print(f'      {"moment":>6} {"own":>9} {"rel":>7} {"e(1)":>11} {"p(1)":>11} '
+          f'{"|e(1)|/max|e|":>13} {"sign flips":>10}  name')
     for j in order:
         flips = int((np.diff(np.sign(e[:, j])) != 0).sum())
-        print(f'      {idx[j]:>6d} {rel[-1, j]:7.3f} {e[-1, j]:11.3e} {p[-1, j]:11.3e} '
-              f'{abs(e[-1, j]) / scale[j]:13.2e} {abs(e[-1, j] - p[-1, j]) / scale[j]:10.2e} '
-              f'{flips:13d}')
-    s = np.abs(e[-1] - p[-1]) / scale
-    print(f'    final abs. error / max_t|e|:  mean {s.mean():.3e}   median {np.median(s):.3e}   '
-          f'p90 {np.percentile(s, 90):.3e}')
+        name = names[idx[j]] if names else ''
+        print(f'      {idx[j]:>6d} {own[-1, j]:9.2e} {rel[-1, j]:7.3f} {e[-1, j]:11.3e} {p[-1, j]:11.3e} '
+              f'{abs(e[-1, j]) / scale[j]:13.2e} {flips:10d}  {name}')
 
 
 def main():
@@ -121,44 +155,53 @@ def main():
         if not runs:
             print(f'\n=== {label}: no runs with aux moments found under {args.root}')
             continue
-        finals, curves, t_ref = [], [], None
+        finals, curves, rel_curves, t_ref = [], [], [], None
         print(f'\n=== {label}: {len(runs)} seeds {[s for s, _ in runs]}')
         for seed, config in runs:
-            t, rel, n_keep, n_all, e, p, idx = load_rel_err(args.root, config, args.threshold)
+            t, rel, own, n_keep, n_all, e, p, idx = load_rel_err(args.root, config, args.threshold)
             if t_ref is None:
                 t_ref = t
                 print(f'    {n_keep}/{n_all} moments above threshold, {len(t)} steps')
                 if args.top:
-                    print_outliers(e, p, rel, idx, args.top)
-            finals.append(rel[-1])
-            curves.append(rel.mean(1) if len(t) == len(t_ref) else None)
+                    print_outliers(e, p, rel, own, idx, args.top, moment_names(args.root, config, n_all))
+            finals.append(own[-1])
+            same = len(t) == len(t_ref)
+            curves.append(np.percentile(own, 90, axis=1) if same else None)
+            rel_curves.append(rel.mean(1) if same else None)
         finals = np.stack(finals)                             # (seeds, moments)
-        per_seed = np.stack([finals.mean(1), np.median(finals, 1),
-                             np.percentile(finals, 90, axis=1)], 1)
-        m, sd = per_seed.mean(0), per_seed.std(0, ddof=1) if len(runs) > 1 else np.zeros(3)
-        print(f'    final-step rel. error:  mean {m[0]:.3e} ± {sd[0]:.1e}   '
-              f'median {m[1]:.3e} ± {sd[1]:.1e}   p90 {m[2]:.3e} ± {sd[2]:.1e}   (± = across seeds)')
+        per_seed = np.stack([np.median(finals, 1), np.percentile(finals, 90, axis=1),
+                             finals.max(1), (finals > args.target).sum(1)], 1)
+        m, sd = per_seed.mean(0), per_seed.std(0, ddof=1) if len(runs) > 1 else np.zeros(4)
+        print(f'    final-step own-scale error:  median {m[0]:.3e} ± {sd[0]:.1e}   '
+              f'p90 {m[1]:.3e} ± {sd[1]:.1e}   max {m[2]:.3e} ± {sd[2]:.1e}   '
+              f'above {args.target:g}: {m[3]:.1f} ± {sd[3]:.1f} moments   (± = across seeds)')
         curves = [c for c in curves if c is not None]
+        rel_curves = [c for c in rel_curves if c is not None]
         if curves:
-            C = np.stack(curves)
-            print('    mean rel. error per t-window (seed-averaged):')
+            C, R = np.stack(curves), np.stack(rel_curves)
+            print('    per t-window (seed-averaged):  p90 own-scale error | mean rel. error')
             for lo, hi in zip(WINDOWS[:-1], WINDOWS[1:]):
                 w = (t_ref >= lo) & ((t_ref < hi) if hi < 1 else (t_ref <= hi))
                 if w.any():
-                    print(f'      [{lo:.2f},{hi:.2f})  {C[:, w].mean():.3e}')
+                    print(f'      [{lo:.2f},{hi:.2f})  {C[:, w].mean():.3e} | {R[:, w].mean():.3e}')
             med = np.median(C, 0)
             line, = axes[0].semilogy(t_ref, med, lw=1, label=f'{label} (median of {len(C)} seeds)')
             axes[0].fill_between(t_ref, C.min(0), C.max(0), color=line.get_color(), alpha=0.15)
         # counts, not density: density on log-spaced bins divides by the bin width,
         # which inflates the tiny-error bins by orders of magnitude
-        axes[1].hist(finals.ravel(), bins=np.logspace(-8, np.log10(2), 90), histtype='step',
+        axes[1].hist(finals.ravel(), bins=np.logspace(-9, 1, 90), histtype='step',
                      lw=1.5, label=label)
 
-    axes[0].set_xlabel('SDE time t'); axes[0].set_ylabel('mean relative error over moments')
-    axes[0].set_title('moment matching along the SDE (band = min/max over seeds)')
+    for a in axes:
+        a.grid(alpha=0.2, which='both')
+    axes[0].axhline(args.target, color='0.5', lw=0.8, ls='--')
+    axes[1].axvline(args.target, color='0.5', lw=0.8, ls='--')
+    axes[0].set_xlabel('SDE time t'); axes[0].set_ylabel('p90 over moments of |e-p| / max_t|e|')
+    axes[0].set_title('moment matching along the SDE (band = min/max over seeds; dashed = target)',
+                      fontsize=9)
     axes[0].legend(fontsize=8)
     axes[1].set_xscale('log'); axes[1].set_yscale('log'); axes[1].set_ylabel('moments')
-    axes[1].set_xlabel('final-step relative error (all moments, all seeds)')
+    axes[1].set_xlabel('final-step own-scale error (all moments, all seeds)')
     axes[1].set_title('final moment mismatch'); axes[1].legend(fontsize=8)
     plt.tight_layout()
     out.parent.mkdir(parents=True, exist_ok=True)

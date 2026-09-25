@@ -337,30 +337,89 @@ def _rel_err(run, threshold):
     return t, 2 * np.abs(e - p) / (np.abs(e) + np.abs(p))
 
 
-def plot_moment_matching(runs, threshold=1e-8):
-    """Mean rel. error vs t, the same vs 1-t (resolves t -> 1), final-step distribution."""
+def _own_err(run, threshold):
+    """Moment error on each moment's own scale: |e - p| / max_t |e| (whole-run max).
+
+    Unlike the relative error 2|e-p|/(|e|+|p|), it does not blow up when a target
+    moment crosses zero: on long_full_sched3_reg1e-2 all 45 bulk spikes of the
+    relative error were single moments crossing zero, and vanish on this scale
+    (2026-09-25). The whole-run max (not the running max the adaptive time grid
+    uses) avoids inflating the first steps, where some targets start near zero.
+    Returns t, err (steps x moments) and the kept moment indices.
+    """
+    e, p = run['barphi_e'].numpy(), run['barphi_p'].numpy()
+    keep = e[-1] > threshold                     # same moment set as _rel_err
+    e, p = e[:, keep], p[:, keep]
+    t = run['t'].numpy()[1:len(e) + 1]
+    return t, np.abs(e - p) / np.abs(e).max(0), np.flatnonzero(keep)
+
+
+def plot_moment_matching(runs, threshold=1e-8, target=1e-2):
+    """Own-scale moment error: median / p90 / max over moments vs t and vs 1-t, final step.
+
+    With ~200 moments the mean is carried by the worst few, so the ensemble is shown
+    as three curves per run: median (dashed, a typical moment), p90 (solid) and max
+    (dotted, the worst moment). The dashed grey line is `target`.
+    """
     runs = {k: r for k, r in runs.items() if 'barphi_e' in r}
     if not runs:
         print('no aux moments loaded')
         return
     cols = _colors(runs)
-    fig, (a1, a2, a3) = plt.subplots(1, 3, figsize=(18, 4))
-    bins = np.logspace(-8, np.log10(2), 60)
+    fig, (a1, a2, a3) = plt.subplots(1, 3, figsize=(18, 4.5))
+    bins = np.logspace(-9, 1, 60)
     for k, r in runs.items():
-        t, rel = _rel_err(r, threshold)
-        m = rel.mean(1)
-        a1.semilogy(t, m, color=cols[k], lw=0.8, label=k)
-        a2.loglog(1 - t[t < 1], m[t < 1], color=cols[k], lw=1.2, alpha=0.8, label=k)
-        a3.hist(rel[-1], bins=bins, histtype='step', lw=1.5, color=cols[k], label=k)
-    a1.set_xlabel('t'); a1.set_title('mean rel. error over moments')
+        t, err, _ = _own_err(r, threshold)
+        stats = [('median', np.median(err, 1), '--'), ('p90', np.percentile(err, 90, 1), '-'),
+                 ('max', err.max(1), ':')]
+        for name, v, ls in stats:
+            kw = dict(color=cols[k], ls=ls, lw=1.0, label=k if name == 'p90' else None)
+            a1.semilogy(t, v, **kw)
+            a2.loglog(1 - t[t < 1], v[t < 1], **kw)
+        a3.hist(err[-1], bins=bins, histtype='step', lw=1.5, color=cols[k], label=k)
+    for a in (a1, a2):
+        a.axhline(target, color='0.5', lw=0.8, ls='--')
+    a3.axvline(target, color='0.5', lw=0.8, ls='--')
+    a1.set_xlabel('t'); a1.set_title('own-scale error |e-p| / max_t|e|: p90 (solid), median (--), max (:)',
+                                     fontsize=9)
     a2.set_xlabel('1 - t'); a2.invert_xaxis(); a2.set_title('same, zoomed on t -> 1')
-    a3.set_xscale('log'); a3.set_yscale('log'); a3.set_xlabel('final-step rel. error')
-    a3.set_ylabel('moments'); a3.set_title('final-step distribution (2 = sign flip)')
+    a3.set_xscale('log'); a3.set_yscale('log'); a3.set_xlabel('final-step own-scale error')
+    a3.set_ylabel('moments'); a3.set_title(f'final step (dashed: target {target:g})')
     for a in (a1, a2, a3):
         a.grid(alpha=0.2, which='both')
     a1.legend(fontsize=8, frameon=False)
     fig.tight_layout()
     plt.show()
+
+
+def moments_above(runs, threshold=1e-8, target=1e-2, root=ROOT):
+    """Per run: the moments whose final own-scale error exceeds `target`, with names.
+
+    Names come from the run's fitted potentials (codes/find_duplicate_statistics.py,
+    statistic_labels): they need experiments/<...>/<config>/fitted_potentials/, i.e.
+    run this where the run lives (Jean Zay); otherwise indices are shown as #i.
+    """
+    from codes.find_duplicate_statistics import statistic_labels
+    for k, r in runs.items():
+        if 'barphi_e' not in r:
+            continue
+        t, err, idx = _own_err(r, threshold)
+        try:
+            labels, _ = statistic_labels(root, r['config'])
+        except Exception as exc:                  # missing/partial fitted potentials
+            labels = None
+            print(f'  ({k}: no names, {type(exc).__name__}: {exc})')
+        if labels is not None and len(labels) != len(r['barphi_e'][0]):
+            print(f'  ({k}: rebuilt potentials give {len(labels)} statistics, run has '
+                  f'{len(r["barphi_e"][0])}; names unreliable, showing indices)')
+            labels = None
+        bad = np.argsort(err[-1])[::-1]
+        bad = bad[err[-1][bad] > target]
+        print(f'{k}: {len(bad)}/{len(idx)} moments above {target:g} at the final step')
+        for j in bad:
+            name = labels[idx[j]] if labels else f'#{idx[j]}'
+            e_end = float(r['barphi_e'][-1, idx[j]]); p_end = float(r['barphi_p'][-1, idx[j]])
+            print(f'   {err[-1, j]:8.2e}   target {e_end: .3e}  walkers {p_end: .3e}   {name}')
 
 
 def _step_series(run, threshold):
@@ -369,7 +428,7 @@ def _step_series(run, threshold):
     n = min(len(t) - 1, *(len(run[k]) for k in ('theta', 'barphi_e') if k in run))
     out = dict(t=t[1:n + 1], h=np.diff(t)[:n])
     if 'barphi_e' in run:
-        out['mm'] = _rel_err(run, threshold)[1][:n].mean(1)
+        out['mm'] = np.percentile(_own_err(run, threshold)[1][:n], 90, axis=1)
     if 'theta' in run:
         out['theta'] = run['theta'].numpy()[:n]
     if 'dH' in run:
@@ -381,7 +440,7 @@ def plot_theta_check(runs, sigma=3.5, threshold=1e-8, top=8, window=1e-3):
     """Is the late jump in moment error a step-size instability or a blow-up of theta?
 
     Stacked panels on a shared 1-t axis (log):
-      1. mean moment rel. error (where the jump is)
+      1. moment error, p90 over moments on each moment's own scale (where the jump is)
       2. step size h (what the schedule does near t=1)
       3. ||theta_t||, theta as saved (= corrector coefficients / (h sigma^2))
       4. ||theta_t|| * h * sigma^2 = size of the corrector actually applied that step
@@ -421,7 +480,7 @@ def plot_theta_check(runs, sigma=3.5, threshold=1e-8, top=8, window=1e-3):
                   f'for 1-t < {window:g}:')
             print('   ' + '  '.join(f'{i}:{peak[i]:.2e} @1-t={x[late][a[:, i].argmax()]:.1e}'
                                     for i in idx))
-    titles = ['mean moment rel. error', 'step size h', r'$\|\theta_t\|$ (saved, / h$\sigma^2$)',
+    titles = ['moment error, p90 over moments (own scale)', 'step size h', r'$\|\theta_t\|$ (saved, / h$\sigma^2$)',
               r'$\|\theta_t\|\,h\,\sigma^2$ (corrector actually applied)', r'$|dH_t|$']
     for a, ti in zip(axes, titles):
         a.set_title(ti, fontsize=10, loc='left'); a.grid(alpha=0.2, which='both')
@@ -440,9 +499,9 @@ def summary_table(S_ref, S_runs, runs, threshold=1e-8, ks=None):
                'n_terms': len(c.get('terms', [])), 'nt': c.get('nt'), 'n1': c.get('n1'),
                'runtime_h': round(r['runtime_h'], 1)}
         if 'barphi_e' in r:
-            _, rel = _rel_err(r, threshold)
-            row.update({'mm_final_mean': rel[-1].mean(), 'mm_final_p90': np.percentile(rel[-1], 90),
-                        'mm_n_above_1': int((rel[-1] > 1).sum())})
+            _, err, _ = _own_err(r, threshold)
+            row.update({'mm_final_median': np.median(err[-1]), 'mm_final_p90': np.percentile(err[-1], 90),
+                        'mm_final_max': err[-1].max(), 'mm_n_above_1pct': int((err[-1] > 1e-2).sum())})
         row.update({
             'S2_ratio_tau1': S['S2'][0] / S_ref['S2'][0],
             'flat4_ratio_tau1': S['flat4'][0] / S_ref['flat4'][0],

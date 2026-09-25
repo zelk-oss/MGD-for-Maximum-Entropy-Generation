@@ -302,13 +302,20 @@ class SDE(torch.nn.Module):
     # ------------------------------------------------------------------------------------------------------------------
 
     def _check_time_budget(self, loop_t0, n_done, time_limit_min,
-                            min_iters=30, margin=0.9):
+                            min_iters=30, window=100, margin=0.9):
         """
-        Abort the SDE loop early if the average iteration time seen so far,
-        extrapolated to the full loop, would blow through the SLURM time
-        budget. No-op if `time_limit_min` is None (the default — opt-in per
-        run) or before `min_iters` iterations have completed, since early
-        iterations are slower (CUDA warm-up) and noisy.
+        Abort the SDE loop early if the steady-state iteration time, extrapolated
+        to the full loop, would blow through the SLURM time budget. No-op if
+        `time_limit_min` is None (the default — opt-in per run).
+
+        The first `min_iters` iterations are warm-up (CUDA, allocator) and are
+        slower: they are timed separately and NOT used for the rate. The rate is
+        measured over the next `window` iterations, and the check runs from then on:
+            projected = (warm-up time) + rate * (total - min_iters).
+        (Changed 2026-09-25: the rate used to include the warm-up and the check ran
+        from iteration 30. On H100 at n1=8500 the first 30 steps ran at 1.10 s/it vs
+        1.01 s/it steady, which aborted two 60k-step runs projected at 18.3-18.6 h that
+        would have taken ~16.8 h.)
 
         `margin` reserves headroom under `time_limit_min` for the work that
         happens after this loop (regularised solve, save_results I/O), which
@@ -316,19 +323,25 @@ class SDE(torch.nn.Module):
         """
         if time_limit_min is None or n_done < min_iters:
             return
-        elapsed = time.time() - loop_t0
-        avg_iter_s = elapsed / n_done
+        now = time.time()
+        if n_done == min_iters or getattr(self, '_budget_mark', (None,))[0] != loop_t0:
+            self._budget_mark = (loop_t0, n_done, now)        # end of warm-up for this loop
+            return
+        _, n_warm, t_warm = self._budget_mark
+        if n_done < n_warm + window:
+            return
+        rate = (now - t_warm) / (n_done - n_warm)
         total_iters = len(self.t) - 1
-        projected_s = avg_iter_s * total_iters
+        projected_s = (t_warm - loop_t0) + rate * (total_iters - n_warm)
         budget_s = time_limit_min * 60 * margin
         if projected_s > budget_s:
             raise RuntimeError(
                 f"Aborting SDE loop: projected to take {projected_s / 3600:.2f}h "
-                f"({avg_iter_s:.2f}s/it x {total_iters} it, measured over "
-                f"{n_done} iterations) which exceeds {margin:.0%} of the "
-                f"{time_limit_min / 60:.1f}h time budget (--time_limit_min "
-                f"{time_limit_min}). Aborting now instead of letting SLURM kill "
-                f"the job at the wall-clock limit with nothing saved."
+                f"({rate:.2f}s/it x {total_iters} it, rate measured over iterations "
+                f"{n_warm}-{n_done} after a {n_warm}-iteration warm-up) which exceeds "
+                f"{margin:.0%} of the {time_limit_min / 60:.1f}h time budget "
+                f"(--time_limit_min {time_limit_min}). Aborting now instead of letting "
+                f"SLURM kill the job at the wall-clock limit with nothing saved."
             )
 
     def forward(self, param_storage_frequency=1, time_limit_min=None):
