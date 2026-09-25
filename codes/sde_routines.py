@@ -383,6 +383,7 @@ class SDE(torch.nn.Module):
         theta_k_list = []
         dH_k_list    = []
 
+        self._rhs_dt_cache = None                     # no reuse across separate runs
         loop_t0 = time.time()
         for k, t_k in tqdm(enumerate(self.t[:-1])):
 
@@ -465,7 +466,7 @@ class SDE(torch.nn.Module):
 
     def forward_regularised(self, lam=1.0, n_subsample=1, param_storage_frequency=1,
                              time_limit_min=None, reg_solver='dense', reg_ridge=0.0,
-                             reg_system_path=None, solve_reg=True):
+                             reg_system_path=None, solve_reg=True, adaptive=None):
         """
         As forward, but stores the regularised-problem quantities ON THE WALKERS X_t = x_k
         and solves A Theta = f (section 4) on a coarse grid after the loop.
@@ -504,6 +505,13 @@ class SDE(torch.nn.Module):
         offline (codes/resolve_theta_reg.py) without re-running the SDE -- lam never
         enters the SDE evolution. solve_reg=False skips the in-run solve (Theta_reg
         is returned as None); only meaningful together with reg_system_path.
+
+        adaptive: an AdaptiveStepController (codes/time_schedules.py) or None. If set,
+        self.t is replaced by a float64 grid built step by step: t[k+1] is chosen from
+        the moment error after step k-1, before step k draws its noise (no rejected
+        steps). The loop stops at the controller's t_end, at max_steps, or -- instead
+        of aborting -- when time_limit_min is 90% used, and self.t is trimmed to the
+        points actually used, so callers must save self.t (not the grid they passed).
         """
         assert self.interpolant == 'Cos', "this routine assumes the Cos schedule"
         if reg_solver not in ('dense', 'thomas'):
@@ -535,8 +543,23 @@ class SDE(torch.nn.Module):
 
   
 
+        if adaptive is not None:
+            if param_storage_frequency != 1:
+                raise ValueError('adaptive steps need param_storage_frequency=1 (the '
+                                 'controller reads every step\'s moments)')
+            t_grid = torch.zeros(adaptive.max_steps + 1, dtype=torch.float64)
+            t_grid[0] = float(self.t[0])
+            self.t = t_grid
+            adaptive.observe_initial(barphi_e[0])
+            n_iter = adaptive.max_steps
+        else:
+            n_iter = len(self.t) - 1
+
+        self._rhs_dt_cache = None                     # no reuse across separate runs
         loop_t0 = time.time()
-        for k, t_k in tqdm(enumerate(self.t[:-1])):
+        for k in tqdm(range(n_iter)):
+            if adaptive is not None:
+                self.t[k + 1] = adaptive.next_t(float(self.t[k]))
             h = self.t[k + 1] - self.t[k]
             self.x_k, y_k, I_k, eta_k, theta_k, dH_k, bk = self.iteration_step_projection(self.x_k, k)
             t_node = self.t[k + 1]
@@ -546,7 +569,11 @@ class SDE(torch.nn.Module):
             if sin_k > eps and cos_k > eps:                # skip t = 0 (sin = 0), t = 1 (cos = 0)
                 Xt    = y_k                                           # predicted walkers at target time
                 mom   = self.compute_moments(Xt)                       # phi(y_k)              (B, r)
-                Mk    = self.compute_G(Xt)                             # raw Gram at y_k
+                # raw Gram at y_k. CHANGED 2026-09-25: was self.compute_G(Xt), an exact
+                # repeat of the G(y_k) that compute_theta just computed for the corrector
+                # (Xt is y_k); reused instead: identical values, ~17% of the step at
+                # n1=8500 (profile_step.sh).
+                Mk    = self._G_theta
                 #if self.regularization != 0:
                 #    Mk = Mk + self.regularization * torch.diag(torch.diag(Mk))
 
@@ -573,7 +600,25 @@ class SDE(torch.nn.Module):
                 barphi_e.append(self.compute_moments(I_k).mean(0))
                 barphi_p.append(self.compute_moments(self.x_k).mean(0))
 
-            self._check_time_budget(loop_t0, k + 1, time_limit_min)
+            if adaptive is None:
+                self._check_time_budget(loop_t0, k + 1, time_limit_min)
+                continue
+            adaptive.update(barphi_e[-1], barphi_p[-1])
+            if adaptive.done(float(self.t[k + 1])):
+                break
+            if time_limit_min is not None and time.time() - loop_t0 > 0.9 * 60 * time_limit_min:
+                print(f'WARNING: adaptive run stopped by the time limit at t = '
+                      f'{float(self.t[k + 1]):.8f} (1 - t = {1 - float(self.t[k + 1]):.2e}), '
+                      f'before t_end = {adaptive.t_end}')
+                break
+        else:
+            if adaptive is not None:
+                print(f'WARNING: adaptive run hit max_steps = {adaptive.max_steps} at '
+                      f'1 - t = {1 - float(self.t[-1]):.2e}, before t_end = {adaptive.t_end}')
+
+        if adaptive is not None:
+            self.t = self.t[:k + 2]                       # grid points actually used
+            print(adaptive.summary())
 
         if cnt > 0:                                                    # final partial block
             M.append(store(accM / cnt)); Gf.append(store(accG / cnt))
@@ -891,8 +936,33 @@ class SDE(torch.nn.Module):
             theta_k = torch.zeros_like(theta_k_raw)
 
         # Entropy estimate
+        # CHANGED 2026-09-25 (was: compute_rhs_dt_phi_I_t(I_k, k), i.e. phi evaluated
+        # on the interpolant at t_{k+1} but contracted with its velocity Idot at t_k --
+        # an index slip present since the 2026-06-11 upload, no documented reason).
+        # Now both at t_{k+1}, the time theta_k belongs to. This is exactly the
+        # right-hand side the NEXT step's predictor needs, so it is cached and
+        # compute_eta reuses it: one fewer moment-velocity pass per step (~16% of the
+        # step at n1=8500, profile_step.sh).
+        # Why this is fine (checks of 2026-09-25, scalar port, Cos interpolant):
+        #  - theory: dS/dt = -theta_t . mdot_t with both factors at the SAME t; nothing
+        #    motivates the old mixed times.
+        #  - exact case (phi = x^2, target N(0, 0.2^2), sigma^2 = 0.4, n1 = 1e5), error of
+        #    the integrated dH vs the exact log-std ratio, old mixed -> this version:
+        #    nt=100: +0.093 -> +0.069; nt=400: +0.024 -> +0.017; nt=1600: +0.014 -> +0.013.
+        #    The old version was the least accurate of the variants tried. The one the
+        #    concavity argument supports, -theta_k . (m_{k+1} - m_k)/h, did a little better
+        #    (+0.034/+0.008/+0.010) but is not used here: at fine steps all variants agree
+        #    to ~6e-3 and the ~1e-2 error left comes from theta itself (Euler-Maruyama
+        #    bias ~ h sigma^2 and estimation noise), not from this pairing.
+        #  - bimodal model (n1 = 2e4): integrated dH moved by 5.0% at nt=200, 0.69% at
+        #    nt=1000 vs the old version (O(h)), so entropy bounds of runs before and after
+        #    this change differ by that much. Samples, theta and moments are unchanged
+        #    (A/B run vs the previous commit: bit-identical); dH never enters the SDE.
+        # The bimodal port (bimodal_experiment/sde_routines_scalar_reg.py) has its own
+        # step and still uses t_k for both.
         I_k          = self.compute_interpolant(k + 1)
-        dt_phi_I_k   = self.compute_rhs_dt_phi_I_t(I_k, k)
+        dt_phi_I_k   = self.compute_rhs_dt_phi_I_t(I_k, k + 1)
+        self._rhs_dt_cache = (k + 1, dt_phi_I_k)
         dH_k         = -theta_k @ dt_phi_I_k
 
         return x_k_plus_one, y_k, I_k, eta_k, theta_k, dH_k, bk
@@ -928,7 +998,14 @@ class SDE(torch.nn.Module):
 
 
         I_k              = self.compute_interpolant(k)
-        rhs_dt_phi_I_k   = self.compute_rhs_dt_phi_I_t(I_k, k)
+        # Reuse the moment velocity computed at t_k by the previous step's entropy
+        # estimate (same interpolant, same time; see iteration_step_projection,
+        # 2026-09-25). Recomputed on the first step or if the cache is from another k.
+        cache = getattr(self, '_rhs_dt_cache', None)
+        if cache is not None and cache[0] == k:
+            rhs_dt_phi_I_k = cache[1]
+        else:
+            rhs_dt_phi_I_k = self.compute_rhs_dt_phi_I_t(I_k, k)
         G_k              = self.compute_G(x_k)
         live             = self._live_potentials(G_k, rhs_dt_phi_I_k, k, 'eta')
 
@@ -1021,6 +1098,9 @@ class SDE(torch.nn.Module):
         I_k                      = self.compute_interpolant(k + 1)
         rhs_constraint_correction = self.compute_rhs_constraint_correction(y_k, I_k)
         G_k                      = self.compute_G(y_k)
+        # Kept (raw, before the rescaling/ridge in _solve, which make new tensors) so
+        # forward_regularised can reuse it instead of recomputing G(y_k) (2026-09-25).
+        self._G_theta = G_k
         live                     = self._live_potentials(G_k, rhs_constraint_correction, k, 'theta')
 
         def _solve(G_k, rhs_constraint_correction):

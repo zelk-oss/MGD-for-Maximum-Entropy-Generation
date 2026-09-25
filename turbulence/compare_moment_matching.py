@@ -44,6 +44,8 @@ def parse_args():
                    help='keep moments with barphi_e[-1] > threshold (as --moment_threshold)')
     p.add_argument('--out', type=Path, default=None,
                    help='figure path (default <root>/figures/moment_matching_<labels>.png)')
+    p.add_argument('--top', type=int, default=15,
+                   help='list the N moments with the largest final-step error (first seed)')
     return p.parse_args()
 
 
@@ -76,9 +78,32 @@ def load_rel_err(root, config, threshold):
     t = torch.load(t_path, map_location='cpu', weights_only=False).double().numpy()
     t = t[1:len(e) + 1]                                   # one aux row per step, aligned with t[1:]
     keep = e[-1] > threshold
+    idx = np.flatnonzero(keep)                            # original moment indices
     e, p = e[:, keep], p[:, keep]
     rel = 2 * np.abs(e - p) / (np.abs(e) + np.abs(p))
-    return t, rel, int(keep.sum()), len(keep)
+    return t, rel, int(keep.sum()), len(keep), e, p, idx
+
+
+def print_outliers(e, p, rel, idx, top):
+    """Largest final-step errors, with the target's size relative to its own path.
+
+    |e(1)| / max_t |e(t)| << 1 means the moment ends near zero, so the relative
+    error there is dominated by the denominator, not by a real mismatch.
+    abs/scale = |e(1) - p(1)| / max_t |e(t)| is the error on the moment's own scale.
+    """
+    scale = np.abs(e).max(0)
+    order = np.argsort(rel[-1])[::-1][:top]
+    print(f'    top {len(order)} final-step errors (first seed):')
+    print(f'      {"moment":>6} {"rel":>7} {"e(1)":>11} {"p(1)":>11} '
+          f'{"|e(1)|/max|e|":>13} {"abs/scale":>10} {"sign(e) flips":>13}')
+    for j in order:
+        flips = int((np.diff(np.sign(e[:, j])) != 0).sum())
+        print(f'      {idx[j]:>6d} {rel[-1, j]:7.3f} {e[-1, j]:11.3e} {p[-1, j]:11.3e} '
+              f'{abs(e[-1, j]) / scale[j]:13.2e} {abs(e[-1, j] - p[-1, j]) / scale[j]:10.2e} '
+              f'{flips:13d}')
+    s = np.abs(e[-1] - p[-1]) / scale
+    print(f'    final abs. error / max_t|e|:  mean {s.mean():.3e}   median {np.median(s):.3e}   '
+          f'p90 {np.percentile(s, 90):.3e}')
 
 
 def main():
@@ -99,10 +124,12 @@ def main():
         finals, curves, t_ref = [], [], None
         print(f'\n=== {label}: {len(runs)} seeds {[s for s, _ in runs]}')
         for seed, config in runs:
-            t, rel, n_keep, n_all = load_rel_err(args.root, config, args.threshold)
+            t, rel, n_keep, n_all, e, p, idx = load_rel_err(args.root, config, args.threshold)
             if t_ref is None:
                 t_ref = t
                 print(f'    {n_keep}/{n_all} moments above threshold, {len(t)} steps')
+                if args.top:
+                    print_outliers(e, p, rel, idx, args.top)
             finals.append(rel[-1])
             curves.append(rel.mean(1) if len(t) == len(t_ref) else None)
         finals = np.stack(finals)                             # (seeds, moments)
@@ -122,13 +149,16 @@ def main():
             med = np.median(C, 0)
             line, = axes[0].semilogy(t_ref, med, lw=1, label=f'{label} (median of {len(C)} seeds)')
             axes[0].fill_between(t_ref, C.min(0), C.max(0), color=line.get_color(), alpha=0.15)
-        axes[1].hist(finals.ravel(), bins=np.logspace(-8, 1, 90), histtype='step', lw=1.5,
-                     density=True, label=label)
+        # counts, not density: density on log-spaced bins divides by the bin width,
+        # which inflates the tiny-error bins by orders of magnitude
+        axes[1].hist(finals.ravel(), bins=np.logspace(-8, np.log10(2), 90), histtype='step',
+                     lw=1.5, label=label)
 
     axes[0].set_xlabel('SDE time t'); axes[0].set_ylabel('mean relative error over moments')
     axes[0].set_title('moment matching along the SDE (band = min/max over seeds)')
     axes[0].legend(fontsize=8)
-    axes[1].set_xscale('log'); axes[1].set_xlabel('final-step relative error (all moments, all seeds)')
+    axes[1].set_xscale('log'); axes[1].set_yscale('log'); axes[1].set_ylabel('moments')
+    axes[1].set_xlabel('final-step relative error (all moments, all seeds)')
     axes[1].set_title('final moment mismatch'); axes[1].legend(fontsize=8)
     plt.tight_layout()
     out.parent.mkdir(parents=True, exist_ok=True)

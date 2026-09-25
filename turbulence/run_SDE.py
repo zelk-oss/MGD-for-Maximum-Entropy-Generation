@@ -69,6 +69,7 @@ from codes.utils import *             # noqa: E402
 from codes.utils_experiment import * 
 from codes.check_moments import *     # noqa: E402
 from codes.ortho_wavelet.ReadyToUseWavelets import *
+from codes.time_schedules import add_schedule_args, build_time_grid  # noqa: E402
 from data.data_loader import *        # noqa: E402
 from data_loader import *             # noqa: E402
 
@@ -110,7 +111,7 @@ def parse_args():
                     help='Number of SDE integration steps')
     p.add_argument('--sigma', type=float, default=0.3, help='Diffusion coefficient sigma')
     p.add_argument('--schedule_exponent', type=int, default=2,
-                    help='Exponent in t = 1-(1-linspace)^exponent')
+                    help='Exponent in t = 1-(1-linspace)^exponent (--schedule power only)')
     p.add_argument('--interpolant', type=str, default='Cos',
                     help='Interpolant type: Cos | Linear | VarPreserv | Sqrt')
     p.add_argument('--regularization', type=float, default=1e-1,
@@ -181,6 +182,7 @@ def parse_args():
     p.add_argument('--no_save_aux_moments', action='store_true',
                     help='Disable saving of barphi_e / barphi_p aux moments')
     p.add_argument('--seed', type=int, default=0, help='Random seed')
+    add_schedule_args(p)                             # --schedule power | two_phase | adaptive
 
     return p.parse_args()
 
@@ -363,20 +365,18 @@ def main():
         filters, filters_Phi = return_Filters(M, args.J, 1, device=device, include_phi=True)
         filters_Q = return_Filters(M, args.J, args.Q, device=device)  # used by L_6_psi / Scalar_psi_* (channel lists) and non-_Q1 Scattering_*
 
-        t = 1 - (1 - torch.linspace(0, 1, args.nt + 1)) ** args.schedule_exponent
-
-        t_rounded = torch.round(t, decimals=4)
-        t_final = int((t_rounded == 1.0).nonzero(as_tuple=True)[0][0])
-        logger.info(f"t_final = {t_final}/{len(t)} (last t = {t[t_final-1].item():.6f}, "
-            f"dropping {len(t) - t_final} redundant trailing points at 1.0000)")
+        # --schedule power (default) is the legacy grid, cut at 1.0000 as before;
+        # two_phase / adaptive: see codes/time_schedules.py
+        t, adaptive = build_time_grid(args, logger)
 
         if loaded is not None:
             result = loaded
         else:
             result = run_experiment(args, M, config, x1, filters,
-                                    t[:t_final], logger, outdir, device,
+                                    t, logger, outdir, device,
                                     filters_Q=filters_Q, filters_Phi=filters_Phi,
                                     potentials_save_dir=potentials_dir,
+                                    adaptive=adaptive,
                                     )
 
         save_diagnostics(x1, result, t, args, config, fig_dir, logger)

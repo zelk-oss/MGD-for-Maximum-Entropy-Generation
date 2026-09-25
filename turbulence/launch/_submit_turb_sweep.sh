@@ -18,7 +18,12 @@
 # Optional (defaults below): LABEL, REG_SOLVER, REG_RIDGE, SAVE_REG_SYSTEM,
 #   SOLVE_FLOAT64, DEDUPLICATE_FILTERS,
 #   SKIP_REG_SOLVE, REG_SYSTEM_DIR, REGULARIZATION, SCHEDULE_EXPONENT,
-#   INTERPOLANT, BATCH_SIZE, ACCOUNT, CONSTRAINT, PARTITION, CPUS, NGPUS, MODULE
+#   INTERPOLANT, BATCH_SIZE, ACCOUNT, CONSTRAINT, PARTITION, CPUS, NGPUS, MODULE,
+#   SCHEDULE_ARGS (extra time-grid flags passed verbatim, e.g.
+#   "--schedule two_phase --n_bulk 10000" -- see codes/time_schedules.py; empty =
+#   legacy power schedule), PROFILE (true: run under cProfile with CUDA_LAUNCH_BLOCKING=1 so GPU time is
+#   charged to the Python call that launched it; stats written next to the SLURM log
+#   as profile_<exp>_<jobid>_<task>.prof -- timings are for attribution, not speed)
 
 if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then
     echo "_submit_turb_sweep.sh is sourced by the experiment scripts in this folder;"
@@ -70,6 +75,7 @@ EXTRA_FLAGS=""
 [ -n "${BATCH_SIZE}" ] && EXTRA_FLAGS+=" --batch_size ${BATCH_SIZE}"
 [ "${SOLVE_FLOAT64}" = "true" ]       && EXTRA_FLAGS+=" --solve_float64"
 [ "${DEDUPLICATE_FILTERS}" = "true" ] && EXTRA_FLAGS+=" --deduplicate_filters"
+[ -n "${SCHEDULE_ARGS}" ] && EXTRA_FLAGS+=" ${SCHEDULE_ARGS}"
 if [ "${SAVE_REG_SYSTEM}" = "true" ]; then
     EXTRA_FLAGS+=" --save_reg_system"
     [ -n "${REG_SYSTEM_DIR}" ] && EXTRA_FLAGS+=" --reg_system_dir ${REG_SYSTEM_DIR}"
@@ -79,6 +85,13 @@ if [ "${SKIP_REG_SOLVE}" = "true" ]; then
         echo "Error: SKIP_REG_SOLVE=true needs SAVE_REG_SYSTEM=true"; exit 1
     fi
     EXTRA_FLAGS+=" --skip_reg_solve"
+fi
+
+PY_CMD="python"
+PROFILE_ENV=""
+if [ "${PROFILE:-false}" = "true" ]; then
+    PY_CMD="python -m cProfile -o ${LOG_DIR}/profile_${EXP_NAME}_\${SLURM_ARRAY_JOB_ID}_\${SLURM_ARRAY_TASK_ID}.prof"
+    PROFILE_ENV="export CUDA_LAUNCH_BLOCKING=1"
 fi
 
 NTASKS=${#SEED_LIST[@]}
@@ -109,11 +122,12 @@ cd "${TURB_DIR}"
 python -c "import torch; print('GPU:', torch.cuda.get_device_name(0))"
 # fewer fragmentation OOMs (reserved-but-unallocated blocks become reusable)
 export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
+${PROFILE_ENV}
 
 SEED_LIST=(${SEED_LIST[@]})
 SEED_VAL=\${SEED_LIST[\${SLURM_ARRAY_TASK_ID}]}
 
-srun python "${PYTHON_SCRIPT}" \
+srun ${PY_CMD} "${PYTHON_SCRIPT}" \
     --seed \${SEED_VAL} \
     --timestamp "${TIMESTAMP}" \
     --n1 ${N1} \

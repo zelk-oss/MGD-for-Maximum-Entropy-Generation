@@ -35,17 +35,18 @@ from data_loader import *
 
 def load_all_experiments(
     base_args: Any,
-    results: Dict[str, Dict],
+    experiments: Dict[str, Dict],
     M: int,
     root: Path,
     device: torch.device,
 ) -> Dict[str, Dict[str, Any]]:
     """
-    Dynamically resolve and load every experiment defined in ``results``.
+    Dynamically resolve and load every experiment defined in ``experiments``
+    ({key: overrides of base_args}).
     """
     results = {}
-    
-    for key, overrides in results.items():
+
+    for key, overrides in experiments.items():
         print(f"Loading {key} ...")
         
         # 1. Copy base args and apply the specific overrides for this run

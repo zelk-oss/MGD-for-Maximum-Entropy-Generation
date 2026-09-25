@@ -313,8 +313,11 @@ def resolve_or_setup_experiment_output(outdir, args, M, device, coarse_grained=F
 
 def run_experiment(args, M, config, x1, filters, t, logger, outdir, device,
                    filters_Q=None, filters_Phi=None, normalize_potentials=False,
-                   potentials_save_dir=None,
+                   potentials_save_dir=None, adaptive=None,
                    ):
+    """adaptive: AdaptiveStepController from codes/time_schedules.build_time_grid, or
+    None for a fixed grid `t`. With it, the SDE builds its own grid and the one
+    actually used (Solver.t) is what gets saved as sampling_times and returned."""
     if not args.force_rerun:
         config_prefix = build_config_name(args, M=M, include_timestamp=False)  # see note below
         resolved = resolve_config_for_loading(outdir, config_prefix)
@@ -371,8 +374,12 @@ def run_experiment(args, M, config, x1, filters, t, logger, outdir, device,
         reg_ridge=getattr(args, 'reg_ridge', 0.0),
         reg_system_path=reg_system_path,
         solve_reg=solve_reg,
+        adaptive=adaptive,
     )
     logger.info('SDE integration finished in %.1f s', timer.time() - t0)
+    if adaptive is not None:
+        t = Solver.t
+        logger.info('%s; grid ends at 1 - t = %.2e', adaptive.summary(), 1 - float(t[-1]))
 
     # Pass the global outdir as 'root' so it targets the original global directories
     save_results_theta_reg(xt, theta_t, dH_t_bound, t, outdir, config, Theta_reg=Theta_reg, t_reg=t_reg)
