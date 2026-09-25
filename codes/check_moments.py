@@ -81,21 +81,35 @@ def spec_plot(Data,synth, save=None):
   ----------
   Data, synth : torch.Tensor
       Original and synthetic signals, shape (..., T).
+  save : dict or None
+      ``{"filename": ..., "title": ...}``: save both panels in one figure and close
+      it (same convention as hist_plot). None: show it. Until 2026-09-25 ``save`` was
+      accepted but ignored, so no run ever wrote spectrum.png.
   """
 
+  fig, (ax_spec, ax_hist) = plt.subplots(1, 2, figsize=(12, 4.5))
 
-  plt.plot((torch.fft.ifft(Data.cpu()).abs()**2).mean((0,1))[:Data.shape[-1]//2])
-  plt.plot((torch.fft.ifft(synth.cpu()).abs()**2).mean((0,1))[:Data.shape[-1]//2])
-  plt.yscale('log')
-  plt.xscale('log')
-  plt.show()
+  ax_spec.plot((torch.fft.ifft(Data.cpu()).abs()**2).mean((0,1))[:Data.shape[-1]//2], label='Orig')
+  ax_spec.plot((torch.fft.ifft(synth.cpu()).abs()**2).mean((0,1))[:Data.shape[-1]//2], label='Synth')
+  ax_spec.set_yscale('log')
+  ax_spec.set_xscale('log')
+  ax_spec.set_title('Power spectrum')
+  ax_spec.legend()
 
-  plt.hist(Data.reshape((-1,)).cpu(),density=True,bins=50,label='Orig')
-  plt.hist(synth.reshape((-1,)).cpu(),density=True,bins=50,alpha=0.7,label='Synth')
-  plt.legend()
-  plt.yscale('log')
+  ax_hist.hist(Data.reshape((-1,)).cpu(),density=True,bins=50,label='Orig')
+  ax_hist.hist(synth.reshape((-1,)).cpu(),density=True,bins=50,alpha=0.7,label='Synth')
+  ax_hist.legend()
+  ax_hist.set_yscale('log')
+  ax_hist.set_title('Histogram of values')
 
-  plt.show()
+  if save is not None:
+    fig.suptitle(save["title"])
+    fig.tight_layout(rect=[0, 0, 1, 0.95])
+    fig.savefig(save["filename"], dpi=200, bbox_inches="tight")
+    plt.close(fig)
+  else:
+    fig.tight_layout()
+    plt.show()
 
 def hist_plot(Data, synth, psi=None, save=None):
     """

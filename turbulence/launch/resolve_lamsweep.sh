@@ -9,7 +9,7 @@
 # Output: turbulence/saved_results/theta_reg_lamsweep/<config>/lam<lam>_ridge<ridge>.pt
 
 # Which systems: glob matched inside REG_SYSTEM_DIR (e.g. one potential set)
-SYSTEM_PATTERN="*_lamtune_*.pt"
+SYSTEM_PATTERN="${SYSTEM_PATTERN:-*_lamtune_*.pt}"   # override: SYSTEM_PATTERN="..." bash resolve_lamsweep.sh
 REG_SYSTEM_DIR="${SCRATCH:+${SCRATCH}/MGD-for-Maximum-Entropy-Generation/turbulence/reg_system}"
 
 # lam grid: 0 (the unsmoothed per-node solve, the reference lamtune_select.ipynb
