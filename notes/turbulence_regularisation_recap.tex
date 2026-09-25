@@ -11,9 +11,9 @@
 \newcommand{\hyp}{\textcolor{orange!80!black}{\textsf{[hypothesis]}}}
 
 \title{Turbulence MGD runs: regularised $\theta$, numerics and moment matching\\[2pt]
-\large Recap of 23--24 September 2026}
+\large Recap of 23--25 September 2026}
 \author{Chiara Zelco}
-\date{24 September 2026}
+\date{25 September 2026 (first version 24 September)}
 
 \begin{document}
 \maketitle
@@ -27,8 +27,14 @@ and the statistic basis turned out to be exactly rank-deficient. The solver was 
 now be chosen \emph{after} a run without re-simulating, and several numerical failure modes
 were fixed. The most important open problem is scientific: in all turbulence runs, including
 the July reference batch, \textbf{the moments are matched to $\sim10^{-3}$ for $t<0.95$ but
-not near $t=1$}. Two batches of runs launched on 24 September test the two main suspects.
-No final $\lambda$ or final potential set is reported here.
+not near $t=1$}. The runs launched on 24 September (Section~\ref{sec:results}) show that the
+moment error \emph{jumps} near the end, at a point set by the step size relative to the time
+left, $h/(1-t)$, and that the samples are then physically wrong (too much small-scale energy,
+no intermittency). Only schedule exponent 3 with ridge $10^{-2}$ avoided it, and it still misses
+the 1\% target. On 25 September two new time grids were added (a fixed two-phase grid and an
+adaptive one), each SDE step was made about a third cheaper (expected, not yet measured), and runs
+testing the new grids were launched (Section~\ref{sec:launch25}).
+No final $\lambda$, time grid or potential set is reported here.
 
 Throughout, \meas\ marks something computed on data or in a controlled test, \hyp\ marks
 an interpretation not yet tested directly.
@@ -106,6 +112,8 @@ would appear as spurious structure.
   \item \textbf{Throughput.} $\approx1.9\cdot10^{-4}$\,s per particle per step on H100,
         consistent over three batches \meas. Hence $n_1^{\max}\approx 18\,\mathrm h/(n_t\cdot1.9\cdot10^{-4}\,\mathrm s)$:
         $\sim8500$ at $n_t=40\,000$; $n_1=10\,000$ needs $\sim21$\,h, above the 20\,h limit.
+        (Updated 25 September: about a third of each step was duplicated work, now removed;
+        see Section~\ref{sec:cost}.)
   \item \textbf{Dead potentials.} Two of five seeds ($n_1=10^4$, $n_t=33\,000$) crashed at
         step 32\,583 (i.e.\ $t\to1$) with a ``singular'' per-step Gram. With the ridge added after
         rescaling, a finite matrix cannot be singular, so the cause is a potential whose gradient is exactly
@@ -149,17 +157,24 @@ $n_1=8500$, $n_t=40\,000$ (5 seeds) & $0.9$--$1.5\cdot10^{-3}$ & $0.041$ & 0.28 
 The July batch shows the same problem on its per-run moment-matching figures (not yet
 quantified with the comparison script). A final median of 2.0 is the maximum of this metric.
 
-\paragraph{Interpretation}
+\paragraph{Interpretation (as of 24 September; see Section~\ref{sec:results} for what the runs showed)}
 \begin{itemize}
   \item Not a particle-count problem: more particles improve the empirical moments; the run
         with \emph{more} particles but \emph{fewer} steps is the worse one \hyp.
+        (25 September: $n_1$ is still the one setting that differs between the $n_1=2000$ runs,
+        where ridge $10^{-4}$ worked, and the $n_1=8500$ runs, where it failed; open.)
   \item \textbf{Suspect 1: the per-step ridge.} $10^{-2}$ only partly corrects directions in
         which $G$ is nearly degenerate, and $G$ becomes more degenerate near $t=1$ (duplicate
         pairs 3$\to$6); the targets also move fastest there, so partial corrections fall behind \hyp.
+        (25 September: at full size the \emph{larger} ridge is the one that helps, and only
+        with exponent 3.)
   \item \textbf{Suspect 2: time resolution near $t=1$.} Consistent with $n_t=33\,000$ being
-        worse than $40\,000$ \hyp. A larger \code{schedule\_exponent} puts more of the same steps
-        near $t=1$ at no cost.
+        worse than $40\,000$ \hyp. (25 September: supported by the runs, in the form of
+        $h/(1-t)$. The earlier remark that a larger \code{schedule\_exponent} is free was wrong:
+        the time grid is float32 and its steps near $t=1$ are quantised, see Section~\ref{sec:grid}.)
   \item \textbf{Suspect 3: statistics dying near $t=1$}, which cannot be corrected at all \hyp.
+        (25 September: the worst moments at $t=1$ are matched by the ridge-$10^{-2}$ run, so they
+        are not uncorrectable.)
 \end{itemize}
 
 \section{Runs launched on 24 September}\nopagebreak
@@ -179,25 +194,205 @@ label & potentials & ridge & exp. & $n_1$ & purpose\\
 (``exp.'' is \code{schedule\_exponent}; ridge is the per-step \code{regularization}.)
 The four potential sets are: full; without \code{L\_2\_lowpass}; without
 \code{Scalar\_morlet\_gaussianK}; without both. The fourth corner of the full-size $2\times2$
-(ridge $10^{-2}$, exponent 2) is the existing $n_1=8500$ batch. The long runs save their system
-for the offline choice of $\lambda$.
+(ridge $10^{-2}$, exponent 2) is the existing $n_1=8500$ batch (\code{lamtune\_full\_n1\_8500},
+5 seeds), run with the earlier code: without \code{--solve\_float64} and
+\code{--deduplicate\_filters}. The long runs save their system for the offline choice of $\lambda$.
+All long runs finished, in 16--17.6\,h \meas.
+
+\section{Results of the 24 September runs (25 September)}\label{sec:results}
+Single seed (900), $n_1=8500$, $n_t=40\,000$ unless stated. Compared with two tools in
+\code{turbulence/}:
+\begin{itemize}
+  \item \code{compare\_runs.ipynb}: all statistics, all runs overlaid;
+  \item \code{compare\_moment\_matching.py}: moment-matching summary.
+\end{itemize}
+
+\paragraph{Short runs ($n_1=2000$).} Final-step mean relative error: exponent 2: $3.9\cdot10^{-2}$
+(ridge $10^{-2}$), $3.6\cdot10^{-2}$ ($10^{-4}$); exponent 3: $1.2\cdot10^{-2}$, $1.0\cdot10^{-2}$ \meas.
+At this size exponent 3 with ridge $10^{-4}$ was best.
+
+\paragraph{Full size ($n_1=8500$).} Moment error at the final step, and the samples at the
+smallest scale ($\tau=1$) as ratio generated/data (1 is perfect) \meas:
+\begin{center}\small
+\begin{tabular}{@{}lcccccc@{}}
+\toprule
+ & \multicolumn{3}{c}{moments, final step} & \multicolumn{3}{c}{samples at $\tau=1$, gen./data}\\
+\cmidrule(lr){2-4}\cmidrule(lr){5-7}
+run (exp., ridge) & mean & p90 & \# $>1$ & $S_2$ & $S_4/S_2^2$ & $S_6/S_2^3$\\
+\midrule
+full, 2, $10^{-2}$ (\code{lamtune\_full\_n1\_8500}) & 0.27 & 1.24 & 24 & 5.4 & 0.12 & 0.015\\
+full, 2, $10^{-4}$ & 0.34 & 1.54 & 29 & 8.2 & 0.11 & 0.011\\
+full, 3, $10^{-4}$ & 0.33 & 1.53 & 32 & 8.1 & 0.12 & 0.016\\
+\textbf{full, 3, $\mathbf{10^{-2}}$} & \textbf{0.032} & \textbf{0.025} & \textbf{1} & \textbf{0.96} & \textbf{0.99} & \textbf{0.96}\\
+no \code{L\_2\_lowpass}, 3, $10^{-4}$ & 0.36 & 1.83 & 32 & 8.2 & 0.12 & 0.012\\
+no \code{Scalar\_morlet}, 3, $10^{-4}$ & 0.42 & 1.93 & 35 & 16 & 0.085 & 0.005\\
+\bottomrule
+\end{tabular}
+\end{center}
+(Full set: 197 of 233 moments above the threshold. The run without both potentials was not
+loaded in the comparison. The reduced sets have fewer moments, so their moment columns are not
+directly comparable with the full set.)
+\begin{itemize}
+  \item \textbf{Only exponent 3 with ridge $10^{-2}$ gives correct samples}: structure
+        functions and flatness match at every $\tau$. All other runs have up to $10^4\times$ too
+        much power above frequency $\approx0.2$ (visibly noisy time series) and lose most of the
+        small-scale intermittency \meas. This includes exponent 2 with ridge $10^{-2}$, the
+        configuration used so far, so ridge $10^{-4}$ alone is not the cause.
+  \item Even that run misses 1\%: final mean error $3.2\cdot10^{-2}$, $1.8\cdot10^{-2}$ averaged
+        over $[0.95,1)$; its median is $6\cdot10^{-5}$, so a few moments dominate \meas. Before
+        $t\approx0.9$ ridge $10^{-2}$ is worse than $10^{-4}$ (mean error per window
+        $1.0$--$1.7\cdot10^{-3}$ vs.\ $2.5$--$4.5\cdot10^{-4}$, exponent 3), and exponent 2 is
+        1.5--2$\times$ better than 3 there ($1.8$--$2.8\cdot10^{-4}$) \meas.
+  \item \textbf{The error jumps.} Plotted against $1-t$ on a log axis, the mean moment error
+        does not grow smoothly: with exponent 2 (both ridges) it jumps to $\sim0.3$ at
+        $1-t\approx7\cdot10^{-4}$--$10^{-3}$; with exponent 3 and ridge $10^{-4}$ it follows the
+        ridge-$10^{-2}$ run until $1-t\approx1.8\cdot10^{-4}$, then jumps; with ridge $10^{-2}$ it
+        never jumps and ends at 0.03 \meas.
+  \item \textbf{Worst moments at $t=1$} (full set, ridge $10^{-4}$, both exponents; from the
+        \code{--top} table of the comparison script): moments 52, 53, 54, 84, 85 end at 0.4--1.8 on
+        the walkers against targets of $0.9\cdot10^{-2}$--$8\cdot10^{-2}$ (fine-scale energy not removed); moments
+        37, 38, 47, 63, 68 end 20--100$\times$ below a target that peaks at $t=1$ \meas. The run
+        with ridge $10^{-2}$ matches the tiny moments (110--120, $\sim10^{-7}$) within 16\%, so
+        these are real mismatches, not a near-zero denominator.
+  \item \textbf{The spikes of the moment error in the bulk} (e.g.\ $t\approx0.28, 0.60, 0.66$, at the
+        same times in every run) are zero crossings of the target moments \meas: on the ridge-$10^{-2}$
+        run, each of the 45 spikes before $t=0.95$ is carried by one moment (87--100\% of the excess),
+        whose target changes sign within $\pm50$ steps in 42 cases (the other 3 sit next to a crossing of
+        the same moment). The relative error divides by $|\bar\phi_e|+|\bar\phi_p|\to0$ there. They are
+        shared across runs because the target path depends only on the data and the noise $Z$ (same seed
+        and $n_1$). 34 of the 201 moments change sign at some point.
+\end{itemize}
+
+\paragraph{A better measure of moment matching.} The error on each moment's own scale,
+\[ \frac{|\bar\phi_e-\bar\phi_p|}{\max_t|\bar\phi_e|}, \]
+has no spikes: at the spike times it stays at 0.7--1.6$\times$ its local median \meas. With $\sim200$
+moments the mean is carried by a few, so the ensemble is summarised by the median, p90 and maximum over
+moments. Ridge-$10^{-2}$ run at the final step: median $2.8\cdot10^{-6}$, p90 $1.3\cdot10^{-3}$, maximum
+0.72; 11 of 197 moments above 1\% (indices 37--39, 47, 48, 63, 64, 68, 70, 75, 76) \meas. So this run meets
+a 1\% target on the p90 but not for every moment. Proposed target: p90 $\le1\%$ at every $t$, plus the list of
+moments above 1\% at the end, named from the fitted potentials. (The adaptive grid uses the largest
+$|\bar\phi_e|$ seen \emph{so far}, the only causal choice; at $t\approx0$ some targets are near zero, so its
+first steps see a large error and stay at the smallest step.)
+
+\paragraph{$\theta$ at the jump.} $\|\theta_t\|$ and $\|\theta_t\|\,h\sigma^2$ (the correction
+actually applied) rise smoothly by 4--5 decades from $1-t\approx1.5\cdot10^{-2}$ in every run,
+including the one that never jumps; at each jump they only step up by less than $2\times$, together
+with the moment error and $dH$ \meas. At the jumps, $h/(1-t)$ from the schedule formula is
+$\approx1.9\cdot10^{-3}$ (exponent 2) and $\approx1.3\cdot10^{-3}$ (exponent 3, where float32 makes some
+steps up to $\sim30\%$ longer) \meas. Interpretation: the explicit step becomes unstable once
+$h/(1-t)$ exceeds $\sim1.5\cdot10^{-3}$, and ridge $10^{-2}$ damps it \hyp. ($\eta_t$ is not saved,
+so the predictor could not be checked directly; the absolute size of $\theta$ is meaningless since the
+turbulence potentials are not normalised.)
+
+\section{The end of the time grid (25 September)}\label{sec:grid}
+\paragraph{The cut at $1-t=5\cdot10^{-5}$ loses nothing.} The run stops at the first $t$ that rounds
+to $1.0000$. At that point the Cos interpolant still carries noise with weight
+$\cos(\pi t/2)\approx7.9\cdot10^{-5}$; its power is 1.1\% of the data spectrum at the Nyquist
+frequency and less at all other frequencies \meas. The finest scales emerge from the noise between
+$1-t\approx10^{-3}$ (noise $4.5\times$ the data at Nyquist) and $2\cdot10^{-4}$ ($0.18\times$) \meas,
+which is where the runs jump.
+
+\paragraph{Float32 quantises the steps near $t=1$.} Largest error of $h$ on the float32 grid vs.\ the
+exact one \meas:
+\begin{center}\small
+\begin{tabular}{@{}lccc@{}}
+\toprule
+$1-t$ & exponent 2 & exponent 3 & exponent 4\\
+\midrule
+$[10^{-3},5\cdot10^{-4})$ & 5\% & 11\% & 16\%\\
+$[5\cdot10^{-4},2\cdot10^{-4})$ & 7\% & 19\% & 33\%\\
+$[2\cdot10^{-4},10^{-4})$ & 10\% & 32\% & 49\%\\
+$[10^{-4},5\cdot10^{-5})$ & 13\% & 48\% & 96\%\\
+\bottomrule
+\end{tabular}
+\end{center}
+No step is zero before the cut. Exponent 4 was therefore not tried: its extra resolution near $t=1$
+would be largely quantisation. With exponents 2--4 at $n_t=40\,000$, $h/(1-t)$ grows towards the end
+(exponent 3: $\sim3.5\cdot10^{-4}$ at $1-t=10^{-2}$, $\sim2\cdot10^{-3}$ at the cut).
+
+\paragraph{New time grids} (\code{codes/time\_schedules.py}, option \code{--schedule}):
+\begin{itemize}
+  \item \code{power} (default): the old grid, bit-identical, with the same cut \meas.
+  \item \code{two\_phase}: \code{n\_bulk} uniform steps on $[0,t_{\rm switch}]$, then steps that each
+        remove the same fraction $r$ of the time left, so $h/(1-t)=r$ is constant down to
+        $1-t=5\cdot10^{-5}$. $r$ is fitted to the remaining steps, so \code{--nt} is still the total
+        (e.g.\ $n_t=60\,000$, \code{n\_bulk}$\,=10\,000$, $t_{\rm switch}=0.9$: $r=1.5\cdot10^{-4}$). Float64.
+  \item \code{adaptive}: each step size is chosen from the previous step's moment error
+        ($|\bar\phi_e-\bar\phi_p|$ divided by the largest $|\bar\phi_e|$ seen so far, averaged over moments),
+        before the next noise is drawn, so no step is rejected and redrawn (which would bias the SDE).
+        Growth is capped at $\times1.2$ per step and $h/(1-t)$ is kept in $[10^{-5},10^{-3}]$ by default.
+        \code{--nt} is the maximum number of steps; the run stops and saves at 90\% of the time limit. Float64.
+\end{itemize}
+Both new grids run end to end on small local tests; they have not yet been tested at full size.
+
+\section{Cost of a step, and the entropy increment (25 September)}\label{sec:cost}
+\paragraph{Profile} (\code{turbulence/launch/profile\_step.sh}, cProfile on H100, $n_1=8500$, 385 steps):
+1.57\,s per step \meas. The Gram matrix was computed three times per step (0.26\,s each, $\sim50\%$),
+the third time an exact repeat of the corrector's $G(y_k)$ ($\sim17\%$); the moment velocity
+$\frac{d}{dt}\mathbb E[\phi(I_t)]$ twice ($\sim33\%$), the second for the entropy increment ($\sim16\%$) \meas.
+Both repeats are now reused. The expected cost is $\sim1.05$\,s per step, not yet measured.
+
+\paragraph{The entropy increment.} $dH_k=-\theta_k\cdot\dot m$ used $\phi$ on the interpolant at $t_{k+1}$
+but its velocity $\dot I$ at $t_k$, unchanged since the 11 June upload with no documented reason. The
+entropy rate $dS/dt=-\theta_t\cdot\dot m_t$ has both at the same time, and $\theta_k$ belongs to $t_{k+1}$;
+it now uses $t_{k+1}$ for both, which is also what the next step's predictor needs.
+\begin{itemize}
+  \item Exact case ($\phi=x^2$, target $\mathcal N(0,0.2^2)$, $\sigma^2=0.4$, $n_1=10^5$, scalar code),
+        error of the integrated $dH$, old $\to$ new: $+0.093\to+0.069$ ($n_t=100$),
+        $+0.024\to+0.017$ (400), $+0.014\to+0.013$ (1600) \meas. The old version was the least accurate
+        of the variants tried. The form $-\theta_k\cdot(m_{k+1}-m_k)/h$, which a concavity argument
+        supports, did a little better ($+0.034$, $+0.008$, $+0.010$) but is not used: at fine steps the
+        variants agree to $\sim6\cdot10^{-3}$ and the remaining $\sim10^{-2}$ comes from $\theta$ itself
+        (Euler--Maruyama bias and estimation noise).
+  \item Bimodal model: the integrated $dH$ moved by 5.0\% ($n_t=200$) and 0.69\% ($n_t=1000$) \meas.
+        Entropy bounds from runs before and after this change are not directly comparable.
+  \item Samples, $\theta$, moments and $\Theta_{\rm reg}$ are bit-identical to the previous code on a
+        small A/B run \meas; $dH$ does not enter the SDE.
+\end{itemize}
+
+\section{Runs launched on 25 September}\label{sec:launch25}\nopagebreak
+All: ridge $10^{-4}$ (the setting that jumped), $n_1=8500$, $n_t=60\,000$ (cap for \code{adaptive}),
+seed 900, \code{--solve\_float64}, \code{--deduplicate\_filters}, system saved for the offline $\lambda$.
+\begin{center}\small
+\begin{tabular}{@{}lll@{}}
+\toprule
+label & potentials & status\\
+\midrule
+\code{schedtest\_two\_phase\_reg1e-4} & full & launched\\
+\code{schedtest\_adaptive\_reg1e-4} & full & launched\\
+\code{schedtest\_<grid>\_<set>\_reg1e-4} (6) & the 3 reduced sets, both grids & prepared (\code{schedule\_test.sh})\\
+\bottomrule
+\end{tabular}
+\end{center}
+If the jump is gone, it came from the step size and ridge $10^{-4}$ becomes usable. $60\,000$ steps
+at the expected 1.05\,s is $\sim17.5$\,h, close to the 18\,h at which a run is stopped; this is also
+the first measurement of the new step cost.
 
 \section{Open questions and next steps}
 \begin{enumerate}
-  \item Which of ridge and time grid fixes $t\to1$ (from the $2\times2$ runs)? If neither does,
-        look at the statistics that die near $t=1$.
+  \item Do the new time grids remove the jump at ridge $10^{-4}$, and reach 1\%
+        (Section~\ref{sec:launch25})? If so, choose between \code{two\_phase} and \code{adaptive} on
+        accuracy against steps. If not, check the predictor directly (save $\eta_t$) or the conditioning.
+  \item Why did ridge $10^{-4}$ work at $n_1=2000$ and fail at $n_1=8500$? $n_1$ and the batch size are
+        the only settings that differ.
+  \item Agree on the 1\% target (proposed: own-scale p90 at every $t$, and the named list of moments
+        above 1\% at the end), and find out which statistics the 11 failing moments of the ridge-$10^{-2}$
+        run are (names on the cluster).
   \item $\lambda$ per potential set from the offline sweep; then choose the minimal set from
-        sample quality (spectrum, structure functions, KL), which does not depend on $\lambda$.
-  \item Route to $n_1=10^4$: profile one SDE step. The order-4 gradient computes all $8\times8\times9$
-        channel combinations and keeps only the indexed ones; if it dominates the step time,
-        computing only those is the cheapest speed-up. Otherwise, checkpoint the SDE state
-        and chain jobs to lift the 20\,h limit.
+        sample quality (spectrum, structure functions, histograms, KL), which does not depend on
+        $\lambda$. The reduced sets at ridge $10^{-4}$ from 24 September share the jump, so they do
+        not settle this.
+  \item Larger $n_1$: the data give 30\,000 series of 512 samples. Within one 20\,h job,
+        steps$\times n_1\lesssim5\cdot10^8$ at the expected new step cost, so doubling $n_1$ halves
+        the steps. Beyond that: checkpoint the SDE state and chain jobs. Whether the order-4 gradient
+        dominates the remaining cost was not separated in the profile.
   \item Near-duplicate statistics (channel 20 vs.\ 21, some \code{Scalar\_psi} region pairs) are
         kept: they carry a little information. Only their combination is well determined, which
         matters when interpreting individual $\theta$ coefficients.
 \end{enumerate}
 
 \section*{Code changes (for reference)}
+\paragraph{23--24 September}
 \begin{itemize}
   \item \code{codes/sde\_routines.py}: float64 block-Thomas solver; system saving before the solve;
         dead-potential guard; optional float64 per-step solves.
@@ -215,6 +410,34 @@ for the offline choice of $\lambda$.
         (\code{regularization} and \code{schedule\_exponent} are still not in the name;
         the launch scripts use distinct labels.)
   \item Commits \code{7075cfb}, \code{c7bcc39}, \code{0dad74c}.
+\end{itemize}
+\paragraph{25 September}
+\begin{itemize}
+  \item \code{codes/time\_schedules.py} (new): \code{power}, \code{two\_phase}, \code{adaptive} grids;
+        \code{--schedule} and its options in \code{turbulence/run\_SDE.py} (the other entry points still
+        build their own power grid). The schedule is not in the run name either.
+  \item \code{codes/sde\_routines.py}: adaptive grid in \code{forward\_regularised}; reuse of $G(y_k)$
+        and of the moment velocity; $dH_k$ at $t_{k+1}$ (all marked \code{CHANGED 2026-09-25}).
+  \item \code{codes/utils\_experiment.py}: passes the adaptive controller, saves the grid actually used.
+  \item \code{turbulence/compare\_runs.ipynb} + \code{turbulence/run\_comparison.py} (new): all runs
+        overlaid on time series, marginals, spectrum, structure functions, increment PDFs, wavelet
+        histograms, moment matching, and the $\theta$ check.
+  \item \code{turbulence/compare\_moment\_matching.py}: \code{--top} table of the worst moments; the
+        final-error histogram now counts moments (it used a density on log bins, which was misleading).
+  \item \code{turbulence/diagnostics.py}: \code{load\_all\_experiments} overwrote its own input and
+        always returned nothing; fixed.
+  \item \code{turbulence/launch/}:
+        \begin{itemize}
+          \item \code{PROFILE=true} and \code{SCHEDULE\_ARGS} in the shared submission file;
+          \item new: \code{profile\_step.sh}, \code{read\_profile.py}, \code{schedule\_test.sh};
+          \item \code{resolve\_lamsweep.sh}: \code{SYSTEM\_PATTERN} can be set from the command line.
+        \end{itemize}
+  \item Moment matching in \code{compare\_moment\_matching.py} and \code{compare\_runs.ipynb} now uses the
+        own-scale error (median, p90, max) and lists the moments above 1\% by name; names are only printed
+        when the rebuilt potentials have the run's number of statistics (without the fitted state the
+        rebuild gives 301 instead of 233, which would mislabel every index).
+  \item \code{codes/check\_moments.py}: \code{spec\_plot} ignored \code{save=}, so no run ever wrote
+        \code{spectrum.png}; fixed (one figure, spectrum and histogram).
 \end{itemize}
 
 \end{document}
