@@ -679,8 +679,18 @@ class SDE(torch.nn.Module):
         print("Last dt:", np.diff(t_reg[-5:]))
 
         if reg_system_path is not None:                  # before the solve: survives a solve OOM
-            self._save_reg_system(reg_system_path, t_reg, M_reg, Gf_reg, bb_reg, cc_reg,
-                                  lam=lam, n_subsample=n_subsample, reg_solver=reg_solver)
+            # Non-fatal: the samples, theta_t and moments are saved by the caller AFTER
+            # this method returns, so an exception here (SCRATCH quota, I/O error, memory
+            # while writing ~40 GB) would lose the whole run. Log it and carry on.
+            try:
+                self._save_reg_system(reg_system_path, t_reg, M_reg, Gf_reg, bb_reg, cc_reg,
+                                      lam=lam, n_subsample=n_subsample, reg_solver=reg_solver)
+            except Exception as e:
+                import traceback
+                traceback.print_exc()
+                print(f"WARNING: saving the regularised system to {reg_system_path} FAILED "
+                      f"({type(e).__name__}: {e}). Continuing: samples, theta_t and moments are "
+                      f"still saved; Theta_reg for this run can only come from an in-run solve.")
 
         if not solve_reg:
             print("Skipping in-run regularised solve (solve_reg=False); "
@@ -750,8 +760,12 @@ class SDE(torch.nn.Module):
         }
         tmp = path.with_name(path.name + '.tmp')
         t0 = time.time()
-        torch.save(system, tmp)
-        tmp.replace(path)
+        try:
+            torch.save(system, tmp)
+            tmp.replace(path)
+        except BaseException:
+            tmp.unlink(missing_ok=True)                 # a partial ~40 GB file would eat the quota
+            raise
         print(f"Saved regularised system ({len(system['t'])} nodes, r={self.num_potentials}) "
               f"to {path} in {time.time() - t0:.0f} s")
 
