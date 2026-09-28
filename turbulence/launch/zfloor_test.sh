@@ -33,16 +33,19 @@
 #              cleanly at the loop budget if it has not reached the end
 #
 # Budget: r goes from 233 to ~276 statistics; per-step cost estimated ~+18% (NOT
-# measured): two_phase at NT=60k ~21.8 h > the 19h30 loop budget of a 20 h job. If so,
-# _check_time_budget aborts it after ~130 steps and logs the measured s/it; relaunch
-# with fewer steps, e.g.
+# measured): two_phase at NT=60k ~21.8 h > the 19h30 loop budget of a 20 h job.
+# MEASURED on job 268295: r = 281, 1.09 s/step -> ~18.2 h at 60k steps (+ ~5 min fit),
+# ~1 h under the budget. If a node is slower, _check_time_budget aborts after ~130 steps
+# and logs the measured s/it; relaunch with fewer steps, e.g.
 #   ONLY="zfloor_two_phase_reg1e-4" NT_TWO_PHASE=52000 bash zfloor_test.sh
 # (NT_TWO_PHASE - N_BULK = steps in the tail; N_BULK can be lowered too). adaptive
 # always finishes. Saved regularised system: ~1.2 MB/step at r~276 (~75 GB at 60k
 # steps, host RAM and SCRATCH), vs ~0.9 MB/step at r=233.
 #
-# Usage:  bash zfloor_test.sh                                   (both runs)
+# Usage:  bash zfloor_test.sh                                   (both runs, seed 900)
 #         ONLY="zfloor_adaptive_reg1e-4" bash zfloor_test.sh      (a subset)
+#         ONLY="zfloor_two_phase_reg1e-4" SEEDS="901 902 903 904" bash zfloor_test.sh
+#                                   (more seeds: one SLURM array job, one task per seed)
 # Compare afterwards with compare_runs.ipynb / compare_july_vs_sept.ipynb against
 # schedtest_two_phase_reg1e-4 (same data and settings, old floor).
 
@@ -51,6 +54,7 @@ LAUNCH_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 FULL=(L_6 L_6_psi L_2_lowpass Scalar_psi_gaussianK Scalar_morlet_gaussianK
       Scattering_Fourth_Order_Mod2_Real_Q1 Scattering_Fourth_Order_Mod2_Imag_Q1)
 
+SEEDS="${SEEDS:-900}"
 NT_TWO_PHASE="${NT_TWO_PHASE:-60000}"
 NT_ADAPTIVE="${NT_ADAPTIVE:-60000}"
 N_BULK="${N_BULK:-10000}"
@@ -67,7 +71,7 @@ submit() {   # submit <label> <nt> <schedule flags (one string)> <terms...>
     SCHEDULE_ARGS="${sched}"
     TERMS=("$@")
     REGULARIZATION=1e-4
-    SEED_LIST=(900)
+    SEED_LIST=(${SEEDS})
 
     N1=8500
     SUBSERIES_LEN=512
