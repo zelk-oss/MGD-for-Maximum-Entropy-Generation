@@ -177,7 +177,8 @@ def parse_args():
                     help='SLURM wall-clock budget in minutes. If set, the SDE loop '
                          'aborts (raises) once the projected total runtime, '
                          'extrapolated from the average iteration time after a '
-                         '30-iteration warm-up, exceeds 90%% of this budget. '
+                         '30-iteration warm-up, exceeds this budget minus a '
+                         'min(30 min, 10%%) reserve (20 h job -> 19h30). '
                          'Disabled (no check) when omitted.')
     p.add_argument('--no_save_aux_moments', action='store_true',
                     help='Disable saving of barphi_e / barphi_p aux moments')

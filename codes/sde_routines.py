@@ -58,6 +58,18 @@ from utils import *
 from utils_entropy import*
 
 from pathlib import Path
+
+
+def loop_budget_s(time_limit_min, reserve_min=30.0, reserve_frac=0.1):
+    """Seconds the SDE loop may use out of a --time_limit_min budget.
+
+    Keeps back min(reserve_min, reserve_frac * limit) for what runs after the loop
+    (save_results, figures: ~100 s in the 2026-09-25 n1=8500 runs) and before it
+    (data loading, ~30 s). 20 h job -> 19h30; 1 h job -> 54 min.
+    (Changed 2026-09-26: was a flat 90%, i.e. 18 h of 20 h, which aborted a 60k-step
+    run projected at 18.02 h.)
+    """
+    return 60.0 * (time_limit_min - min(reserve_min, reserve_frac * time_limit_min))
 current = Path.cwd()
 MGD_project_folder = current.parent
 
@@ -302,7 +314,7 @@ class SDE(torch.nn.Module):
     # ------------------------------------------------------------------------------------------------------------------
 
     def _check_time_budget(self, loop_t0, n_done, time_limit_min,
-                            min_iters=30, window=100, margin=0.9):
+                            min_iters=30, window=100):
         """
         Abort the SDE loop early if the steady-state iteration time, extrapolated
         to the full loop, would blow through the SLURM time budget. No-op if
@@ -317,9 +329,9 @@ class SDE(torch.nn.Module):
         1.01 s/it steady, which aborted two 60k-step runs projected at 18.3-18.6 h that
         would have taken ~16.8 h.)
 
-        `margin` reserves headroom under `time_limit_min` for the work that
-        happens after this loop (regularised solve, save_results I/O), which
-        isn't accounted for by iteration count alone.
+        The budget is :func:`loop_budget_s`: it reserves headroom under
+        `time_limit_min` for the work that happens after this loop (regularised
+        solve, save_results I/O), which isn't accounted for by iteration count alone.
         """
         if time_limit_min is None or n_done < min_iters:
             return
@@ -333,13 +345,13 @@ class SDE(torch.nn.Module):
         rate = (now - t_warm) / (n_done - n_warm)
         total_iters = len(self.t) - 1
         projected_s = (t_warm - loop_t0) + rate * (total_iters - n_warm)
-        budget_s = time_limit_min * 60 * margin
+        budget_s = loop_budget_s(time_limit_min)
         if projected_s > budget_s:
             raise RuntimeError(
                 f"Aborting SDE loop: projected to take {projected_s / 3600:.2f}h "
                 f"({rate:.2f}s/it x {total_iters} it, rate measured over iterations "
                 f"{n_warm}-{n_done} after a {n_warm}-iteration warm-up) which exceeds "
-                f"{margin:.0%} of the {time_limit_min / 60:.1f}h time budget "
+                f"the {budget_s / 3600:.2f}h loop budget of the {time_limit_min / 60:.1f}h job "
                 f"(--time_limit_min {time_limit_min}). Aborting now instead of letting "
                 f"SLURM kill the job at the wall-clock limit with nothing saved."
             )
@@ -523,7 +535,7 @@ class SDE(torch.nn.Module):
         self.t is replaced by a float64 grid built step by step: t[k+1] is chosen from
         the moment error after step k-1, before step k draws its noise (no rejected
         steps). The loop stops at the controller's t_end, at max_steps, or -- instead
-        of aborting -- when time_limit_min is 90% used, and self.t is trimmed to the
+        of aborting -- when the loop budget (loop_budget_s) is used, and self.t is trimmed to the
         points actually used, so callers must save self.t (not the grid they passed).
         """
         assert self.interpolant == 'Cos', "this routine assumes the Cos schedule"
@@ -619,7 +631,7 @@ class SDE(torch.nn.Module):
             adaptive.update(barphi_e[-1], barphi_p[-1])
             if adaptive.done(float(self.t[k + 1])):
                 break
-            if time_limit_min is not None and time.time() - loop_t0 > 0.9 * 60 * time_limit_min:
+            if time_limit_min is not None and time.time() - loop_t0 > loop_budget_s(time_limit_min):
                 print(f'WARNING: adaptive run stopped by the time limit at t = '
                       f'{float(self.t[k + 1]):.8f} (1 - t = {1 - float(self.t[k + 1]):.2e}), '
                       f'before t_end = {adaptive.t_end}')
