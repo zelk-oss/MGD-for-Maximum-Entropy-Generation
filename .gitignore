@@ -12,9 +12,10 @@ __pycache__/
 # --- Logs ---
 *.log
 slurm_outputs/
+*.prof
 
 # --- Per-run experiment output (regenerable; config.json/job_info.txt kept for provenance) ---
-**/experiments/*/figures/
+**/experiments/**/figures/
 **/experiments/*/logs/
 turbulence/figures/
 **/saved_results/lagrange_multipliers/
