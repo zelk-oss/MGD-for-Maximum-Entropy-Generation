@@ -1046,6 +1046,7 @@ class Scalar_GGD_KRegion():
                  min_region_samples=30,
                  eps_abs=1e-6,
                  eps_quantile=1e-3,
+                 near_empty_tol=1e-6,
                  boundary_method="auto",
                  model_criterion="bic",
                  boundary_search_subsample=20000,
@@ -1075,6 +1076,15 @@ class Scalar_GGD_KRegion():
         self.eps_abs = eps_abs
         self.eps_quantile = eps_quantile
         self.eps_ch = None
+        # Read by the SDE (_live_potentials): at a step where a statistic's Gram
+        # diagonal on the walkers is below near_empty_tol x its value on the fit data
+        # (= 1, stat_scale), its region is essentially empty on the walkers; its
+        # coefficient is set to 0 for that step instead of being solved for. With the
+        # per-channel floor, regions that are empty early in the transport (e.g. the
+        # outer regions of the coarsest channel on noise-like walkers, G_ii ~ 1e-16..
+        # 1e-8) are no longer exactly dead; solving for them gave rare drifts ~100x the
+        # usual size and a walker blow-up at step 163 (job 268295, 2026-09-28).
+        self.near_empty_tol = near_empty_tol
         self.boundary_method = boundary_method
         self.model_criterion = model_criterion
         self.boundary_search_subsample = boundary_search_subsample
@@ -1627,6 +1637,7 @@ class Scalar_GGD_KRegion():
             trans_frac=self.trans_frac, eps_abs=self.eps_abs,
             eps_quantile=self.eps_quantile,
             eps_ch=None if self.eps_ch is None else self.eps_ch.cpu(),
+            near_empty_tol=self.near_empty_tol,
             alpha_bounds=self.alpha_bounds, min_region_samples=self.min_region_samples,
             boundary_method=self.boundary_method, model_criterion=self.model_criterion,
             pi_active_min=self.pi_active_min, cond_tol=self.cond_tol,
@@ -1645,6 +1656,7 @@ class Scalar_GGD_KRegion():
                    min_region_samples=d.get("min_region_samples", 30),
                    eps_abs=d["eps_abs"],
                    eps_quantile=d.get("eps_quantile"),     # absent in pre-2026-09-28 fits
+                   near_empty_tol=d.get("near_empty_tol", 0.0),   # old fits: exact-zero test only
                    boundary_method=d.get("boundary_method", "auto"),
                    model_criterion=d.get("model_criterion", "bic"),
                    pi_active_min=d.get("pi_active_min", 1e-3),

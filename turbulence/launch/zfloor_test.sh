@@ -16,6 +16,16 @@
 # with the pair). Scalar_morlet_gaussianK gets the same fix (its channels 0-1 cores
 # were blind too).
 #
+# First launch (2026-09-28; two_phase = job 268295): fit OK (psi 78 of 78 statistics kept,
+# 281 in total, 1.09 s/step), but two_phase blew up at step 163 (t = 0.015): regions that
+# are empty on the early, noise-like walkers (outer regions of the coarsest psi channel,
+# Gram diagonal 1e-16..1e-8 of its data value) are no longer EXACTLY dead with the new
+# floor, so the solver solved for them and occasionally produced ~100x drifts. Fix:
+# Scalar_GGD_KRegion.near_empty_tol = 1e-6 -> the SDE sets a region statistic's
+# coefficient to 0 at steps where its Gram diagonal is below 1e-6 of its data value
+# (codes/sde_routines.py, _live_potentials). Reproduced and fixed in a 64-walker smoke
+# test (no masking: non-finite at step 18; masking: finite, like the old statistic set).
+#
 # Same set-up as the schedtest full-set runs otherwise (n1 8500, subseries 512, ridge
 # 1e-4, float64 solves, seed 900), both time grids:
 #   two_phase  10k uniform steps on [0, 0.9], then NT - 10k steps at constant h/(1-t)

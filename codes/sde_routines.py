@@ -236,6 +236,16 @@ class SDE(torch.nn.Module):
         self.num_potentials    = sum(list_potential_num_coefficients)
         self.indices_potentials = np.cumsum([0] + list_potential_num_coefficients)
         print(f'The model has {self.num_potentials} potentials.')
+        # per-statistic threshold on diag(G) below which a statistic counts as dead in
+        # _live_potentials: 0 (exact zero, as before) unless the potential sets
+        # near_empty_tol (Scalar_GGD_KRegion, in units of its data Gram diagonal = 1)
+        self._live_floor = torch.cat([
+            torch.full((p.num_coefficients,), float(getattr(p, 'near_empty_tol', 0.0) or 0.0))
+            for p in self.potentials.values()]).to(self.device)
+        n_tol = int((self._live_floor > 0).sum())
+        if n_tol:
+            print(f'[live] {n_tol} statistics are set to 0 at steps where their Gram diagonal '
+                  f'is below near_empty_tol x their data value (region empty on the walkers)')
 
 
     # ------------------------------------------------------------------------------------------------------------------
@@ -1166,14 +1176,23 @@ class SDE(torch.nn.Module):
             raise FloatingPointError(
                 f"{name} solve at step {k}: non-finite Gram/rhs for potentials "
                 f"{bad.nonzero().flatten().tolist()[:20]} (walkers or potentials produced NaN/inf)")
-        live = torch.diag(G_k) > 0
+        diag = torch.diag(G_k)
+        floor = getattr(self, '_live_floor', None)
+        live = diag > 0 if floor is None else diag > floor.to(device=diag.device, dtype=diag.dtype)
         dead = tuple((~live).nonzero().flatten().tolist())
         warned = getattr(self, '_dead_potentials_warned', {})
-        if dead and warned.get(name) != dead:                  # print when the dead set changes
-            print(f"[{name}] step {k}: {len(dead)} potential(s) with zero gradient on every "
-                  f"walker {list(dead)[:20]} -> coefficient set to 0 while they stay dead")
+        n_printed = getattr(self, '_dead_potentials_printed', {})
+        if dead != warned.get(name, ()):                       # print when the dead set changes
+            n = n_printed.get(name, 0)
+            if n < 50:
+                print(f"[{name}] step {k}: {len(dead)} potential(s) dead (zero gradient, or region "
+                      f"empty on the walkers) {list(dead)[:20]} -> coefficient set to 0 while they stay dead")
+            elif n == 50:
+                print(f"[{name}] step {k}: dead set still changing; further changes not printed")
+            n_printed[name] = n + 1
         warned[name] = dead
         self._dead_potentials_warned = warned
+        self._dead_potentials_printed = n_printed
         return live
 
         
