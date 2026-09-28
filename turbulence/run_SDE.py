@@ -132,6 +132,13 @@ def parse_args():
                          'channel-list potentials (L_6_psi, Scalar_psi_*): lossless, removes '
                          'exactly duplicated statistics (e.g. M=256, J=8, Q=3: channels 21-23 '
                          '== channel 20); adds _dedupfilt to the name')
+    p.add_argument('--dedup_tol', type=float, default=1e-12,
+                    help='with --deduplicate_filters: drop channel i when 1 - |cos(f_i, f_j)| <= tol '
+                         'for a kept j. 1e-12 (default) = exact copies only (M=256, J=8, Q=3: drops 22, 23). '
+                         '1e-8 also drops channel 21, which differs from the kept channel 20 only '
+                         'by 20\'s 1.1e-4 component at bin 2 (1 - cos = 6e-9): their statistics are '
+                         'near-duplicates (normalized-gradient cond 9.6e4 with both, 12 without). '
+                         'Adds the tol to the name when not the default')
     p.add_argument('--solve_float64', action='store_true',
                     help='Per-step eta/theta solves in float64 (needed only for small '
                          '--regularization, ridge near float32 rounding); adds _f64 to the name')

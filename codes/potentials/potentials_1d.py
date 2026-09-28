@@ -1045,6 +1045,7 @@ class Scalar_GGD_KRegion():
                  alpha_bounds=(0.2, 8.0),
                  min_region_samples=30,
                  eps_abs=1e-6,
+                 eps_quantile=1e-3,
                  boundary_method="auto",
                  model_criterion="bic",
                  boundary_search_subsample=20000,
@@ -1063,7 +1064,17 @@ class Scalar_GGD_KRegion():
         self.trans_frac = trans_frac
         self.alpha_bounds = alpha_bounds
         self.min_region_samples = min_region_samples
+        # |z| is smoothed as sqrt(z^2 + eps) so that the core-region gradient
+        # alpha * z * |z|^(alpha - 2) stays finite at z = 0 when alpha < 1.
+        # eps_quantile (default): per-channel eps_j = quantile(|z_j|, eps_quantile)^2 on
+        # the data at fit time, i.e. the floor moves at most that fraction of the
+        # points, at every scale. The old absolute eps_abs = 1e-6 floored |z| at 1e-3,
+        # above ALL the region cuts of the finest channels (|z| ~ 1e-4 there): their
+        # regions were invisible to forward/grad and got pruned as collinear.
+        # eps_quantile=None keeps the scalar eps_abs (fits saved before 2026-09-28).
         self.eps_abs = eps_abs
+        self.eps_quantile = eps_quantile
+        self.eps_ch = None
         self.boundary_method = boundary_method
         self.model_criterion = model_criterion
         self.boundary_search_subsample = boundary_search_subsample
@@ -1104,6 +1115,8 @@ class Scalar_GGD_KRegion():
             self.active = self.active.to(device)
             self.active_flat = self.active_flat.to(device)
             self.stat_scale = self.stat_scale.to(device)
+            if self.eps_ch is not None:
+                self.eps_ch = self.eps_ch.to(device)
         return self
 
     @property
@@ -1288,6 +1301,7 @@ class Scalar_GGD_KRegion():
         CUT = np.zeros((J, K - 1)); SW = np.full((J, K - 1), 1e-6)
         PI = np.zeros((J, K)); KEFF = np.ones(J, dtype=int)
         ACT = np.zeros((J, K), dtype=bool)
+        FLOOR = np.zeros(J)
 
         for j in range(J):
             h = z[:, j, :].reshape(-1); h = h[np.isfinite(h)]; ah = np.abs(h); N = h.size
@@ -1305,6 +1319,8 @@ class Scalar_GGD_KRegion():
                 cuts = list(np.quantile(ah, qs))
 
             KEFF[j] = Keff
+            if self.eps_quantile is not None:
+                FLOOR[j] = max(float(np.quantile(ah, self.eps_quantile)), 1e-12 * float(ah.max()), 1e-30)
             slots = np.maximum(self._embed_slots(cuts, ah), 1e-8)
             for i in range(1, K - 1):
                 slots[i] = max(slots[i], slots[i - 1] * 1.5)
@@ -1333,8 +1349,10 @@ class Scalar_GGD_KRegion():
                 cut_str = " ".join(f"{c:.4f}" for c in slots)
                 pi_str = " ".join(f"{p:.1%}" for p in PI[j])
                 a_str = " ".join(f"{a:.2f}" for a in A[j])
+                floor = (f"  |z| floor={FLOOR[j]:.2e}" if self.eps_quantile is not None
+                         else f"  |z| floor={np.sqrt(self.eps_abs):.2e} (scalar eps_abs)")
                 print(f"[GGD^{K}][ch {j}] Keff={Keff}  cuts=[{cut_str}]  "
-                      f"pi=[{pi_str}]  alpha=[{a_str}]  active={ACT[j].sum()}")
+                      f"pi=[{pi_str}]  alpha=[{a_str}]  active={ACT[j].sum()}{floor}")
 
         dtype = x.dtype if x.is_floating_point() else torch.float32
         dev = x.device
@@ -1343,6 +1361,7 @@ class Scalar_GGD_KRegion():
         self.sw = mk(SW); self.pi = mk(PI)
         self.Keff = torch.tensor(KEFF, device=dev)
         self.active = torch.tensor(ACT, device=dev)
+        self.eps_ch = mk(FLOOR ** 2) if self.eps_quantile is not None else None
 
         flat = [k * J + j for k in range(K) for j in range(J) if ACT[j, k]]
         self.active_flat = torch.tensor(sorted(flat), dtype=torch.long, device=dev)
@@ -1383,10 +1402,16 @@ class Scalar_GGD_KRegion():
         ws.append(1.0 - g[..., K - 2])
         return ws
 
+    def _magnitude(self, z):
+        """Smoothed |z| = sqrt(z^2 + eps), eps per channel (eps_ch) or the scalar eps_abs."""
+        if self.eps_ch is None:
+            return torch.sqrt(z ** 2 + self.eps_abs)
+        return torch.sqrt(z ** 2 + self.eps_ch.to(device=z.device, dtype=z.dtype)[None, :, None])
+
     def _all_slot_forward(self, x):
         filters = self.filters.to(x.device)
         z = torch.fft.ifft(filters * torch.fft.fft(x)).real
-        az = torch.sqrt(z ** 2 + self.eps_abs)
+        az = self._magnitude(z)
         c = self.cuts.to(x.device); s = self.sw.to(x.device)
         g = torch.sigmoid(-(az.unsqueeze(-1) - c[None, :, None, :]) / s[None, :, None, :])
         ws = self._windows_from_sigmoids(g)
@@ -1411,7 +1436,7 @@ class Scalar_GGD_KRegion():
         device = x.device
         filters = self.filters.to(device)
         z = torch.fft.ifft(filters * torch.fft.fft(x)).real
-        az = torch.sqrt(z ** 2 + self.eps_abs)
+        az = self._magnitude(z)
         sz = z / az
         c = self.cuts.to(device); s = self.sw.to(device); alpha = self.alpha.to(device)
         g = torch.sigmoid(-(az.unsqueeze(-1) - c[None, :, None, :]) / s[None, :, None, :])
@@ -1600,6 +1625,8 @@ class Scalar_GGD_KRegion():
             active=self.active.cpu(), active_flat=self.active_flat.cpu(), stat_scale=self.stat_scale.cpu(),
             num_coefficients=self.num_coefficients, K=self.K, J=self.J,
             trans_frac=self.trans_frac, eps_abs=self.eps_abs,
+            eps_quantile=self.eps_quantile,
+            eps_ch=None if self.eps_ch is None else self.eps_ch.cpu(),
             alpha_bounds=self.alpha_bounds, min_region_samples=self.min_region_samples,
             boundary_method=self.boundary_method, model_criterion=self.model_criterion,
             pi_active_min=self.pi_active_min, cond_tol=self.cond_tol,
@@ -1617,6 +1644,7 @@ class Scalar_GGD_KRegion():
                    alpha_bounds=d.get("alpha_bounds", (0.2, 8.0)),
                    min_region_samples=d.get("min_region_samples", 30),
                    eps_abs=d["eps_abs"],
+                   eps_quantile=d.get("eps_quantile"),     # absent in pre-2026-09-28 fits
                    boundary_method=d.get("boundary_method", "auto"),
                    model_criterion=d.get("model_criterion", "bic"),
                    pi_active_min=d.get("pi_active_min", 1e-3),
@@ -1626,6 +1654,7 @@ class Scalar_GGD_KRegion():
         obj.sw = d["sw"]; obj.pi = d["pi"]; obj.Keff = d["Keff"]
         obj.active = d["active"]; obj.active_flat = d["active_flat"]
         obj.stat_scale = d["stat_scale"]; obj.num_coefficients = d["num_coefficients"]
+        obj.eps_ch = d.get("eps_ch")        # None for old fits -> scalar eps_abs, as they ran
         obj.J = d["J"]
         return obj
 

@@ -88,7 +88,9 @@ def deduplicate_filters(filters, tol=1e-12):
     same single frequency bin 1 (deficit exactly 0). Filter 20 is kept: it also sits
     on bin 1 but has a 1.1e-4 component at bin 2 (deficit 6e-9), i.e. a little
     information of its own. tol=1e-12 keeps the removal strictly lossless; the
-    comparison must be float64 (in float32, 1 - 1e-9 rounds to 1).
+    comparison must be float64 (in float32, 1 - 1e-9 rounds to 1). tol=1e-8 also drops
+    filter 21 (within 6e-9 of the kept filter 20): their statistics are near-duplicates
+    (normalized Scalar_psi gradient matrix: cond 9.6e4 with both, 12 without; 2026-09-28).
 
     Returns (deduplicated filters, list of kept channel indices).
     """

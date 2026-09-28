@@ -16,7 +16,8 @@
 #   TIME            SLURM wall time HH:MM:SS; also sets --time_limit_min, so the
 #                   SDE loop aborts cleanly if projected past 90% of it
 # Optional (defaults below): LABEL, REG_SOLVER, REG_RIDGE, SAVE_REG_SYSTEM,
-#   SOLVE_FLOAT64, DEDUPLICATE_FILTERS,
+#   SOLVE_FLOAT64, DEDUPLICATE_FILTERS, DEDUP_TOL (with DEDUPLICATE_FILTERS=true: --dedup_tol,
+#   e.g. 1e-8 to also drop the near-copy filter 21; empty = run_SDE default 1e-12),
 #   SKIP_REG_SOLVE, REG_SYSTEM_DIR, REGULARIZATION, SCHEDULE_EXPONENT,
 #   INTERPOLANT, BATCH_SIZE, ACCOUNT, CONSTRAINT, PARTITION, CPUS, NGPUS, MODULE,
 #   SCHEDULE_ARGS (extra time-grid flags passed verbatim, e.g.
@@ -75,6 +76,7 @@ EXTRA_FLAGS=""
 [ -n "${BATCH_SIZE}" ] && EXTRA_FLAGS+=" --batch_size ${BATCH_SIZE}"
 [ "${SOLVE_FLOAT64}" = "true" ]       && EXTRA_FLAGS+=" --solve_float64"
 [ "${DEDUPLICATE_FILTERS}" = "true" ] && EXTRA_FLAGS+=" --deduplicate_filters"
+[ "${DEDUPLICATE_FILTERS}" = "true" ] && [ -n "${DEDUP_TOL}" ] && EXTRA_FLAGS+=" --dedup_tol ${DEDUP_TOL}"
 [ -n "${SCHEDULE_ARGS}" ] && EXTRA_FLAGS+=" ${SCHEDULE_ARGS}"
 if [ "${SAVE_REG_SYSTEM}" = "true" ]; then
     EXTRA_FLAGS+=" --save_reg_system"

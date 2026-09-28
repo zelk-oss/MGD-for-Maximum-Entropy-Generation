@@ -87,7 +87,8 @@ def statistic_labels(root, config):
     filters_Q = return_Filters(M, J, Q, device='cpu')
     pots = get_1d_potentials(cfg['terms'], J, filters, Q, filters_Q=filters_Q,
                              filters_Phi=filters_Phi, scalar_param=None, parallel=False,
-                             deduplicate_filters=bool(cfg.get('deduplicate_filters', False)))
+                             deduplicate_filters=bool(cfg.get('deduplicate_filters', False)),
+                             dedup_tol=cfg.get('dedup_tol', 1e-12))
     pots = load_fitted_potentials(pots, exp_dir / 'fitted_potentials')
     labels = []
     for name, pot in pots.items():

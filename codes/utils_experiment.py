@@ -175,7 +175,8 @@ def _config_name_parts(args, M, include_seed=True):
         parts.append('f64')
     # fewer channels in L_6_psi / Scalar_psi_* -> a different statistic set
     if getattr(args, 'deduplicate_filters', False):
-        parts.append('dedupfilt')
+        tol = getattr(args, 'dedup_tol', 1e-12)
+        parts.append('dedupfilt' if tol == 1e-12 else f'dedupfilt{tol:g}')
     if include_seed:
         parts.append(f'seed_{args.seed}')
     parts.append(f'terms{terms_hash}')
@@ -334,6 +335,7 @@ def run_experiment(args, M, config, x1, filters, t, logger, outdir, device,
         args.terms, args.J, filters, args.Q, filters_Q=filters_Q, filters_Phi=filters_Phi,
         scalar_param=None, parallel=False,
         deduplicate_filters=getattr(args, 'deduplicate_filters', False),
+        dedup_tol=getattr(args, 'dedup_tol', 1e-12),
     )
 
     if normalize_potentials: 

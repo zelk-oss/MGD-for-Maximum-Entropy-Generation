@@ -44,7 +44,7 @@ def get_scalar_potentials(terms):
 
 
 def get_1d_potentials(terms, J, filters, Q=1, filters_Q=None, filters_Phi=None,scalar_param=None, parallel=False,
-                      deduplicate_filters=False):
+                      deduplicate_filters=False, dedup_tol=1e-12):
     """Build a dict of 1D potentials selected by ``terms``.
 
     Covers wavelet Lp-norm moments (``'L_2'..'L_10'`` and their ``'_phi'``
@@ -93,10 +93,10 @@ def get_1d_potentials(terms, J, filters, Q=1, filters_Q=None, filters_Phi=None,s
     filters_Q_channels = filters_Q
     if deduplicate_filters:
         from filters_bank import deduplicate_filters as _dedup
-        filters_Q_channels, kept = _dedup(filters_Q)
+        filters_Q_channels, kept = _dedup(filters_Q, tol=dedup_tol)
         dropped = sorted(set(range(filters_Q.shape[-2])) - set(kept))
         print(f"[deduplicate_filters] filters_Q: {filters_Q.shape[-2]} -> {len(kept)} channels "
-              f"for channel-list potentials (dropped duplicates {dropped})")
+              f"for channel-list potentials (dropped duplicates {dropped}, tol={dedup_tol:g})")
 
     potentials = {}
 
