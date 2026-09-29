@@ -10,8 +10,9 @@ block-Thomas solve as the in-run path (SDE._solve_regularised_thomas) and, like
 forward_regularised, drops the first node: Theta_reg = Theta[1:], t_reg = t[1:].
 
 Output, one file per (system, lam):
-    <outdir>/<config>/lam<lam>_ridge<ridge>[_<mode>].pt   (no suffix for mode legacy)
-    = {'Theta_reg', 't_reg', 'lam', 'ridge', 'mode', 'm_source', 'residual', 'config', 'meta'}
+    <outdir>/<config>/lam<lam>_ridge<ridge>[_<mode>][_interp].pt   (no suffix: legacy, walkers)
+    = {'Theta_reg', 't_reg', 'lam', 'ridge', 'mode', 'm_source', 'time_source', 'residual',
+       'config', 'meta'}
 
 --mode picks the energy (see SDE._solve_regularised_thomas): 'legacy' (the old system,
 wrong-sign time term), 'fixed' (correct, centred time term, same lam scale), 'guth'
@@ -21,6 +22,9 @@ from 2026-09-29 on), else from the run's aux_moments (barphi_p, the walker momen
 after the corrector, a close stand-in for the moments on y_k the system was built on),
 found under --results_root/saved_results/{aux_moments,sampling_times}/. 'guth' also
 needs the signal dimension: meta['dim'] if saved, else --dim.
+--time_source interpolant takes the time terms (G, c, m, mean tau) from the interpolant
+samples I_t = cos a Z + sin a x_1 instead of the walkers (true (Z, x_1) pairs, as Guth
+et al.'s TSM uses); only systems saved from 2026-09-29 on hold them.
 
 Peak RAM ~ the loaded system (n r^2 * 8 bytes, float32 M and G) plus the float64
 elimination factor (n r^2 * 8 bytes): ~47 GB for n = 40000, r = 272.
@@ -66,6 +70,10 @@ def parse_args():
     p.add_argument('--results_root', type=Path, default=None,
                    help='folder holding saved_results/ of the runs (e.g. turbulence/); '
                         'used for m when the system file has none')
+    p.add_argument('--time_source', choices=['walkers', 'interpolant'], default='walkers',
+                   help='where the time terms G, c, m, mean tau come from: the walkers y_k '
+                        '(all systems) or the interpolant samples I_t (G_I, c_I, ...; systems '
+                        'saved from 2026-09-29 on). interpolant needs --mode fixed or guth')
     p.add_argument('--dim', type=int, default=None,
                    help="signal dimension d for --mode guth, if not in the system's meta")
     p.add_argument('--overwrite', action='store_true',
@@ -76,8 +84,8 @@ def parse_args():
     return p.parse_args()
 
 
-def out_path(outdir, config, lam, ridge, mode='legacy'):
-    suffix = '' if mode == 'legacy' else f'_{mode}'
+def out_path(outdir, config, lam, ridge, mode='legacy', time_source='walkers'):
+    suffix = ('' if mode == 'legacy' else f'_{mode}') + ('_interp' if time_source == 'interpolant' else '')
     return outdir / config / f'lam{lam:g}_ridge{ridge:g}{suffix}.pt'
 
 
@@ -128,16 +136,16 @@ def diagnose(system, n_nodes):
         print(f'  {k:7d} {t[k]:9.6f} | {m[0]:12d} {m[1]:9.2e} {m[2]:10d} {m[3]:10d} | {gtxt}')
 
 
-def c_vs_m(system, m, tau_mean, n_nodes):
+def c_vs_m(cs, m, t, tau_mean, n_nodes):
     """How much of c = E[phi tau] is the part m * mean(tau) that centring removes.
     For the exact interpolant E[tau] = 0; |cos(c, m)| ~ 1 with implied tau_mean >> 0
     means c is dominated by that part (the old, uncentred system's time term)."""
-    t = system['t'].double().numpy()
+    t = t.double().numpy()
     idx = sorted(set(int(i) for i in np.linspace(0, len(t) - 2, n_nodes)))
     print(f'  c vs m at {len(idx)} nodes: {"t":>9} {"cos(c,m)":>9} {"implied tau_mean":>17}'
           f' {"saved tau_mean":>15} {"|c - m tau|/|c|":>16}')
     for k in idx:
-        c, mk = system['c'][k].double(), m[k].double()
+        c, mk = cs[k].double(), m[k].double()
         cos = float(c @ mk / (c.norm() * mk.norm() + 1e-300))
         implied = float(c @ mk / (mk @ mk + 1e-300))
         tm = float(tau_mean[k]) if tau_mean is not None else float('nan')
@@ -154,7 +162,8 @@ def main():
     for system_path in args.systems:
         config = system_path.name[:-len('.pt')] if system_path.name.endswith('.pt') else system_path.name
         todo = [lam for lam in args.lams
-                if args.overwrite or not out_path(args.outdir, config, lam, args.ridge, args.mode).exists()]
+                if args.overwrite or not out_path(args.outdir, config, lam, args.ridge, args.mode,
+                                                  args.time_source).exists()]
         if not todo:
             print(f'[{config}] all {len(args.lams)} lam values already solved, skipping')
             continue
@@ -174,29 +183,40 @@ def main():
         m = tau_mean = None
         m_source = None
         dim = system.get('meta', {}).get('dim', args.dim)
-        if args.mode != 'legacy':
+        G, c = system['G'], system['c']
+        if args.time_source == 'interpolant':
+            if args.mode == 'legacy':
+                raise ValueError('--time_source interpolant needs --mode fixed or guth')
+            if 'G_I' not in system:
+                raise ValueError(f'[{config}] system has no interpolant time terms (G_I, ...): '
+                                 f'saved before 2026-09-29 or with interp_time_terms off')
+            G, c = system['G_I'], system['c_I']
+            m, m_source, tau_mean = system['m_I'].double(), 'system (interpolant)', system['tau_mean_I']
+            print(f'[{config}] time terms from the interpolant samples I_t')
+        elif args.mode != 'legacy':
             m, m_source = node_moments(system, config, args.results_root)
             tau_mean = system.get('tau_mean')                # None -> its expectation, 0
+        if args.mode != 'legacy':
             print(f'[{config}] mode={args.mode}: m from {m_source}, '
                   f'tau_mean {"saved" if tau_mean is not None else "not saved (0 used)"}'
                   + (f', dim={dim}' if args.mode == 'guth' else ''))
             if args.mode == 'guth' and dim is None:
                 raise ValueError(f'[{config}] --mode guth needs --dim (not in the system meta)')
             if args.diagnose:
-                c_vs_m(system, m, tau_mean, args.diagnose)
+                c_vs_m(c, m, system['t'], tau_mean, args.diagnose)
 
         failed = []
         for lam in todo:
             t1 = time.time()
             try:
                 Theta = SDE._solve_regularised_thomas(
-                    solver_self, t, system['M'], system['G'], system['b'], system['c'],
+                    solver_self, t, system['M'], G, system['b'], c,
                     lam, ridge=args.ridge, mode=args.mode, m=m, tau_mean=tau_mean, dim=dim)
             except torch.linalg.LinAlgError as e:              # log, keep going with the next lam
                 print(f'[{config}] lam={lam:g}: FAILED after {time.time() - t1:.0f} s: {e}')
                 failed.append(lam)
                 continue
-            dest = out_path(args.outdir, config, lam, args.ridge, args.mode)
+            dest = out_path(args.outdir, config, lam, args.ridge, args.mode, args.time_source)
             dest.parent.mkdir(parents=True, exist_ok=True)
             tmp = dest.with_name(dest.name + '.tmp')
             torch.save({
@@ -206,6 +226,7 @@ def main():
                 'ridge': args.ridge,
                 'mode': args.mode,
                 'm_source': m_source,
+                'time_source': args.time_source,
                 'residual': solver_self.last_reg_residual,
                 'config': config,
                 'meta': system.get('meta', {}),

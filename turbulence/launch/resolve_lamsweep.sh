@@ -6,7 +6,7 @@
 # once per task). Already-solved (system, lam) pairs are skipped, so the grid
 # can be extended later by adding values to LAM_LIST and resubmitting.
 #
-# Output: turbulence/saved_results/theta_reg_lamsweep/<config>/lam<lam>_ridge<ridge>[_<mode>].pt
+# Output: turbulence/saved_results/theta_reg_lamsweep/<config>/lam<lam>_ridge<ridge>[_<mode>][_interp].pt
 
 # Which systems: glob matched inside REG_SYSTEM_DIR (e.g. one potential set)
 SYSTEM_PATTERN="${SYSTEM_PATTERN:-*_lamtune_*.pt}"   # override: SYSTEM_PATTERN="..." bash resolve_lamsweep.sh
@@ -21,6 +21,9 @@ LAM_LIST=(${LAMS:-0 1e-8 3e-8 1e-7 3e-7 1e-6 3e-6 1e-5 3e-5 1e-4 3e-4 1e-3})   #
 # saved_results/aux_moments/ for systems saved before 2026-09-29; guth needs DIM.
 MODE="${MODE:-legacy}"
 DIM="${DIM:-}"
+# Time terms from the walkers (all systems) or the interpolant samples (TIME_SOURCE=
+# interpolant; systems saved from 2026-09-29 on, needs MODE fixed or guth)
+TIME_SOURCE="${TIME_SOURCE:-walkers}"
 # Ridge on the data term, M_k += RIDGE * diag(M_k), same for every lam (incl. the
 # lam=0 reference). Needed: with RIDGE=0 every solve failed as singular (job 146575):
 # the M_k/G_k blocks are exactly rank-deficient (statistics with identical gradients),
@@ -69,7 +72,7 @@ shopt -u nullglob
 if [ ${#FILES[@]} -eq 0 ]; then
     echo "No system files match ${REG_SYSTEM_DIR}/${SYSTEM_PATTERN}"; exit 1
 fi
-echo "Re-solving ${#FILES[@]} systems for ${#LAM_LIST[@]} lam values (ridge ${RIDGE}, mode ${MODE}${DIM:+, dim ${DIM}}):"
+echo "Re-solving ${#FILES[@]} systems for ${#LAM_LIST[@]} lam values (ridge ${RIDGE}, mode ${MODE}${DIM:+, dim ${DIM}}, time terms: ${TIME_SOURCE}):"
 printf '  %s\n' "${FILES[@]##*/}"
 
 JOBID=$(sbatch --parsable <<EOT
@@ -94,7 +97,7 @@ FILES=( ${FILES[@]} )
 python codes/resolve_theta_reg.py "\${FILES[\${SLURM_ARRAY_TASK_ID}]}" \
     --lams ${LAM_LIST[@]} \
     --ridge ${RIDGE} \
-    --mode ${MODE} ${DIM:+--dim ${DIM}} \
+    --mode ${MODE} ${DIM:+--dim ${DIM}} --time_source ${TIME_SOURCE} \
     --results_root "${TURB_DIR}" \
     --diagnose 5 \
     --outdir "${OUT_DIR}"

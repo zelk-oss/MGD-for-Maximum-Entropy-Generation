@@ -541,7 +541,7 @@ class SDE(torch.nn.Module):
     def forward_regularised(self, lam=1.0, n_subsample=1, param_storage_frequency=1,
                              time_limit_min=None, reg_solver='dense', reg_ridge=0.0,
                              reg_system_path=None, solve_reg=True, adaptive=None,
-                             reg_mode='legacy'):
+                             reg_mode='legacy', interp_time_terms=True):
         """
         As forward, but stores the regularised-problem quantities ON THE WALKERS X_t = x_k
         and solves A Theta = f (section 4) on a coarse grid after the loop.
@@ -578,6 +578,11 @@ class SDE(torch.nn.Module):
         _solve_regularised_thomas ('legacy' has the wrong-sign time term, kept so old
         runs reproduce). The saved system also holds m = E[phi] and the mean of tau
         per node (since 2026-09-29), so any mode can be solved offline.
+        interp_time_terms (thomas only, default on): also accumulate the time terms on
+        the interpolant samples I_t (G_I, c_I, m_I, mean tau_I; true (Z, x_1) pairs, as
+        in Guth et al.'s TSM) and save them with the system. Costs one r x r product
+        per step and one more r x r block per node in host RAM and on disk (~+50%
+        system size); resolve_theta_reg.py --time_source interpolant uses them.
 
         reg_system_path: if set, the assembled system (t_reg, M, G, b, c on the grid
         the solver sees) is written there BEFORE the solve, so lam can be re-tuned
@@ -622,6 +627,12 @@ class SDE(torch.nn.Module):
         M, Gf, bb, cc, t_used = [], [], [], [], []
         mm, taum = [], []            # E[phi], mean tau per node: centre G, c (2026-09-29)
         accM = accG = accb = accc = accm = acctau = None
+        # interpolant-side time terms (G_I, c_I, m_I, mean tau_I), thomas path only
+        # (the dense path keeps its blocks on the device)
+        interp_time_terms = bool(interp_time_terms) and reg_solver == 'thomas'
+        GI, cI, mI, tauI_m = [], [], [], []
+        accGI = acccI = accmI = acctI = None
+        zx01 = (x0 * self.x_1).reshape(B, -1).sum(1) if interp_time_terms else None   # Z . x_1
         cnt = 0
 
   
@@ -649,9 +660,18 @@ class SDE(torch.nn.Module):
             ak = np.pi * t_node / 2.0
             cos_k, sin_k, tan_k = np.cos(ak), np.sin(ak), np.tan(ak)
 
+            # phi(y_k) and phi(I_{k+1}) were computed by this step's corrector
+            # (compute_rhs_constraint_correction); reused here instead of recomputed
+            # (2026-09-29): same function on the same tensors, identical values.
+            mom_y = getattr(self, '_mom_x', None)
+            mom_I = getattr(self, '_mom_I', None)
+            if mom_y is None or mom_I is None:
+                mom_y, mom_I = self.compute_moments(y_k), self.compute_moments(I_k)
+            self._mom_x = self._mom_I = None                  # never reused by a later step
+
             if sin_k > eps and cos_k > eps:                # skip t = 0 (sin = 0), t = 1 (cos = 0)
                 Xt    = y_k                                           # predicted walkers at target time
-                mom   = self.compute_moments(Xt)                       # phi(y_k)              (B, r)
+                mom   = mom_y                                          # phi(y_k)              (B, r)
                 # raw Gram at y_k. CHANGED 2026-09-25: was self.compute_G(Xt), an exact
                 # repeat of the G(y_k) that compute_theta just computed for the corrector
                 # (Xt is y_k); reused instead: identical values, ~17% of the step at
@@ -669,24 +689,40 @@ class SDE(torch.nn.Module):
 
                 mk    = mom.mean(0)                                    # E[phi(y_k)]
                 tk    = tau.mean()                                     # mean tau (E = 0)
+                if interp_time_terms:
+                    # the same time terms on the interpolant samples I_{k+1} =
+                    # cos a Z + sin a x_1: true (Z, x_1) pairs, so tau is the exact
+                    # conditional time score of Guth et al.'s TSM (on the walkers,
+                    # X_eff is reconstructed and E[tau] need not vanish)
+                    tauI  = -adot * (tan_k * (d - z2) + zx01)          # (B,)
+                    GIk   = mom_I.T @ mom_I / B
+                    cIk   = torch.einsum('br,b->r', mom_I, tauI) / B
+                    mIk, tIk = mom_I.mean(0), tauI.mean()
 
                 if cnt == 0:
                     t_used.append(t_node)                             # coarse node at target time
                     accM, accG, accb, accc = Mk.clone(), Gk.clone(), bk.clone(), ck.clone()
                     accm, acctau = mk.clone(), tk.clone()
+                    if interp_time_terms:
+                        accGI, acccI, accmI, acctI = GIk.clone(), cIk.clone(), mIk.clone(), tIk.clone()
                 else:
                     accM += Mk; accG += Gk; accb += bk; accc += ck
                     accm += mk; acctau += tk
+                    if interp_time_terms:
+                        accGI += GIk; acccI += cIk; accmI += mIk; acctI += tIk
                 cnt += 1
                 if cnt == n_subsample:
                     M.append(store(accM / cnt)); Gf.append(store(accG / cnt))
                     bb.append(store(accb / cnt)); cc.append(store(accc / cnt))
                     mm.append(store(accm / cnt)); taum.append(float(acctau / cnt))
+                    if interp_time_terms:
+                        GI.append(store(accGI / cnt)); cI.append(store(acccI / cnt))
+                        mI.append(store(accmI / cnt)); tauI_m.append(float(acctI / cnt))
                     cnt = 0
 
             if (k + 1) % param_storage_frequency == 0:
                 eta_k_list.append(eta_k); theta_k_list.append(theta_k); dH_k_list.append(dH_k)
-                barphi_e.append(self.compute_moments(I_k).mean(0))
+                barphi_e.append(mom_I.mean(0))                         # phi(I_k), I_k = I(t_{k+1})
                 barphi_p.append(self.compute_moments(self.x_k).mean(0))
 
             if adaptive is None:
@@ -713,6 +749,9 @@ class SDE(torch.nn.Module):
             M.append(store(accM / cnt)); Gf.append(store(accG / cnt))
             bb.append(store(accb / cnt)); cc.append(store(accc / cnt))
             mm.append(store(accm / cnt)); taum.append(float(acctau / cnt))
+            if interp_time_terms:
+                GI.append(store(accGI / cnt)); cI.append(store(acccI / cnt))
+                mI.append(store(accmI / cnt)); tauI_m.append(float(acctI / cnt))
 
         #Theta_reg_thomas = self._solve_regularised_thomas(t_used[1:], M[1:], Gf[1:], bb[1:], cc[1:], lam)
 
@@ -724,11 +763,17 @@ class SDE(torch.nn.Module):
 
         # dense: the ~1e-5 cut keeps its float32 solve conditioned (legacy behaviour).
         # thomas (float64): drop only exact-duplicate times, which would give dt = 0.
-        t_reg, M_reg, Gf_reg, bb_reg, cc_reg, mm_reg, taum_reg = self._cut_close_time_nodes(
-            t_used[1:], M[1:], Gf[1:], bb[1:], cc[1:],
-            min_dt=1e-12 if reg_solver == 'thomas' else None,
-            extra=(mm[1:], taum[1:]),
-        )
+        extra = (mm[1:], taum[1:])
+        if interp_time_terms:
+            extra = extra + (GI[1:], cI[1:], mI[1:], tauI_m[1:])
+        t_reg, M_reg, Gf_reg, bb_reg, cc_reg, mm_reg, taum_reg, *interp_reg = \
+            self._cut_close_time_nodes(
+                t_used[1:], M[1:], Gf[1:], bb[1:], cc[1:],
+                min_dt=1e-12 if reg_solver == 'thomas' else None,
+                extra=extra,
+            )
+        interp = (dict(zip(('G_I', 'c_I', 'm_I', 'tau_mean_I'), interp_reg))
+                  if interp_time_terms else None)
 
         print("Dropped close-in-time nodes:", len(t_used) - 1 - len(t_reg))
         print("Last times:", t_reg[-5:])
@@ -740,7 +785,7 @@ class SDE(torch.nn.Module):
             # while writing ~40 GB) would lose the whole run. Log it and carry on.
             try:
                 self._save_reg_system(reg_system_path, t_reg, M_reg, Gf_reg, bb_reg, cc_reg,
-                                      m=mm_reg, tau_mean=taum_reg,
+                                      m=mm_reg, tau_mean=taum_reg, interp=interp,
                                       lam=lam, n_subsample=n_subsample, reg_solver=reg_solver,
                                       reg_mode=reg_mode, dim=d)
             except Exception as e:
@@ -795,13 +840,16 @@ class SDE(torch.nn.Module):
             np.asarray(t_reg[1:], dtype=float),
         )
 
-    def _save_reg_system(self, path, t, M, Gf, bb, cc, m=None, tau_mean=None, **meta):
+    def _save_reg_system(self, path, t, M, Gf, bb, cc, m=None, tau_mean=None, interp=None,
+                         **meta):
         """
         Write the regularised system A Theta = f exactly as the solver receives it:
         grid t (float64) and per-node M, G, b, c (float32, CPU), plus metadata.
         Since 2026-09-29 also m = E[phi] (float64) and tau_mean per node, needed by
         the 'fixed'/'guth' modes to centre G and c; meta['dim'] is the signal dimension.
         Older files lack them (codes/resolve_theta_reg.py can take m from aux_moments).
+        interp: optional dict of the interpolant-side time terms (G_I, c_I float32 like
+        G, c; m_I float64 (n, r); tau_mean_I (n,)).
         codes/resolve_theta_reg.py rebuilds Theta_reg from this for any lam; like
         forward_regularised, it drops the first node (Theta[1:], t[1:]).
 
@@ -824,6 +872,12 @@ class SDE(torch.nn.Module):
             system['m'] = torch.stack([X.detach().to('cpu', torch.float64).reshape(-1) for X in m])
         if tau_mean is not None:
             system['tau_mean'] = torch.as_tensor(np.asarray(tau_mean, dtype=np.float64))
+        if interp is not None:
+            system['G_I'] = [cpu32(X) for X in interp['G_I']]
+            system['c_I'] = [cpu32(X).reshape(-1) for X in interp['c_I']]
+            system['m_I'] = torch.stack([X.detach().to('cpu', torch.float64).reshape(-1)
+                                         for X in interp['m_I']])
+            system['tau_mean_I'] = torch.as_tensor(np.asarray(interp['tau_mean_I'], dtype=np.float64))
         tmp = path.with_name(path.name + '.tmp')
         t0 = time.time()
         try:
@@ -1490,8 +1544,13 @@ class SDE(torch.nn.Module):
         """
  
 
-        bar_phi_I_k      = self.compute_moments(I_k).mean(0)
-        bar_phi_x_current = self.compute_moments(x_k).mean(0)
+        # per-sample phi(I_k) kept for forward_regularised's interpolant-side time
+        # terms (2026-09-29); the returned mismatch is unchanged
+        # (and phi(x_k), x_k = y_k there, which it reuses instead of recomputing)
+        self._mom_I      = self.compute_moments(I_k)
+        self._mom_x      = self.compute_moments(x_k)
+        bar_phi_I_k      = self._mom_I.mean(0)
+        bar_phi_x_current = self._mom_x.mean(0)
 
         return bar_phi_I_k - bar_phi_x_current
 
