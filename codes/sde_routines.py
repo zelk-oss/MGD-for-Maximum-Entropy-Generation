@@ -70,6 +70,41 @@ def loop_budget_s(time_limit_min, reserve_min=30.0, reserve_frac=0.1):
     run projected at 18.02 h.)
     """
     return 60.0 * (time_limit_min - min(reserve_min, reserve_frac * time_limit_min))
+
+
+def reg_energy_weights(t, lam, mode='legacy', dim=None):
+    """Weights (a, q, l) of the discrete energy solved by SDE._solve_regularised_thomas:
+
+        E = sum_k a_k (1/2 Theta_k^T M_k Theta_k - b_k^T Theta_k)
+          + sum_k [ q_k/2 dTheta_k^T C_k dTheta_k + l_k ct_k^T dTheta_k ].
+
+    a: (n,) per node, q, l: (n-1,) per cell [t_k, t_k+1]. See that method for the modes.
+    """
+    t = np.asarray(t, dtype=np.float64)
+    n, dt = len(t), np.diff(t)
+    if mode in ('legacy', 'fixed'):
+        a = np.ones(n)
+        q = lam / dt ** 2
+        l = (-lam / dt) if mode == 'legacy' else (lam / dt)
+        return a, q, l
+    if mode != 'guth':
+        raise ValueError(f"mode must be 'legacy', 'fixed' or 'guth', got {mode!r}")
+    if dim is None:
+        raise ValueError("mode='guth' needs dim (the signal dimension d)")
+    adot = np.pi / 2.0
+    h = np.empty(n)                                   # trapezoid node weights
+    if n == 1:
+        h[0] = 1.0
+    else:
+        h[0], h[-1] = dt[0] / 2, dt[-1] / 2
+        h[1:-1] = (dt[:-1] + dt[1:]) / 2
+    a_node = adot * t
+    w_D = 2 * adot * np.cos(a_node) / (dim * np.sin(a_node) ** 3)       # |ds/dt| / d
+    a_mid = adot * (t[:-1] + t[1:]) / 2
+    w_T = np.sin(a_mid) * np.cos(a_mid) / (2 * adot * dim ** 2)         # s / (d^2 |ds/dt|)
+    return h * w_D, lam * w_T / dt, lam * w_T
+
+
 current = Path.cwd()
 MGD_project_folder = current.parent
 
@@ -478,12 +513,13 @@ class SDE(torch.nn.Module):
             dH_k_list,
         )
 
-    def _cut_close_time_nodes(self, t, M, Gf, bb, cc, min_dt=None):
+    def _cut_close_time_nodes(self, t, M, Gf, bb, cc, min_dt=None, extra=None):
         """
         Greedily keep only nodes at least min_dt apart (checked against the last
         KEPT node, not the previous raw node — a plain np.diff(t) > tol mask
         fails on runs of many close points because it doesn't re-check spacing
         after dropping). Points that violate the tolerance are simply cut.
+        extra: further per-node lists, cut the same way and appended to the output.
         """
         t = np.asarray(t, dtype=np.float64)  # keep full precision, no float32 cast
         if min_dt is None:
@@ -496,12 +532,16 @@ class SDE(torch.nn.Module):
                 keep.append(i)
 
         keep = np.asarray(keep)
-        return (t[keep], [M[i] for i in keep], [Gf[i] for i in keep],
-                [bb[i] for i in keep], [cc[i] for i in keep])
+        out = (t[keep], [M[i] for i in keep], [Gf[i] for i in keep],
+               [bb[i] for i in keep], [cc[i] for i in keep])
+        if extra is not None:
+            out = out + tuple([X[i] for i in keep] for X in extra)
+        return out
 
     def forward_regularised(self, lam=1.0, n_subsample=1, param_storage_frequency=1,
                              time_limit_min=None, reg_solver='dense', reg_ridge=0.0,
-                             reg_system_path=None, solve_reg=True, adaptive=None):
+                             reg_system_path=None, solve_reg=True, adaptive=None,
+                             reg_mode='legacy'):
         """
         As forward, but stores the regularised-problem quantities ON THE WALKERS X_t = x_k
         and solves A Theta = f (section 4) on a coarse grid after the loop.
@@ -534,6 +574,10 @@ class SDE(torch.nn.Module):
                       (no block averaging, Guth's system on the full grid) fits.
         reg_ridge (thomas only): M_k += reg_ridge * diag(M_k), a ridge on the data
         term of the original problem; 0 disables it.
+        reg_mode (thomas only): 'legacy' | 'fixed' | 'guth', the energy solved, see
+        _solve_regularised_thomas ('legacy' has the wrong-sign time term, kept so old
+        runs reproduce). The saved system also holds m = E[phi] and the mean of tau
+        per node (since 2026-09-29), so any mode can be solved offline.
 
         reg_system_path: if set, the assembled system (t_reg, M, G, b, c on the grid
         the solver sees) is written there BEFORE the solve, so lam can be re-tuned
@@ -553,6 +597,9 @@ class SDE(torch.nn.Module):
             raise ValueError(f"reg_solver must be 'dense' or 'thomas', got {reg_solver!r}")
         if reg_solver == 'dense' and reg_ridge:
             raise ValueError("reg_ridge is only implemented for reg_solver='thomas'")
+        if reg_solver == 'dense' and reg_mode != 'legacy':
+            raise ValueError("reg_mode other than 'legacy' is only implemented for "
+                             "reg_solver='thomas'")
         if not solve_reg and reg_system_path is None:
             raise ValueError("solve_reg=False without reg_system_path would discard the "
                              "regularised system entirely")
@@ -573,7 +620,8 @@ class SDE(torch.nn.Module):
         barphi_p = [self.compute_moments(self.x_k).mean(0)]
         eta_k_list, theta_k_list, dH_k_list = [], [], []
         M, Gf, bb, cc, t_used = [], [], [], [], []
-        accM = accG = accb = accc = None
+        mm, taum = [], []            # E[phi], mean tau per node: centre G, c (2026-09-29)
+        accM = accG = accb = accc = accm = acctau = None
         cnt = 0
 
   
@@ -619,15 +667,21 @@ class SDE(torch.nn.Module):
                 tau   = -adot * (tan_k * (d - z2) + zx)                # tau_k^i               (B,)
                 ck    = torch.einsum('br,b->r', mom, tau) / B          # E[phi(y_k) tau]
 
+                mk    = mom.mean(0)                                    # E[phi(y_k)]
+                tk    = tau.mean()                                     # mean tau (E = 0)
+
                 if cnt == 0:
                     t_used.append(t_node)                             # coarse node at target time
                     accM, accG, accb, accc = Mk.clone(), Gk.clone(), bk.clone(), ck.clone()
+                    accm, acctau = mk.clone(), tk.clone()
                 else:
                     accM += Mk; accG += Gk; accb += bk; accc += ck
+                    accm += mk; acctau += tk
                 cnt += 1
                 if cnt == n_subsample:
                     M.append(store(accM / cnt)); Gf.append(store(accG / cnt))
                     bb.append(store(accb / cnt)); cc.append(store(accc / cnt))
+                    mm.append(store(accm / cnt)); taum.append(float(acctau / cnt))
                     cnt = 0
 
             if (k + 1) % param_storage_frequency == 0:
@@ -658,6 +712,7 @@ class SDE(torch.nn.Module):
         if cnt > 0:                                                    # final partial block
             M.append(store(accM / cnt)); Gf.append(store(accG / cnt))
             bb.append(store(accb / cnt)); cc.append(store(accc / cnt))
+            mm.append(store(accm / cnt)); taum.append(float(acctau / cnt))
 
         #Theta_reg_thomas = self._solve_regularised_thomas(t_used[1:], M[1:], Gf[1:], bb[1:], cc[1:], lam)
 
@@ -669,9 +724,10 @@ class SDE(torch.nn.Module):
 
         # dense: the ~1e-5 cut keeps its float32 solve conditioned (legacy behaviour).
         # thomas (float64): drop only exact-duplicate times, which would give dt = 0.
-        t_reg, M_reg, Gf_reg, bb_reg, cc_reg = self._cut_close_time_nodes(
+        t_reg, M_reg, Gf_reg, bb_reg, cc_reg, mm_reg, taum_reg = self._cut_close_time_nodes(
             t_used[1:], M[1:], Gf[1:], bb[1:], cc[1:],
             min_dt=1e-12 if reg_solver == 'thomas' else None,
+            extra=(mm[1:], taum[1:]),
         )
 
         print("Dropped close-in-time nodes:", len(t_used) - 1 - len(t_reg))
@@ -684,7 +740,9 @@ class SDE(torch.nn.Module):
             # while writing ~40 GB) would lose the whole run. Log it and carry on.
             try:
                 self._save_reg_system(reg_system_path, t_reg, M_reg, Gf_reg, bb_reg, cc_reg,
-                                      lam=lam, n_subsample=n_subsample, reg_solver=reg_solver)
+                                      m=mm_reg, tau_mean=taum_reg,
+                                      lam=lam, n_subsample=n_subsample, reg_solver=reg_solver,
+                                      reg_mode=reg_mode, dim=d)
             except Exception as e:
                 import traceback
                 traceback.print_exc()
@@ -698,7 +756,8 @@ class SDE(torch.nn.Module):
             Theta_reg = None
         elif reg_solver == 'thomas':
             Theta_reg = self._solve_regularised_thomas(
-                t_reg, M_reg, Gf_reg, bb_reg, cc_reg, lam, ridge=reg_ridge)
+                t_reg, M_reg, Gf_reg, bb_reg, cc_reg, lam, ridge=reg_ridge,
+                mode=reg_mode, m=mm_reg, tau_mean=taum_reg, dim=d)
         else:
             Theta_reg = self._solve_regularised(t_reg, M_reg, Gf_reg, bb_reg, cc_reg, lam)
 
@@ -736,10 +795,13 @@ class SDE(torch.nn.Module):
             np.asarray(t_reg[1:], dtype=float),
         )
 
-    def _save_reg_system(self, path, t, M, Gf, bb, cc, **meta):
+    def _save_reg_system(self, path, t, M, Gf, bb, cc, m=None, tau_mean=None, **meta):
         """
         Write the regularised system A Theta = f exactly as the solver receives it:
         grid t (float64) and per-node M, G, b, c (float32, CPU), plus metadata.
+        Since 2026-09-29 also m = E[phi] (float64) and tau_mean per node, needed by
+        the 'fixed'/'guth' modes to centre G and c; meta['dim'] is the signal dimension.
+        Older files lack them (codes/resolve_theta_reg.py can take m from aux_moments).
         codes/resolve_theta_reg.py rebuilds Theta_reg from this for any lam; like
         forward_regularised, it drops the first node (Theta[1:], t[1:]).
 
@@ -758,6 +820,10 @@ class SDE(torch.nn.Module):
             'num_potentials': int(self.num_potentials),
             'meta': dict(meta),
         }
+        if m is not None:
+            system['m'] = torch.stack([X.detach().to('cpu', torch.float64).reshape(-1) for X in m])
+        if tau_mean is not None:
+            system['tau_mean'] = torch.as_tensor(np.asarray(tau_mean, dtype=np.float64))
         tmp = path.with_name(path.name + '.tmp')
         t0 = time.time()
         try:
@@ -808,7 +874,8 @@ class SDE(torch.nn.Module):
         return (z / S).reshape(n, r) 
     
     def _solve_regularised_thomas(self, t, M, Gf, bb, cc, lam, eps_reg_theta=0.0,
-                                  ridge=0.0, dtype=torch.float64, device='cpu'):
+                                  ridge=0.0, dtype=torch.float64, device='cpu',
+                                  mode='legacy', m=None, tau_mean=None, dim=None):
         """
         Same block-tridiagonal system as _solve_regularised, solved via block-Thomas
         elimination with block-Jacobi preconditioning instead of a dense (n*r, n*r)
@@ -816,14 +883,49 @@ class SDE(torch.nn.Module):
         buffer is the elimination factor c', so the full fine grid (n_subsample=1)
         fits in host RAM. At lam=0 this reduces to the per-step solves M_k theta_k = b_k.
 
+        mode selects the discrete energy (all minimised by the same Thomas sweep):
+
+            E = sum_k a_k (1/2 Theta_k^T M_k Theta_k - b_k^T Theta_k)
+              + sum_k [ q_k/2 dTheta_k^T C_k dTheta_k + l_k ct_k^T dTheta_k ],
+            dTheta_k = Theta_{k+1} - Theta_k.
+
+          'legacy' -- a = 1, q = lam/dt^2, l = -lam/dt, C = G, ct = c. The system
+                      used up to 2026-09-29 (kept so old results reproduce). Its time
+                      term targets G Theta_dot = c, which is WRONG for MGD's theta:
+                      MGD writes p_t ∝ exp(+theta.phi) (dH = -theta.mdot), Guth et al.
+                      write p ∝ exp(-U), and tau = -d_t log p(X_t|X) was taken from
+                      Guth without flipping the sign. Also G is uncentred, so the
+                      d_t log Z_t part of tau (which no theta.phi can represent) biases
+                      it. (Checked on a 1-D Gaussian: E[phi tau] = -Cov(phi) theta_dot,
+                      scratchpad tau_sign_check.py, 2026-09-29.)
+          'fixed'  -- the same weights as legacy but the correct time term:
+                      C = G - m m^T (Cov of phi), ct = c - m tau_mean (Cov(phi, tau)),
+                      l = +lam/dt, i.e. the energy lam/2 int E_c[(Theta_dot.phi + tau)^2].
+                      Needs m.
+          'guth'   -- correct time term AND Guth et al. (2025, eq. 8) weights, mapped
+                      to the Cos schedule (Y = X_t/sin a has noise variance s = cot^2 a;
+                      their E_{p(s) ∝ 1/s}[(s/d) DSM + (s/d)^2 TSM] in our t):
+                        a_k = h_k w_D(t_k),  w_D = 2 adot cos a / (d sin^3 a)
+                        q_k = lam w_T(t_k+1/2) / dt_k,  l_k = lam w_T(t_k+1/2),
+                        w_T = sin a cos a / (2 adot d^2)
+                      (h_k trapezoid node weights). The effective coupling w_T/w_D is
+                      sin^4(a) / (pi^2 d): no free parameter; lam is a multiplier on
+                      Guth's choice (lam = 1 is theirs). Needs m and dim.
+
+        m : per-node E[phi] (r,) on the walkers the system was built on; tau_mean :
+            per-node mean of tau (scalar), 0 if None (its expectation).
+
+        (Called unbound by codes/resolve_theta_reg.py and the bimodal port with a
+        SimpleNamespace as self, so the body uses no other method of self.)
+
         Blocks are built on the fly from M/Gf/bb/cc (any device/dtype, typically
         float32 on CPU) and all arithmetic is in `dtype` on `device` (float64 CPU by
         default): with the lam/dt^2 coupling large on a fine grid, the Schur
         complements D_k - L c' cancel O(lam/dt^2) terms down to O(M), which float32
         cannot resolve.
 
-        A is SPD (M PSD + lam * time-Laplacian (x) G PSD), so the Schur complements
-        stay SPD and elimination without pivoting across blocks is stable.
+        A is SPD (a M PSD + time-Laplacian (x) C PSD, a, q >= 0), so the Schur
+        complements stay SPD and elimination without pivoting across blocks is stable.
 
         ridge : M_k += ridge * diag(M_k) -- a ridge on the data term of the original
                 problem (same system for any solver). 0 disables it.
@@ -838,21 +940,33 @@ class SDE(torch.nn.Module):
         dt = np.diff(t)
         if (dt <= 0).any():
             raise ValueError("t must be strictly increasing for the regularised solve")
-        w = lam / dt ** 2                                  # time-coupling weights
-        g = lam / dt                                       # weights of the c terms
+        a, w, l = reg_energy_weights(t, lam, mode=mode, dim=dim)   # data, coupling, c weights
+        centre = mode != 'legacy'
+        if centre and m is None:
+            raise ValueError(f"mode={mode!r} needs m (per-node E[phi]) to centre G and c")
 
         get = lambda X: X.to(device=device, dtype=dtype)
         sym = lambda X: (X + X.T) / 2
 
         def Mb(k):
-            m = sym(get(M[k]))
-            return m + ridge * torch.diag(torch.diagonal(m)) if ridge else m
+            m_ = sym(get(M[k]))
+            return m_ + ridge * torch.diag(torch.diagonal(m_)) if ridge else m_
 
-        def Gb(k):
-            return sym(get(Gf[k]))
+        def Gb(k):                                         # C_k: Gram (legacy) or Cov of phi
+            G = sym(get(Gf[k]))
+            if centre:
+                mk = get(torch.as_tensor(m[k])).reshape(-1)
+                G = G - torch.outer(mk, mk)
+            return G
+
+        def cb(k):                                         # ct_k: E[phi tau] or Cov(phi, tau)
+            c = get(cc[k]).reshape(-1)
+            if centre and tau_mean is not None:
+                c = c - float(tau_mean[k]) * get(torch.as_tensor(m[k])).reshape(-1)
+            return c
 
         def Db(k):                                         # diagonal block A[k, k]
-            D = Mb(k)
+            D = a[k] * Mb(k)
             if k > 0:
                 D = D + w[k - 1] * Gb(k - 1)
             if k < n - 1:
@@ -860,17 +974,17 @@ class SDE(torch.nn.Module):
             return D
 
         def fb(k):                                         # second member f[k]
-            f = get(bb[k]).reshape(-1)
+            f = a[k] * get(bb[k]).reshape(-1)
             if k < n - 1:
-                f = f - g[k] * get(cc[k]).reshape(-1)
+                f = f + l[k] * cb(k)
             if k > 0:
-                f = f + g[k - 1] * get(cc[k - 1]).reshape(-1)
+                f = f - l[k - 1] * cb(k - 1)
             return f
 
         # block-Jacobi scales (sqrt of diag of A), needed one block ahead for U_k
         S = torch.stack([torch.diagonal(Db(k)).clamp_min(1e-300).sqrt() for k in range(n)])
 
-        def Ub(k):                                         # scaled A[k, k+1] = -w_k G_k
+        def Ub(k):                                         # scaled A[k, k+1] = -w_k C_k
             return -w[k] * Gb(k) / (S[k][:, None] * S[k + 1][None, :])
 
         eye = torch.eye(r, device=device, dtype=dtype)
