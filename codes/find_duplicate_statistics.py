@@ -121,17 +121,35 @@ def main():
         print(f'names from {src}')
 
     idx = sorted(set(int(i) for i in np.linspace(0, len(t) - 1, args.nodes)))
+    # live statistics per node, as the run's corrector solved them: theta_t == 0 exactly
+    # where it masked a statistic (saved per-step theta); else just diag(M_k) > 0. Dead
+    # statistics (diag 0) would otherwise be scaled by 1/sqrt(1e-300) -> fake eigenvalues.
+    theta_path = args.root / 'saved_results' / 'lagrange_multipliers' / f'{config}.pt'
+    time_path = args.root / 'saved_results' / 'sampling_times' / f'{config}.pt'
+    theta_t = t_fine = None
+    if theta_path.exists() and time_path.exists():
+        theta_t = torch.load(theta_path, map_location='cpu')
+        t_fine = np.asarray(torch.load(time_path, map_location='cpu'), dtype=np.float64)
+        print('live set per node: from the saved theta_t (the run\'s own mask)')
+    else:
+        print('live set per node: diag(M_k) > 0 (no saved theta_t found)')
     seen_at = {}                       # group -> nodes where present
     nulls = []
     for k in idx:
-        CM = scaled(system['M'][k])
+        Mk = system['M'][k]
+        live = torch.diagonal(Mk) > 0
+        if theta_t is not None:
+            j = int(np.clip(np.searchsorted(t_fine[1:], t[k]), 0, len(t_fine) - 2))
+            live &= theta_t[j] != 0
+        li = live.nonzero().flatten()
+        CM = scaled(Mk[li][:, li])
         for g in groups_of(CM, args.tol):
-            seen_at.setdefault(g, []).append(k)
+            seen_at.setdefault(tuple(int(li[i]) for i in g), []).append(k)
         ev, V = torch.linalg.eigh(CM)
         for m in torch.nonzero(ev < args.null_tol).flatten().tolist():
             v = V[:, m]
             top = torch.argsort(v.abs(), descending=True)[:6]
-            nulls.append((k, float(ev[m]), [(int(i), float(v[i])) for i in top if abs(v[i]) > 0.05]))
+            nulls.append((k, float(ev[m]), [(int(li[i]), float(v[i])) for i in top if abs(v[i]) > 0.05]))
 
     print(f'\nr = {r}, {len(idx)} nodes checked (t = {t[idx[0]]:.4f} .. {t[idx[-1]]:.4f})')
     persistent = {g: n for g, n in seen_at.items() if len(n) == len(idx)}
@@ -152,6 +170,8 @@ def main():
         shown.add(key)
         print(f'  first at node {k} (t={t[k]:.4f}), eig {e:.1e}: '
               + ', '.join(f'{c:+.2f}*[{i}]' for i, c in comps))
+        for i, c in comps:
+            print(f'      {c:+.3f}  [{i:3d}] {labels[i]}')
 
 
 if __name__ == '__main__':
