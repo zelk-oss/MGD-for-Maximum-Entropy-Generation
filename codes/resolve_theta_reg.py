@@ -221,20 +221,27 @@ def diagnose(inp, n_nodes):
     idx = sorted(set(int(i) for i in np.linspace(0, len(t) - 1, n_nodes)))
     print(f'  diagnose (Jacobi-scaled blocks, float64), {len(idx)} nodes:')
     print(f'  {"node":>7} {"t":>9} | {"M: zero diag":>12} {"min eig":>9} {"#eig<1e-10":>10} {"#dup pairs":>10}'
-          f' | {"C: min eig":>10} {"#eig<1e-10":>10}')
+          f' | {"C: diag<=0":>10} {"min eig":>9} {"#eig<1e-10":>10}')
     for k in idx:
         row = []
         for X in (inp['M'][k], inp['C'][k]):
             X = X.double(); X = (X + X.T) / 2
             d = torch.diagonal(X)
-            s = d.clamp_min(1e-300).sqrt()
-            Xs = X / (s[:, None] * s[None, :])
-            ev = torch.linalg.eigvalsh(Xs)
+            pos = d > 0                       # scale only entries with a positive diagonal: a
+            Xs = X[pos][:, pos]               # C rebuilt as G - m m^T can have d <= 0, and
+            s = d[pos].sqrt()                 # 1/sqrt(1e-300) scaling made eigvalsh diverge
+            Xs = Xs / (s[:, None] * s[None, :])
+            try:
+                ev = torch.linalg.eigvalsh(Xs) if Xs.numel() else torch.zeros(1, dtype=X.dtype)
+                ev_min, n_small = float(ev.min()), int((ev < 1e-10).sum())
+            except torch.linalg.LinAlgError:
+                ev_min, n_small = float('nan'), -1
             off = Xs - torch.diag(torch.diagonal(Xs))
             dup = int(((off.abs() > 1 - 1e-9).sum() // 2).item())
-            row.append((int((d <= 0).sum()), float(ev.min()), int((ev < 1e-10).sum()), dup))
+            row.append((int((~pos).sum()), ev_min, n_small, dup))
         m, g = row
-        print(f'  {k:7d} {t[k]:9.6f} | {m[0]:12d} {m[1]:9.2e} {m[2]:10d} {m[3]:10d} | {g[1]:10.2e} {g[2]:10d}')
+        print(f'  {k:7d} {t[k]:9.6f} | {m[0]:12d} {m[1]:9.2e} {m[2]:10d} {m[3]:10d}'
+              f' | {g[0]:10d} {g[1]:9.2e} {g[2]:10d}')
 
 
 def main():
