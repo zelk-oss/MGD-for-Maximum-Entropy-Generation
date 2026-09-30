@@ -311,7 +311,7 @@ $\E[z^2]$ in proportion to $nh$.}\label{tab:B4}
 \subsection{C3: existing turbulence systems (Jean Zay; not run)}\label{sec:c3}
 After pushing this code, on Jean Zay (from \code{turbulence/launch}; \code{P} selects one \code{zfloor} system):
 {\small\begin{verbatim}
-P="*zfloor_two_phase_reg1e-4*seed_900*.pt"
+P="*seed_900_*zfloor_two_phase_reg1e-4_20260928_1545.pt"   # seed precedes the label; the 1313 run crashed
 SYSTEM_PATTERN="$P" MODE=legacy MASK=none  RIDGE=1e-4 LAMS="0" bash resolve_lamsweep.sh
 SYSTEM_PATTERN="$P" MODE=legacy MASK=theta RIDGE=1e-4 LAMS="0" bash resolve_lamsweep.sh
 SYSTEM_PATTERN="$P" MODE=moment MASK=theta RIDGE=1e-4 SELECT=1 \
