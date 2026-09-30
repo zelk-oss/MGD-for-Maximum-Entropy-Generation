@@ -382,6 +382,9 @@ def run_experiment(args, M, config, x1, filters, t, logger, outdir, device,
         potentials_save_dir=potentials_save_dir,
         solve_float64=getattr(args, 'solve_float64', False),
     )
+    Solver.cond_every = int(getattr(args, 'cond_every', 0) or 0)
+    if Solver.cond_every:
+        logger.info('Logging the conditioning of the per-step Gram every %d steps', Solver.cond_every)
     xt, barphi_e, barphi_p, eta_t, theta_t, dH_t_bound, Theta_reg, t_reg = Solver.forward_regularised(
         lam=args.lam, n_subsample=args.n_subsample,
         time_limit_min=getattr(args, 'time_limit_min', None),
@@ -409,6 +412,12 @@ def run_experiment(args, M, config, x1, filters, t, logger, outdir, device,
             {'barphi_e': barphi_e.detach().cpu(), 'barphi_p': barphi_p.detach().cpu()},
             outdir / 'saved_results' / 'aux_moments' / f'{config}_aux_moments.pt',
         )
+    if Solver.cond_every:
+        # step k of the log: eta at t[k], theta at t[k+1] (t = the saved sampling_times)
+        cond_path = outdir / 'saved_results' / 'aux_moments' / f'{config}_cond.pt'
+        cond_path.parent.mkdir(parents=True, exist_ok=True)
+        torch.save(Solver.cond_log(), cond_path)
+        logger.info('Saved the conditioning log to %s', cond_path)
 
     return {
         'xt': xt, 'theta_t': theta_t, 'Theta_reg': Theta_reg, 't': t, 't_reg': t_reg,

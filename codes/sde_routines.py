@@ -307,6 +307,15 @@ class SDE(torch.nn.Module):
         if n_tol:
             print(f'[live] {n_tol} statistics are set to 0 at steps where their Gram diagonal '
                   f'is below near_empty_tol x their data value (region empty on the walkers)')
+        # per-step conditioning log (2026-09-30, notes/eps_conditioning_0930): every
+        # cond_every-th step, the spectrum of the Jacobi-scaled live Gram (before the
+        # ridge) of the eta and theta solves. 0 = off. Diagnostic only: the solves are
+        # unchanged. Set by run_experiment from --cond_every.
+        self.cond_every = 0
+        self._cond_log = {'eta': [], 'theta': []}
+        self._cond_spec = {'eta': [], 'theta': []}
+        self.potential_labels = [f'{name}[{i}]' for name, p in self.potentials.items()
+                                 for i in range(p.num_coefficients)]
 
 
     # ------------------------------------------------------------------------------------------------------------------
@@ -1307,6 +1316,7 @@ class SDE(torch.nn.Module):
             D_k12 = torch.diag(G_k).sqrt()
             G_k = G_k /(D_k12[:,None]*D_k12[None,:])
             G_k = (G_k+G_k.T)/2
+            self._log_cond('eta', k, G_k, D_k12, live, rhs_dt_phi_I_k.reshape(-1) / D_k12)
             G_k+= self.regularization*torch.eye(G_k.shape[-1],).to(G_k.dtype).to(G_k.device)
 
             # double precision to avoid fit colinearity
@@ -1402,6 +1412,8 @@ class SDE(torch.nn.Module):
             D_k12 = torch.diag(G_k)**0.5
             G_k = G_k /(D_k12[:,None]*D_k12[None,:])
             G_k = (G_k+G_k.T)/2
+            self._log_cond('theta', k, G_k, D_k12, live, rhs_constraint_correction / D_k12,
+                           noise=(self._mom_I, self._mom_x))
             G_k+= self.regularization*torch.eye(G_k.shape[-1],).to(G_k.dtype).to(G_k.device)
 
             theta_k = torch.linalg.solve(G_k, rhs_constraint_correction/D_k12)
@@ -1412,6 +1424,69 @@ class SDE(torch.nn.Module):
         theta_k = torch.zeros(G_k.shape[0], dtype=G_k.dtype, device=G_k.device)
         theta_k[live] = _solve(G_k[live][:, live], rhs_constraint_correction[live])
         return theta_k, rhs_constraint_correction
+
+    def _log_cond(self, name, k, Gs, D12, live, rhs_s, noise=None):
+        """
+        Conditioning / discrepancy log for the per-step solves (every cond_every-th step;
+        0 = off). Read-only: works on copies, never changes the solve.
+
+        Gs is the Jacobi-scaled live Gram, symmetrised, BEFORE the ridge (unit diagonal);
+        D12 = sqrt(diag G) and rhs_s = rhs / D12 on the live set; live the (r,) mask. With
+        Gs = U diag(mu) U^T, the ridge solve is theta_s = U (U^T rhs_s) / (mu + lam), so
+        mu and beta = U^T rhs_s replay the solve for ANY lam offline: component i of the
+        solution is beta_i / (mu_i + lam), of the residual Gs theta_s - rhs_s it is
+        -lam beta_i / (mu_i + lam). noise = (per-sample moments of the two sample means
+        whose difference is the rhs), for theta (phi(I_k+1), phi(y_k)): nu_i = variance of
+        the rhs noise along u_i, sum_s Var_s(u_i^T phi_s / D12) / B_s (independent means),
+        i.e. what the discrepancy principle compares the residual to.
+
+        Per logged step: row = [k, n_live, mu_min, mu_max, 3 statistics with the largest
+        |loading| on the mu_min eigenvector (global indices), min diag(G)/live floor over
+        the live floored statistics (inf if none), its index]; spectra = mu, beta, nu as
+        float32 (r,), padded with NaN past n_live (eigen-coordinates, not statistics).
+        """
+        if not self.cond_every or k % self.cond_every:
+            return
+        idx = live.nonzero().flatten()
+        n, r = int(idx.numel()), self.num_potentials
+        spec = torch.full((3, r), float('nan'), dtype=torch.float32)
+        try:
+            mu, U = torch.linalg.eigh(Gs.detach().double())
+            lmin, lmax = float(mu[0]), float(mu[-1])
+            top = idx[U[:, 0].abs().argsort(descending=True)[:3]].tolist()
+            spec[0, :n] = mu.float().cpu()
+            spec[1, :n] = (U.T @ rhs_s.detach().double()).float().cpu()
+            if noise is not None:
+                nu = torch.zeros(n, dtype=torch.float64, device=U.device)
+                for mom in noise:
+                    z = (mom[:, idx].double() / D12.double()) @ U          # (B, n)
+                    nu += z.var(0) / z.shape[0]
+                spec[2, :n] = nu.float().cpu()
+        except torch.linalg.LinAlgError:
+            lmin = lmax = float('nan'); top = []
+        top = (top + [-1, -1, -1])[:3]
+        floor = self._live_floor.to(device=D12.device, dtype=D12.dtype)[idx]
+        has = floor > 0
+        if has.any():
+            ratio = (D12[has] ** 2) / floor[has]
+            j = int(ratio.argmin())
+            margin, margin_idx = float(ratio[j]), int(idx[has][j])
+        else:
+            margin, margin_idx = float('inf'), -1
+        self._cond_log[name].append([k, n, lmin, lmax, *top, margin, margin_idx])
+        self._cond_spec[name].append(spec)
+
+    def cond_log(self):
+        """The conditioning log as tensors (see _log_cond), plus the potential labels."""
+        cols = ['k', 'n_live', 'lam_min', 'lam_max', 'top0', 'top1', 'top2', 'margin', 'margin_idx']
+        out = {'columns': cols, 'labels': self.potential_labels, 'cond_every': self.cond_every,
+               'regularization': self.regularization,
+               'spectra': 'mu, beta = U^T rhs_s, nu (rhs noise variance along u_i; NaN for eta)'}
+        for name, rows in self._cond_log.items():
+            out[name] = torch.tensor(rows, dtype=torch.float64) if rows else torch.zeros(0, len(cols))
+            spec = self._cond_spec[name]
+            out[f'{name}_spectra'] = torch.stack(spec) if spec else torch.zeros(0, 3, self.num_potentials)
+        return out
 
     def _live_potentials(self, G_k, rhs, k, name):
         """

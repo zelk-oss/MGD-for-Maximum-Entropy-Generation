@@ -42,6 +42,11 @@
 # always finishes. Saved regularised system: ~1.2 MB/step at r~276 (~75 GB at 60k
 # steps, host RAM and SCRATCH), vs ~0.9 MB/step at r=233.
 #
+# 2026-09-30 (C4 of notes/guth_reg_audit_0930 + notes/eps_conditioning_0930): thomas runs
+# now default to --reg_mode moment (config tag _moment), and COND_EVERY=N logs the
+# per-step Gram conditioning to saved_results/aux_moments/<config>_cond.pt:
+#         ONLY="zfloor_two_phase_reg1e-4" COND_EVERY=10 bash zfloor_test.sh
+#
 # Usage:  bash zfloor_test.sh                                   (both runs, seed 900)
 #         ONLY="zfloor_adaptive_reg1e-4" bash zfloor_test.sh      (a subset)
 #         ONLY="zfloor_two_phase_reg1e-4" SEEDS="901 902 903 904" bash zfloor_test.sh

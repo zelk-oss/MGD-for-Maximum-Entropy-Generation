@@ -149,6 +149,11 @@ def parse_args():
     p.add_argument('--reg_schedule', type=str, default='uniform', choices=['uniform', 'guth'],
                     help="moment mode: quadrature weights uniform in t (default) or Guth et "
                          "al.'s schedule mapped to Cos time (comparison option)")
+    p.add_argument('--cond_every', type=int, default=0,
+                    help='every N steps, log the spectrum of the Jacobi-scaled live Gram of the '
+                         'eta and theta solves (lambda_min/max, n_live, lambda_min eigenvector, '
+                         'margin above the live floor) to saved_results/aux_moments/'
+                         '<config>_cond.pt; 0 = off. Diagnostic only, no name tag')
     p.add_argument('--interp_time_terms', action='store_true',
                     help='thomas only: also save r-vector diagnostics of the tau term on the '
                          'interpolant samples (c_I, m_I, mean tau_I); off by default')

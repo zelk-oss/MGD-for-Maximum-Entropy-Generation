@@ -22,7 +22,8 @@
 #   INTERPOLANT, BATCH_SIZE, ACCOUNT, CONSTRAINT, PARTITION, CPUS, NGPUS, MODULE,
 #   SCHEDULE_ARGS (extra time-grid flags passed verbatim, e.g.
 #   "--schedule two_phase --n_bulk 10000" -- see codes/time_schedules.py; empty =
-#   legacy power schedule), PROFILE (true: run under cProfile with CUDA_LAUNCH_BLOCKING=1 so GPU time is
+#   legacy power schedule), REG_MODE (legacy|moment; empty = run_SDE default, moment
+#   with thomas), COND_EVERY (log the per-step Gram conditioning every N steps), PROFILE (true: run under cProfile with CUDA_LAUNCH_BLOCKING=1 so GPU time is
 #   charged to the Python call that launched it; stats written next to the SLURM log
 #   as profile_<exp>_<jobid>_<task>.prof -- timings are for attribution, not speed)
 
@@ -78,6 +79,8 @@ EXTRA_FLAGS=""
 [ "${DEDUPLICATE_FILTERS}" = "true" ] && EXTRA_FLAGS+=" --deduplicate_filters"
 [ "${DEDUPLICATE_FILTERS}" = "true" ] && [ -n "${DEDUP_TOL}" ] && EXTRA_FLAGS+=" --dedup_tol ${DEDUP_TOL}"
 [ -n "${SCHEDULE_ARGS}" ] && EXTRA_FLAGS+=" ${SCHEDULE_ARGS}"
+[ -n "${REG_MODE}" ]    && EXTRA_FLAGS+=" --reg_mode ${REG_MODE}"
+[ -n "${COND_EVERY}" ]  && EXTRA_FLAGS+=" --cond_every ${COND_EVERY}"
 if [ "${SAVE_REG_SYSTEM}" = "true" ]; then
     EXTRA_FLAGS+=" --save_reg_system"
     [ -n "${REG_SYSTEM_DIR}" ] && EXTRA_FLAGS+=" --reg_system_dir ${REG_SYSTEM_DIR}"
