@@ -6,7 +6,8 @@
 # once per task). Already-solved (system, lam) pairs are skipped, so the grid
 # can be extended later by adding values to LAM_LIST and resubmitting.
 #
-# Output: turbulence/saved_results/theta_reg_lamsweep/<config>/lam<lam>_ridge<ridge>[_<mode>][_interp].pt
+# Output: turbulence/saved_results/theta_reg_lamsweep/<config>/lam<lam>_ridge<ridge>[_moment[_guthsched]][_mask].pt
+#         (SELECT=1: one lam_path_ridge<ridge><tag>.pt per system with Theta for every lam)
 
 # Which systems: glob matched inside REG_SYSTEM_DIR (e.g. one potential set)
 SYSTEM_PATTERN="${SYSTEM_PATTERN:-*_lamtune_*.pt}"   # override: SYSTEM_PATTERN="..." bash resolve_lamsweep.sh
@@ -15,20 +16,27 @@ REG_SYSTEM_DIR="${SCRATCH:+${SCRATCH}/MGD-for-Maximum-Entropy-Generation/turbule
 # lam grid: 0 (the unsmoothed per-node solve, the reference lamtune_select.ipynb
 # measures residuals against) plus half-decade steps over 1e-8 .. 1e-3
 LAM_LIST=(${LAMS:-0 1e-8 3e-8 1e-7 3e-7 1e-6 3e-6 1e-5 3e-5 1e-4 3e-4 1e-3})   # override: LAMS="0 1e-4 ..."
-# Energy solved (codes/resolve_theta_reg.py --mode): legacy (old system, wrong-sign
-# time term), fixed (correct centred time term), guth (correct term + Guth et al.'s
-# weights; lam is then a multiplier, 1 = theirs). fixed/guth read m from
-# saved_results/aux_moments/ for systems saved before 2026-09-29; guth needs DIM.
-MODE="${MODE:-legacy}"
+# Energy solved (codes/resolve_theta_reg.py --mode; notes/guth_reg_audit_0930):
+#   moment -- time term Sigma_w Theta_dot = mdot. On systems saved in legacy mode it is
+#             rebuilt from saved_results/aux_moments/ (Sigma = G - m m^T, mdot = finite
+#             difference of barphi_e). SCHEDULE=guth: Guth et al.'s weights (needs DIM).
+#   legacy -- the pre-2026-09-30 tau-based energy (reproduction only).
+# Empty MODE = the system's own mode (legacy for files saved before 2026-09-30).
+MODE="${MODE:-}"
+SCHEDULE="${SCHEDULE:-uniform}"
 DIM="${DIM:-}"
-# Time terms from the walkers (all systems) or the interpolant samples (TIME_SOURCE=
-# interpolant; systems saved from 2026-09-29 on, needs MODE fixed or guth)
-TIME_SOURCE="${TIME_SOURCE:-walkers}"
+# Pin dead potentials to 0 per node: auto (saved live mask if any) | none | system | diag | theta
+# (theta: rebuilt from the run's saved theta_t, which is exactly 0 where the corrector masked)
+MASK="${MASK:-auto}"
+# SELECT=1: lam selection (held-out moment-matching loss + amplitude veto), one file
+SELECT="${SELECT:-0}"
 # Ridge on the data term, M_k += RIDGE * diag(M_k), same for every lam (incl. the
 # lam=0 reference). Needed: with RIDGE=0 every solve failed as singular (job 146575):
-# the M_k/G_k blocks are exactly rank-deficient (statistics with identical gradients),
-# which the in-run per-step solves never saw thanks to their own 0.01 ridge.
-RIDGE="${RIDGE:-1e-6}"
+# the M_k blocks are exactly rank-deficient (statistics with identical gradients).
+# Default = the per-step ridge of the zfloor/long runs (--regularization 1e-4), with
+# which lam = 0 reproduces theta_t except where potentials were masked; set it to the
+# run's --regularization for other runs (the July batch used 1e-2).
+RIDGE="${RIDGE:-1e-4}"
 
 # SLURM (CPU). Peak RAM ~ 2 x system size (~50 GB for nt=40000, r=272); on
 # Jean Zay host memory scales with --cpus-per-task, so CPUS sets the memory too.
@@ -72,7 +80,7 @@ shopt -u nullglob
 if [ ${#FILES[@]} -eq 0 ]; then
     echo "No system files match ${REG_SYSTEM_DIR}/${SYSTEM_PATTERN}"; exit 1
 fi
-echo "Re-solving ${#FILES[@]} systems for ${#LAM_LIST[@]} lam values (ridge ${RIDGE}, mode ${MODE}${DIM:+, dim ${DIM}}, time terms: ${TIME_SOURCE}):"
+echo "Re-solving ${#FILES[@]} systems for ${#LAM_LIST[@]} lam values (ridge ${RIDGE}, mode ${MODE:-from file}, schedule ${SCHEDULE}${DIM:+, dim ${DIM}}, mask ${MASK}, select ${SELECT}):"
 printf '  %s\n' "${FILES[@]##*/}"
 
 JOBID=$(sbatch --parsable <<EOT
@@ -97,7 +105,8 @@ FILES=( ${FILES[@]} )
 python codes/resolve_theta_reg.py "\${FILES[\${SLURM_ARRAY_TASK_ID}]}" \
     --lams ${LAM_LIST[@]} \
     --ridge ${RIDGE} \
-    --mode ${MODE} ${DIM:+--dim ${DIM}} --time_source ${TIME_SOURCE} \
+    ${MODE:+--mode ${MODE}} --schedule ${SCHEDULE} ${DIM:+--dim ${DIM}} \
+    --mask ${MASK} $( [ "${SELECT}" = "1" ] && echo --select ) \
     --results_root "${TURB_DIR}" \
     --diagnose 5 \
     --outdir "${OUT_DIR}"

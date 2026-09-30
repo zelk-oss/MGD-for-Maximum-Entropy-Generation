@@ -170,6 +170,10 @@ def _config_name_parts(args, M, include_seed=True):
         parts.append(f'{args.reg_solver}_nsub{args.n_subsample}')
         if getattr(args, 'reg_ridge', 0.0):
             parts.append(f'ridge{args.reg_ridge}')
+        # the regularised energy (2026-09-30): legacy thomas runs keep their old names
+        if resolve_reg_mode(args) == 'moment':
+            parts.append('moment' if getattr(args, 'reg_schedule', 'uniform') == 'uniform'
+                         else f'moment_{args.reg_schedule}sched')
     # float64 per-step solves change the trajectory, so they get a tag too
     if getattr(args, 'solve_float64', False):
         parts.append('f64')
@@ -312,6 +316,15 @@ def resolve_or_setup_experiment_output(outdir, args, M, device, coarse_grained=F
     return config, exp_dir, fig_dir, potentials_dir, logger, None
 
 
+def resolve_reg_mode(args):
+    """Energy of the time-regularised theta: --reg_mode if given, else 'moment' for
+    the thomas solver and 'legacy' for the dense one (the only mode it has)."""
+    mode = getattr(args, 'reg_mode', None)
+    if mode is None:
+        mode = 'moment' if getattr(args, 'reg_solver', 'dense') == 'thomas' else 'legacy'
+    return mode
+
+
 def run_experiment(args, M, config, x1, filters, t, logger, outdir, device,
                    filters_Q=None, filters_Phi=None, normalize_potentials=False,
                    potentials_save_dir=None, adaptive=None,
@@ -377,7 +390,12 @@ def run_experiment(args, M, config, x1, filters, t, logger, outdir, device,
         reg_system_path=reg_system_path,
         solve_reg=solve_reg,
         adaptive=adaptive,
+        reg_mode=resolve_reg_mode(args),
+        reg_schedule=getattr(args, 'reg_schedule', 'uniform'),
+        interp_time_terms=getattr(args, 'interp_time_terms', False),
     )
+    logger.info('Theta_reg energy: %s (schedule %s)', resolve_reg_mode(args),
+                getattr(args, 'reg_schedule', 'uniform'))
     logger.info('SDE integration finished in %.1f s', timer.time() - t0)
     if adaptive is not None:
         t = Solver.t

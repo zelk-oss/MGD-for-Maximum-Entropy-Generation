@@ -1,0 +1,87 @@
+[C1 sigma=10.0] FP done (38s); max moment err 1.3e-12; ||theta_t - theta_ME||_G / ||theta_ME||_G = 1.34e-03
+  n=1000 done (155s)
+  n=4000 done (288s)
+  n=16000 done (450s)
+[C1 sigma=2.0] FP done (532s); max moment err 3.7e-13; ||theta_t - theta_ME||_G / ||theta_ME||_G = 3.76e-02
+  n=1000 done (650s)
+  n=4000 done (777s)
+  n=16000 done (944s)
+[C2 sigma=10.0] done (1343s)
+[C2 sigma=2.0] done (1741s)
+
+errors (relative, Fisher metric, 0.05 <= t <= 0.95)
+case  sig      n estimator        ref          lam=0   oracle  lam_or  selected  lam_sel   chi2
+C1     10   1000 legacy/uniform   theta_t     0.5027   0.4531   1e-03    0.4535   0.0001    0.7
+C1     10   1000 legacy/uniform   theta_ME    0.5022   0.4525   1e-03    0.4529   0.0001    0.7
+C1     10   1000 moment/uniform   theta_t     0.5027   0.3848   1e+01    0.4510     0.01   0.71
+C1     10   1000 moment/uniform   theta_ME    0.5022   0.3846   1e+01    0.4504     0.01   0.71
+C1     10   1000 moment/guth      theta_t     0.5027   0.1288   1e+02    0.4481      0.1   0.69
+C1     10   1000 moment/guth      theta_ME    0.5022   0.1283   1e+02    0.4475      0.1   0.69
+C1     10   4000 legacy/uniform   theta_t     0.4310   0.4178   1e-04    0.4182    1e-05   0.61
+C1     10   4000 legacy/uniform   theta_ME    0.4304   0.4172   1e-04    0.4177    1e-05   0.61
+C1     10   4000 moment/uniform   theta_t     0.4310   0.3458   1e+00    0.4174    0.001   0.66
+C1     10   4000 moment/uniform   theta_ME    0.4304   0.3453   1e+00    0.4168    0.001   0.66
+C1     10   4000 moment/guth      theta_t     0.4310   0.0897   1e+02    0.4127      0.1   0.65
+C1     10   4000 moment/guth      theta_ME    0.4304   0.0898   1e+02    0.4121      0.1   0.65
+C1     10  16000 legacy/uniform   theta_t     0.4116   0.4081   1e-04    0.4086    1e-06   0.41
+C1     10  16000 legacy/uniform   theta_ME    0.4110   0.4075   1e-04    0.4080    1e-06   0.41
+C1     10  16000 moment/uniform   theta_t     0.4116   0.3325   1e+00    0.4078    0.001   0.66
+C1     10  16000 moment/uniform   theta_ME    0.4110   0.3320   1e+00    0.4072    0.001   0.66
+C1     10  16000 moment/guth      theta_t     0.4116   0.0841   1e+02    0.4075     0.01   0.63
+C1     10  16000 moment/guth      theta_ME    0.4110   0.0844   1e+02    0.4069     0.01   0.63
+C1      2   1000 legacy/uniform   theta_t     1.2970   0.1504   1e-03    0.1504    0.001   1.27
+C1      2   1000 legacy/uniform   theta_ME    1.3350   0.1478   1e-03    0.1478    0.001   1.27
+C1      2   1000 moment/uniform   theta_t     1.2970   0.0894   1e+02    0.0951      1.0   1.29
+C1      2   1000 moment/uniform   theta_ME    1.3350   0.0859   1e+01    0.0868      1.0   1.29
+C1      2   1000 moment/guth      theta_t     1.2970   0.1045   1e+00    0.1176     10.0   1.23
+C1      2   1000 moment/guth      theta_ME    1.3350   0.0957   1e+00    0.1136     10.0   1.23
+C1      2   4000 legacy/uniform   theta_t     0.6522   0.0706   1e-03    0.0706    0.001   1.28
+C1      2   4000 legacy/uniform   theta_ME    0.6733   0.0850   1e-03    0.0850    0.001   1.28
+C1      2   4000 moment/uniform   theta_t     0.6522   0.0272   1e-01    0.0272      0.1   1.25
+C1      2   4000 moment/uniform   theta_ME    0.6733   0.0519   1e-01    0.0519      0.1   1.25
+C1      2   4000 moment/guth      theta_t     0.6522   0.0342   1e+00    0.1119     10.0   1.14
+C1      2   4000 moment/guth      theta_ME    0.6733   0.0566   1e+00    0.1253     10.0   1.14
+C1      2  16000 legacy/uniform   theta_t     0.3385   0.0562   1e-03    0.0648   0.0001   1.06
+C1      2  16000 legacy/uniform   theta_ME    0.3524   0.0770   1e-03    0.0842   0.0001   1.06
+C1      2  16000 moment/uniform   theta_t     0.3385   0.0438   1e-01    0.0455     0.01   1.12
+C1      2  16000 moment/uniform   theta_ME    0.3524   0.0682   1e-01    0.0693     0.01   1.12
+C1      2  16000 moment/guth      theta_t     0.3385   0.0498   1e-01    0.0503      1.0   1.02
+C1      2  16000 moment/guth      theta_ME    0.3524   0.0724   1e-01    0.0739      1.0   1.02
+C2     10   1000 legacy/uniform   exact       0.2272   0.1989   1e-04    0.2000    1e-05   0.58
+C2     10   1000 moment/uniform   exact       0.2272   0.1553   1e+02    0.1967     0.01   0.66
+C2     10   1000 moment/guth      exact       0.2272   0.0985   1e+02    0.1941      0.1   0.64
+C2     10   4000 legacy/uniform   exact       0.1768   0.1688   1e-05    0.1688    1e-05   0.62
+C2     10   4000 moment/uniform   exact       0.1768   0.1283   1e+02    0.1681    0.001   0.62
+C2     10   4000 moment/guth      exact       0.1768   0.0519   1e+02    0.1641      0.1   0.63
+C2     10  16000 legacy/uniform   exact       0.1525   0.1501   1e-05    0.1505    1e-06   0.38
+C2     10  16000 moment/uniform   exact       0.1525   0.1147   1e+01    0.1484     0.01   0.66
+C2     10  16000 moment/guth      exact       0.1525   0.0376   1e+02    0.1495     0.01    0.6
+C2      2   1000 legacy/uniform   exact       0.7098   0.0905   1e-03    0.0905    0.001    1.0
+C2      2   1000 moment/uniform   exact       0.7098   0.0649   1e+02    0.0649    100.0   1.01
+C2      2   1000 moment/guth      exact       0.7098   0.0641   1e+01    0.0641     10.0    1.0
+C2      2   4000 legacy/uniform   exact       0.3474   0.0276   1e-03    0.0276    0.001   0.99
+C2      2   4000 moment/uniform   exact       0.3474   0.0173   1e+00    0.0173      1.0   0.95
+C2      2   4000 moment/guth      exact       0.3474   0.0177   1e+00    0.0250     10.0   0.95
+C2      2  16000 legacy/uniform   exact       0.1813   0.0180   1e-03    0.0249   0.0001   1.07
+C2      2  16000 moment/uniform   exact       0.1813   0.0141   1e-01    0.0141      0.1    1.2
+C2      2  16000 moment/guth      exact       0.1813   0.0156   1e+00    0.0156      1.0   1.02
+
+B4 noise model: E[z^2] per component (1 if the model holds), lag-1 autocorrelation (0 if white)
+C1   sigma=  10 n=  1000 nt= 2000  E[z^2]=[1.04, 12.54, 1.29, 19.78]  lag1=[0.184, 0.915, 0.424, 0.956]  mean z=[-0.03, -2.21, -0.57, -2.76]
+C1   sigma=  10 n=  4000 nt= 2000  E[z^2]=[2.46, 37.5, 3.78, 59.06]  lag1=[0.592, 0.972, 0.767, 0.986]  mean z=[-0.71, -3.86, -1.29, -4.58]
+C1   sigma=  10 n= 16000 nt= 2000  E[z^2]=[5.01, 133.59, 10.3, 229.89]  lag1=[0.737, 0.99, 0.93, 0.995]  mean z=[-1.3, -7.16, -1.88, -9.05]
+C1   sigma=  10 n=  4000 nt= 1000  E[z^2]=[19.34, 395.45, 30.31, 574.19]  lag1=[0.933, 0.993, 0.939, 0.993]  mean z=[-2.62, -12.68, -3.63, -15.13]
+C1   sigma=  10 n=  4000 nt= 4000  E[z^2]=[1.09, 4.53, 1.08, 6.72]  lag1=[0.137, 0.715, 0.311, 0.844]  mean z=[-0.26, -1.3, -0.39, -1.71]
+C1   sigma=   2 n=  1000 nt= 2000  E[z^2]=[1.04, 1.04, 1.0, 0.95]  lag1=[0.001, 0.021, 0.033, -0.014]  mean z=[0.09, -0.06, -0.01, -0.07]
+C1   sigma=   2 n=  4000 nt= 2000  E[z^2]=[0.98, 0.94, 1.0, 0.97]  lag1=[0.017, -0.034, 0.05, 0.051]  mean z=[0.0, 0.04, 0.03, 0.01]
+C1   sigma=   2 n= 16000 nt= 2000  E[z^2]=[1.06, 1.02, 1.04, 1.03]  lag1=[0.002, -0.027, -0.022, -0.002]  mean z=[0.09, 0.1, 0.11, 0.09]
+C1   sigma=   2 n=  4000 nt= 1000  E[z^2]=[0.99, 0.96, 0.99, 0.85]  lag1=[-0.032, -0.035, 0.02, -0.032]  mean z=[0.06, -0.1, -0.01, -0.18]
+C1   sigma=   2 n=  4000 nt= 4000  E[z^2]=[0.98, 1.02, 1.01, 0.97]  lag1=[-0.004, -0.013, 0.025, -0.022]  mean z=[0.03, -0.04, 0.02, -0.05]
+C2   sigma=  10 n=  1000 nt= 2000  E[z^2]=[3.36]  lag1=[0.64]  mean z=[-1.29]
+C2   sigma=  10 n=  4000 nt= 2000  E[z^2]=[7.96]  lag1=[0.818]  mean z=[-2.19]
+C2   sigma=  10 n= 16000 nt= 2000  E[z^2]=[23.43]  lag1=[0.93]  mean z=[-3.85]
+C2   sigma=   2 n=  1000 nt= 2000  E[z^2]=[1.01]  lag1=[0.018]  mean z=[-0.06]
+C2   sigma=   2 n=  4000 nt= 2000  E[z^2]=[0.95]  lag1=[-0.04]  mean z=[0.03]
+C2   sigma=   2 n= 16000 nt= 2000  E[z^2]=[1.01]  lag1=[-0.036]  mean z=[0.07]
+
+total 1741s

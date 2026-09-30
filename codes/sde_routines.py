@@ -72,34 +72,60 @@ def loop_budget_s(time_limit_min, reserve_min=30.0, reserve_frac=0.1):
     return 60.0 * (time_limit_min - min(reserve_min, reserve_frac * time_limit_min))
 
 
-def reg_energy_weights(t, lam, mode='legacy', dim=None):
-    """Weights (a, q, l) of the discrete energy solved by SDE._solve_regularised_thomas:
-
-        E = sum_k a_k (1/2 Theta_k^T M_k Theta_k - b_k^T Theta_k)
-          + sum_k [ q_k/2 dTheta_k^T C_k dTheta_k + l_k ct_k^T dTheta_k ].
-
-    a: (n,) per node, q, l: (n-1,) per cell [t_k, t_k+1]. See that method for the modes.
-    """
+def trapezoid_node_weights(t):
+    """Trapezoid quadrature weights h_k of the nodes t (sum = t[-1] - t[0])."""
     t = np.asarray(t, dtype=np.float64)
     n, dt = len(t), np.diff(t)
-    if mode in ('legacy', 'fixed'):
-        a = np.ones(n)
-        q = lam / dt ** 2
-        l = (-lam / dt) if mode == 'legacy' else (lam / dt)
-        return a, q, l
-    if mode != 'guth':
-        raise ValueError(f"mode must be 'legacy', 'fixed' or 'guth', got {mode!r}")
-    if dim is None:
-        raise ValueError("mode='guth' needs dim (the signal dimension d)")
-    adot = np.pi / 2.0
-    h = np.empty(n)                                   # trapezoid node weights
+    h = np.empty(n)
     if n == 1:
         h[0] = 1.0
     else:
         h[0], h[-1] = dt[0] / 2, dt[-1] / 2
         h[1:-1] = (dt[:-1] + dt[1:]) / 2
+    return h
+
+
+def reg_energy_weights(t, lam, mode='legacy', dim=None, schedule='uniform'):
+    """Weights (a, q, l) of the discrete energy solved by SDE._solve_regularised_thomas
+    (CODE sign, theta_code = -theta_MGD):
+
+        E = sum_k a_k (1/2 Theta_k^T M_k Theta_k - b_k^T Theta_k)
+          + sum_k [ q_k/2 dTheta_k^T C_k dTheta_k + l_k ct_k^T dTheta_k ].
+
+    a: (n,) per node, q, l: (n-1,) per cell [t_k, t_k+1].
+
+      'legacy' -- a = 1, q = lam/dt^2, l = -lam/dt: unweighted sums over nodes and cells
+                  (kept so old runs reproduce; on a non-uniform grid the node density
+                  acts as a weight).
+      'moment' -- quadrature in t. Per cell the time term is
+                  lam w_T dt [1/2 Th'^T C Th' + ct^T Th'].
+                  schedule 'uniform' (default): a = h_k (trapezoid), w_T = 1, i.e.
+                      int_0^1 [data(t) + lam (1/2 Th'^T C Th' + ct^T Th')] dt.
+                  schedule 'guth': Guth et al. (2025, eq. 8) weights mapped to the Cos
+                      schedule (noise variance s = cot^2 a, p(s) ∝ 1/s):
+                      a = h_k w_D(t_k),  w_D = 2 adot cos a / (d sin a)
+                      w_T(t_{k+1/2}) = sin a cos a / (2 adot d^2),
+                      lam_eff = w_T / w_D = sin^2(pi t/2) / (pi^2 d); lam is a multiplier.
+                      A comparison option, not the default. (The 2026-09-29 version had
+                      w_D = 2 adot cos a/(d sin^3 a): it missed the factor sin^2 a from
+                      grad_y = sin a grad_x, notes/guth_reg_audit_0930.)
+    """
+    t = np.asarray(t, dtype=np.float64)
+    n, dt = len(t), np.diff(t)
+    if mode == 'legacy':
+        return np.ones(n), lam / dt ** 2, -lam / dt
+    if mode != 'moment':
+        raise ValueError(f"mode must be 'legacy' or 'moment', got {mode!r}")
+    h = trapezoid_node_weights(t)
+    if schedule == 'uniform':
+        return h, lam / dt, lam * np.ones(n - 1)
+    if schedule != 'guth':
+        raise ValueError(f"schedule must be 'uniform' or 'guth', got {schedule!r}")
+    if dim is None:
+        raise ValueError("schedule='guth' needs dim (the signal dimension d)")
+    adot = np.pi / 2.0
     a_node = adot * t
-    w_D = 2 * adot * np.cos(a_node) / (dim * np.sin(a_node) ** 3)       # |ds/dt| / d
+    w_D = 2 * adot * np.cos(a_node) / (dim * np.sin(a_node))            # sin^2 a |ds/dt| / d
     a_mid = adot * (t[:-1] + t[1:]) / 2
     w_T = np.sin(a_mid) * np.cos(a_mid) / (2 * adot * dim ** 2)         # s / (d^2 |ds/dt|)
     return h * w_D, lam * w_T / dt, lam * w_T
@@ -541,20 +567,35 @@ class SDE(torch.nn.Module):
     def forward_regularised(self, lam=1.0, n_subsample=1, param_storage_frequency=1,
                              time_limit_min=None, reg_solver='dense', reg_ridge=0.0,
                              reg_system_path=None, solve_reg=True, adaptive=None,
-                             reg_mode='legacy', interp_time_terms=True):
+                             reg_mode='legacy', interp_time_terms=False, reg_schedule='uniform'):
         """
-        As forward, but stores the regularised-problem quantities ON THE WALKERS X_t = x_k
-        and solves A Theta = f (section 4) on a coarse grid after the loop.
+        As forward, but stores the quantities of the time-regularised problem per node
+        and solves A Theta = f (see _solve_regularised_thomas) on a coarse grid after
+        the loop. The SDE evolution is unchanged. t = 0 and t = 1 are skipped.
 
-        Everything is tied to the walker. phi and grad phi are evaluated at X_t, and the
-        data endpoint is reconstructed from the interpolant relation
-            X = (X_t - cos(a_t) Z) / sin(a_t),     Z = x_0,
-        so x_1 never enters. The space target simplifies to Z/cos. t = 0 is skipped
-        (sin = 0). The SDE evolution is unchanged. Needs n_rep == nb_interpolants to pair
-        X_t with Z.
+        Sign: CODE sign throughout, theta_code = -theta_MGD.
+
+        Per node t_{k+1} (both modes): M_k = G(y_k) = E[grad phi grad phi^T] at the
+        predicted walkers y_k (the corrector's matrix) and b_k = (m_{t_{k+1}} -
+        phibar(y_k)) / (h sigma^2), so the per-node minimiser is the corrector's theta_k.
+        Time term, by reg_mode:
+          'legacy' -- G = E[phi phi^T] and c = E[phi tau] at y_k, with
+                      tau = -adot [tan a (d - |Z|^2) + Z.X_eff], Z = x_0,
+                      X_eff = (y_k - cos a Z)/sin a. NOTE: the walkers are NOT paired with
+                      Z: x_k and x_0 are independent draws (run_experiment passes
+                      neither), so E[tau | y_k] = adot d cot a is a constant and c carries
+                      no information on theta_dot (notes/guth_reg_audit_0930). Kept only
+                      so old runs reproduce; tau is computed in this mode only.
+          'moment' -- Sigma_w = Cov(phi) at the moment-matched walkers x_{k+1},
+                      accumulated centred in float64 (stored float32), m_w = E[phi(x_{k+1})]
+                      (float64) and mdot = d/dt E[phi(I_t)] at t_{k+1}, the pathwise
+                      estimate the predictor already uses (dt_phi_I_k); plus the per-step
+                      live mask of the corrector and the step h. No tau.
+        Both modes are solved by _solve_regularised_thomas with the same mode;
+        reg_schedule ('uniform' | 'guth') picks the moment-mode weights.
 
         Coarse grid keeps the points t[n_subsample*j]; metrics and second members are
-        averaged over the n_subsample neighbouring (valid) fine steps.
+        averaged over the n_subsample neighbouring (valid) fine steps (live: AND).
 
         Returns (..., Theta_reg, t_reg): t_reg is the actual (non-uniform) coarse
         time grid Theta_reg was solved on -- distinct from the fine grid `t` passed
@@ -568,27 +609,22 @@ class SDE(torch.nn.Module):
           'dense'  -- legacy: dense (n*r)^2 float32 solve on the device, with
                       self.regularization added after Jacobi scaling, and nodes
                       closer than ~1e-5 cut. Unchanged, so old runs reproduce.
+                      Only reg_mode='legacy'.
           'thomas' -- block-Thomas in float64 on CPU, O(n r^2) memory, no Schur
                       ridge, only exact-duplicate times cut. Per-block matrices
                       are offloaded to CPU during the loop, so n_subsample=1
-                      (no block averaging, Guth's system on the full grid) fits.
+                      (no block averaging) fits.
         reg_ridge (thomas only): M_k += reg_ridge * diag(M_k), a ridge on the data
-        term of the original problem; 0 disables it.
-        reg_mode (thomas only): 'legacy' | 'fixed' | 'guth', the energy solved, see
-        _solve_regularised_thomas ('legacy' has the wrong-sign time term, kept so old
-        runs reproduce). The saved system also holds m = E[phi] and the mean of tau
-        per node (since 2026-09-29), so any mode can be solved offline.
-        interp_time_terms (thomas only, default on): also accumulate the time terms on
-        the interpolant samples I_t (G_I, c_I, m_I, mean tau_I; true (Z, x_1) pairs, as
-        in Guth et al.'s TSM) and save them with the system. Costs one r x r product
-        per step and one more r x r block per node in host RAM and on disk (~+50%
-        system size); resolve_theta_reg.py --time_source interpolant uses them.
+        term of the original problem; 0 disables it. Equal to the per-step solve when
+        reg_ridge = self.regularization.
+        interp_time_terms (thomas only, default OFF since 2026-09-30): also save the
+        r-vector diagnostics c_I = E[phi(I) tau_I], m_I, mean tau_I on the interpolant
+        samples (true (Z, x_1) pairs; -c_I is a noisy estimate of mdot). No r x r block.
 
-        reg_system_path: if set, the assembled system (t_reg, M, G, b, c on the grid
-        the solver sees) is written there BEFORE the solve, so lam can be re-tuned
-        offline (codes/resolve_theta_reg.py) without re-running the SDE -- lam never
-        enters the SDE evolution. solve_reg=False skips the in-run solve (Theta_reg
-        is returned as None); only meaningful together with reg_system_path.
+        reg_system_path: if set, the assembled system is written there BEFORE the solve,
+        so lam can be re-tuned offline (codes/resolve_theta_reg.py) without re-running
+        the SDE -- lam never enters the SDE evolution. solve_reg=False skips the in-run
+        solve (Theta_reg is returned as None); only meaningful with reg_system_path.
 
         adaptive: an AdaptiveStepController (codes/time_schedules.py) or None. If set,
         self.t is replaced by a float64 grid built step by step: t[k+1] is chosen from
@@ -600,6 +636,8 @@ class SDE(torch.nn.Module):
         assert self.interpolant == 'Cos', "this routine assumes the Cos schedule"
         if reg_solver not in ('dense', 'thomas'):
             raise ValueError(f"reg_solver must be 'dense' or 'thomas', got {reg_solver!r}")
+        if reg_mode not in ('legacy', 'moment'):
+            raise ValueError(f"reg_mode must be 'legacy' or 'moment', got {reg_mode!r}")
         if reg_solver == 'dense' and reg_ridge:
             raise ValueError("reg_ridge is only implemented for reg_solver='thomas'")
         if reg_solver == 'dense' and reg_mode != 'legacy':
@@ -608,34 +646,51 @@ class SDE(torch.nn.Module):
         if not solve_reg and reg_system_path is None:
             raise ValueError("solve_reg=False without reg_system_path would discard the "
                              "regularised system entirely")
+        legacy = reg_mode == 'legacy'
         # thomas: keep per-block matrices on CPU so the full fine grid fits
         store = (lambda x: x.detach().cpu()) if reg_solver == 'thomas' else (lambda x: x)
-        assert self.x_k.shape[0] == self.x_0.shape[0], "need n_rep == nb_interpolants to pair X_t with Z"
+        if legacy:
+            # elementwise tau(y_k^i; x_0^i) needs equal shapes. The walkers are NOT
+            # paired with x_0 (independent draws), see the docstring.
+            assert self.x_k.shape[0] == self.x_0.shape[0], \
+                "legacy walker tau needs n_rep == nb_interpolants (x_k and x_0 are NOT paired)"
         #self.fit(self.x_1)
-        #self._sync_potential_dims()  
+        #self._sync_potential_dims()
 
         x0  = self.x_0
         B   = x0.shape[0]
         d   = int(np.prod(x0.shape[1:]))
         z2  = x0.reshape(B, -1).pow(2).sum(1)              # ||Z||^2  (fixed, Z = x_0)
         adot, eps = np.pi / 2.0, 1e-8
-        eye = torch.eye(self.num_potentials).to(self.device)
 
         barphi_e = [self.compute_moments(self.x_0).mean(0)]
         barphi_p = [self.compute_moments(self.x_k).mean(0)]
         eta_k_list, theta_k_list, dH_k_list = [], [], []
-        M, Gf, bb, cc, t_used = [], [], [], [], []
-        mm, taum = [], []            # E[phi], mean tau per node: centre G, c (2026-09-29)
-        accM = accG = accb = accc = accm = acctau = None
-        # interpolant-side time terms (G_I, c_I, m_I, mean tau_I), thomas path only
-        # (the dense path keeps its blocks on the device)
+        # per-node quantities: name -> list; acc: name -> running block sum
+        keys = (['M', 'G', 'b', 'c', 'm', 'tau_mean'] if legacy else
+                ['M', 'Sigma', 'b', 'mdot', 'm', 'live', 'h'])
         interp_time_terms = bool(interp_time_terms) and reg_solver == 'thomas'
-        GI, cI, mI, tauI_m = [], [], [], []
-        accGI = acccI = accmI = acctI = None
+        if interp_time_terms:
+            keys = keys + ['diag_c_I', 'diag_m_I', 'diag_tau_mean_I']
+        nodes = {kk: [] for kk in keys}
+        acc = {}
+        t_used = []
         zx01 = (x0 * self.x_1).reshape(B, -1).sum(1) if interp_time_terms else None   # Z . x_1
         cnt = 0
 
-  
+        def flush():
+            for kk in keys:
+                v = acc[kk]
+                if kk == 'live':
+                    nodes[kk].append(store(v))
+                elif kk in ('tau_mean', 'diag_tau_mean_I', 'h'):
+                    nodes[kk].append(float(v / cnt))
+                elif kk == 'Sigma':
+                    # accumulated centred in float64; kept float32 like M (the saved copy
+                    # is float32 too, so an offline re-solve reproduces the in-run one)
+                    nodes[kk].append(store((v / cnt).float()))
+                else:
+                    nodes[kk].append(store(v / cnt))
 
         if adaptive is not None:
             if param_storage_frequency != 1:
@@ -668,62 +723,64 @@ class SDE(torch.nn.Module):
             if mom_y is None or mom_I is None:
                 mom_y, mom_I = self.compute_moments(y_k), self.compute_moments(I_k)
             self._mom_x = self._mom_I = None                  # never reused by a later step
+            # phi(x_{k+1}) (walkers after the corrector): the moment mode's covariance
+            # and barphi_p; computed once per step when either needs it
+            store_step = (k + 1) % param_storage_frequency == 0
+            mom_x1 = self.compute_moments(self.x_k) if (store_step or not legacy) else None
 
             if sin_k > eps and cos_k > eps:                # skip t = 0 (sin = 0), t = 1 (cos = 0)
-                Xt    = y_k                                           # predicted walkers at target time
-                mom   = mom_y                                          # phi(y_k)              (B, r)
                 # raw Gram at y_k. CHANGED 2026-09-25: was self.compute_G(Xt), an exact
                 # repeat of the G(y_k) that compute_theta just computed for the corrector
                 # (Xt is y_k); reused instead: identical values, ~17% of the step at
                 # n1=8500 (profile_step.sh).
                 Mk    = self._G_theta
-                #if self.regularization != 0:
-                #    Mk = Mk + self.regularization * torch.diag(torch.diag(Mk))
-
-                Gk    = mom.T @ mom / B                                # moment Gram at y_k
                 bk    = bk / (h * self.sigma**2)  # phi_bar(I_{k+1}) - phi_bar(y_k)
-                X_eff = (Xt - cos_k * x0) / sin_k                      # X = (X_t - cos a Z)/sin a
-                zx    = (x0 * X_eff).reshape(B, -1).sum(1)             # Z . X                 (B,)
-                tau   = -adot * (tan_k * (d - z2) + zx)                # tau_k^i               (B,)
-                ck    = torch.einsum('br,b->r', mom, tau) / B          # E[phi(y_k) tau]
-
-                mk    = mom.mean(0)                                    # E[phi(y_k)]
-                tk    = tau.mean()                                     # mean tau (E = 0)
+                if legacy:
+                    mom   = mom_y                                          # phi(y_k)              (B, r)
+                    Gk    = mom.T @ mom / B                                # moment Gram at y_k
+                    X_eff = (y_k - cos_k * x0) / sin_k                     # (y_k - cos a Z)/sin a
+                    zx    = (x0 * X_eff).reshape(B, -1).sum(1)             # Z . X_eff             (B,)
+                    tau   = -adot * (tan_k * (d - z2) + zx)                # tau_k^i               (B,)
+                    ck    = torch.einsum('br,b->r', mom, tau) / B          # E[phi(y_k) tau]
+                    new = {'M': Mk, 'G': Gk, 'b': bk, 'c': ck, 'm': mom.mean(0), 'tau_mean': tau.mean()}
+                else:
+                    mom1  = mom_x1.double()                                # phi(x_{k+1})     (B, r)
+                    m1    = mom1.mean(0)
+                    dev1  = mom1 - m1
+                    Sk    = dev1.T @ dev1 / B                              # centred, float64
+                    cache = self._rhs_dt_cache                             # (k+1, dt_phi_I at t_{k+1})
+                    assert cache is not None and cache[0] == k + 1
+                    live_k = getattr(self, '_live_theta', None)
+                    if live_k is None:
+                        live_k = torch.ones(self.num_potentials, dtype=torch.bool, device=Mk.device)
+                    new = {'M': Mk, 'Sigma': Sk, 'b': bk, 'mdot': cache[1].reshape(-1).double(),
+                           'm': m1, 'live': live_k.clone(),
+                           'h': torch.as_tensor(float(h), dtype=torch.float64)}
                 if interp_time_terms:
-                    # the same time terms on the interpolant samples I_{k+1} =
-                    # cos a Z + sin a x_1: true (Z, x_1) pairs, so tau is the exact
-                    # conditional time score of Guth et al.'s TSM (on the walkers,
-                    # X_eff is reconstructed and E[tau] need not vanish)
-                    tauI  = -adot * (tan_k * (d - z2) + zx01)          # (B,)
-                    GIk   = mom_I.T @ mom_I / B
-                    cIk   = torch.einsum('br,b->r', mom_I, tauI) / B
-                    mIk, tIk = mom_I.mean(0), tauI.mean()
+                    # diagnostics on the interpolant samples I_{k+1} = cos a Z + sin a x_1
+                    # (true pairs): E[tau_I] = 0 and E[phi tau_I] = -mdot in expectation
+                    tauI = -adot * (tan_k * (d - z2) + zx01)
+                    new.update({'diag_c_I': torch.einsum('br,b->r', mom_I, tauI) / B,
+                                'diag_m_I': mom_I.mean(0), 'diag_tau_mean_I': tauI.mean()})
 
                 if cnt == 0:
                     t_used.append(t_node)                             # coarse node at target time
-                    accM, accG, accb, accc = Mk.clone(), Gk.clone(), bk.clone(), ck.clone()
-                    accm, acctau = mk.clone(), tk.clone()
-                    if interp_time_terms:
-                        accGI, acccI, accmI, acctI = GIk.clone(), cIk.clone(), mIk.clone(), tIk.clone()
+                    acc = {kk: v.clone() for kk, v in new.items()}
                 else:
-                    accM += Mk; accG += Gk; accb += bk; accc += ck
-                    accm += mk; acctau += tk
-                    if interp_time_terms:
-                        accGI += GIk; acccI += cIk; accmI += mIk; acctI += tIk
+                    for kk, v in new.items():
+                        if kk == 'live':
+                            acc[kk] &= v
+                        else:
+                            acc[kk] += v
                 cnt += 1
                 if cnt == n_subsample:
-                    M.append(store(accM / cnt)); Gf.append(store(accG / cnt))
-                    bb.append(store(accb / cnt)); cc.append(store(accc / cnt))
-                    mm.append(store(accm / cnt)); taum.append(float(acctau / cnt))
-                    if interp_time_terms:
-                        GI.append(store(accGI / cnt)); cI.append(store(acccI / cnt))
-                        mI.append(store(accmI / cnt)); tauI_m.append(float(acctI / cnt))
+                    flush()
                     cnt = 0
 
-            if (k + 1) % param_storage_frequency == 0:
+            if store_step:
                 eta_k_list.append(eta_k); theta_k_list.append(theta_k); dH_k_list.append(dH_k)
                 barphi_e.append(mom_I.mean(0))                         # phi(I_k), I_k = I(t_{k+1})
-                barphi_p.append(self.compute_moments(self.x_k).mean(0))
+                barphi_p.append(mom_x1.mean(0))
 
             if adaptive is None:
                 self._check_time_budget(loop_t0, k + 1, time_limit_min)
@@ -746,14 +803,7 @@ class SDE(torch.nn.Module):
             print(adaptive.summary())
 
         if cnt > 0:                                                    # final partial block
-            M.append(store(accM / cnt)); Gf.append(store(accG / cnt))
-            bb.append(store(accb / cnt)); cc.append(store(accc / cnt))
-            mm.append(store(accm / cnt)); taum.append(float(acctau / cnt))
-            if interp_time_terms:
-                GI.append(store(accGI / cnt)); cI.append(store(acccI / cnt))
-                mI.append(store(accmI / cnt)); tauI_m.append(float(acctI / cnt))
-
-        #Theta_reg_thomas = self._solve_regularised_thomas(t_used[1:], M[1:], Gf[1:], bb[1:], cc[1:], lam)
+            flush()
 
         print("Loop finished")
         self._print_memory("After loop")
@@ -763,17 +813,15 @@ class SDE(torch.nn.Module):
 
         # dense: the ~1e-5 cut keeps its float32 solve conditioned (legacy behaviour).
         # thomas (float64): drop only exact-duplicate times, which would give dt = 0.
-        extra = (mm[1:], taum[1:])
-        if interp_time_terms:
-            extra = extra + (GI[1:], cI[1:], mI[1:], tauI_m[1:])
-        t_reg, M_reg, Gf_reg, bb_reg, cc_reg, mm_reg, taum_reg, *interp_reg = \
-            self._cut_close_time_nodes(
-                t_used[1:], M[1:], Gf[1:], bb[1:], cc[1:],
-                min_dt=1e-12 if reg_solver == 'thomas' else None,
-                extra=extra,
-            )
-        interp = (dict(zip(('G_I', 'c_I', 'm_I', 'tau_mean_I'), interp_reg))
-                  if interp_time_terms else None)
+        # The first node is dropped from the system (as before 2026-09-30).
+        blk, vec = ('G', 'c') if legacy else ('Sigma', 'mdot')
+        rest = [kk for kk in keys if kk not in ('M', blk, 'b', vec)]
+        t_reg, M_reg, C_reg, b_reg, v_reg, *rest_reg = self._cut_close_time_nodes(
+            t_used[1:], nodes['M'][1:], nodes[blk][1:], nodes['b'][1:], nodes[vec][1:],
+            min_dt=1e-12 if reg_solver == 'thomas' else None,
+            extra=[nodes[kk][1:] for kk in rest],
+        )
+        sysd = {'M': M_reg, blk: C_reg, 'b': b_reg, vec: v_reg, **dict(zip(rest, rest_reg))}
 
         print("Dropped close-in-time nodes:", len(t_used) - 1 - len(t_reg))
         print("Last times:", t_reg[-5:])
@@ -784,10 +832,10 @@ class SDE(torch.nn.Module):
             # this method returns, so an exception here (SCRATCH quota, I/O error, memory
             # while writing ~40 GB) would lose the whole run. Log it and carry on.
             try:
-                self._save_reg_system(reg_system_path, t_reg, M_reg, Gf_reg, bb_reg, cc_reg,
-                                      m=mm_reg, tau_mean=taum_reg, interp=interp,
+                self._save_reg_system(reg_system_path, t_reg, sysd,
                                       lam=lam, n_subsample=n_subsample, reg_solver=reg_solver,
-                                      reg_mode=reg_mode, dim=d)
+                                      reg_mode=reg_mode, dim=d, n_walkers=int(self.x_k.shape[0]),
+                                      sigma=float(self.sigma), regularization=float(self.regularization))
             except Exception as e:
                 import traceback
                 traceback.print_exc()
@@ -800,11 +848,12 @@ class SDE(torch.nn.Module):
                   "solve offline with codes/resolve_theta_reg.py")
             Theta_reg = None
         elif reg_solver == 'thomas':
+            live_reg = torch.stack(sysd['live']) if not legacy else None
             Theta_reg = self._solve_regularised_thomas(
-                t_reg, M_reg, Gf_reg, bb_reg, cc_reg, lam, ridge=reg_ridge,
-                mode=reg_mode, m=mm_reg, tau_mean=taum_reg, dim=d)
+                t_reg, M_reg, C_reg, b_reg, v_reg, lam, ridge=reg_ridge,
+                mode=reg_mode, dim=d, schedule=reg_schedule, live=live_reg)
         else:
-            Theta_reg = self._solve_regularised(t_reg, M_reg, Gf_reg, bb_reg, cc_reg, lam)
+            Theta_reg = self._solve_regularised(t_reg, M_reg, C_reg, b_reg, v_reg, lam)
 
         self._print_memory("After _solve_regularised")
 
@@ -840,16 +889,14 @@ class SDE(torch.nn.Module):
             np.asarray(t_reg[1:], dtype=float),
         )
 
-    def _save_reg_system(self, path, t, M, Gf, bb, cc, m=None, tau_mean=None, interp=None,
-                         **meta):
+    def _save_reg_system(self, path, t, sysd, **meta):
         """
-        Write the regularised system A Theta = f exactly as the solver receives it:
-        grid t (float64) and per-node M, G, b, c (float32, CPU), plus metadata.
-        Since 2026-09-29 also m = E[phi] (float64) and tau_mean per node, needed by
-        the 'fixed'/'guth' modes to centre G and c; meta['dim'] is the signal dimension.
-        Older files lack them (codes/resolve_theta_reg.py can take m from aux_moments).
-        interp: optional dict of the interpolant-side time terms (G_I, c_I float32 like
-        G, c; m_I float64 (n, r); tau_mean_I (n,)).
+        Write the regularised system exactly as the solver receives it: grid t
+        (float64) and the per-node lists of sysd, plus metadata (meta['reg_mode'] says
+        which keys exist). r x r blocks (M, G, Sigma) and b, c are stored float32
+        (Sigma is accumulated centred in float64 first); m, mdot, the diag_* vectors
+        float64 (n, r); live bool (n, r); tau_mean, h, diag_tau_mean_I float64 (n,).
+          legacy: M, G, b, c, m, tau_mean      moment: M, Sigma, b, mdot, m, live, h
         codes/resolve_theta_reg.py rebuilds Theta_reg from this for any lam; like
         forward_regularised, it drops the first node (Theta[1:], t[1:]).
 
@@ -861,23 +908,20 @@ class SDE(torch.nn.Module):
         cpu32 = lambda X: X.detach().to('cpu', torch.float32)
         system = {
             't': torch.as_tensor(np.asarray(t, dtype=np.float64)),
-            'M': [cpu32(X) for X in M],
-            'G': [cpu32(X) for X in Gf],
-            'b': [cpu32(X).reshape(-1) for X in bb],
-            'c': [cpu32(X).reshape(-1) for X in cc],
             'num_potentials': int(self.num_potentials),
             'meta': dict(meta),
         }
-        if m is not None:
-            system['m'] = torch.stack([X.detach().to('cpu', torch.float64).reshape(-1) for X in m])
-        if tau_mean is not None:
-            system['tau_mean'] = torch.as_tensor(np.asarray(tau_mean, dtype=np.float64))
-        if interp is not None:
-            system['G_I'] = [cpu32(X) for X in interp['G_I']]
-            system['c_I'] = [cpu32(X).reshape(-1) for X in interp['c_I']]
-            system['m_I'] = torch.stack([X.detach().to('cpu', torch.float64).reshape(-1)
-                                         for X in interp['m_I']])
-            system['tau_mean_I'] = torch.as_tensor(np.asarray(interp['tau_mean_I'], dtype=np.float64))
+        for kk, v in sysd.items():
+            if kk in ('M', 'G', 'Sigma'):
+                system[kk] = [cpu32(X) for X in v]
+            elif kk in ('b', 'c'):
+                system[kk] = [cpu32(X).reshape(-1) for X in v]
+            elif kk in ('m', 'mdot', 'diag_c_I', 'diag_m_I'):
+                system[kk] = torch.stack([X.detach().to('cpu', torch.float64).reshape(-1) for X in v])
+            elif kk == 'live':
+                system[kk] = torch.stack([X.detach().to('cpu', torch.bool).reshape(-1) for X in v])
+            else:                                          # per-node scalars
+                system[kk] = torch.as_tensor(np.asarray(v, dtype=np.float64))
         tmp = path.with_name(path.name + '.tmp')
         t0 = time.time()
         try:
@@ -886,8 +930,8 @@ class SDE(torch.nn.Module):
         except BaseException:
             tmp.unlink(missing_ok=True)                 # a partial ~40 GB file would eat the quota
             raise
-        print(f"Saved regularised system ({len(system['t'])} nodes, r={self.num_potentials}) "
-              f"to {path} in {time.time() - t0:.0f} s")
+        print(f"Saved regularised system ({len(system['t'])} nodes, r={self.num_potentials}, "
+              f"mode {meta.get('reg_mode')}) to {path} in {time.time() - t0:.0f} s")
 
     def _solve_regularised(self, t, M, Gf, bb, cc, lam):
         t = np.asarray(t, dtype=float)
@@ -929,7 +973,7 @@ class SDE(torch.nn.Module):
     
     def _solve_regularised_thomas(self, t, M, Gf, bb, cc, lam, eps_reg_theta=0.0,
                                   ridge=0.0, dtype=torch.float64, device='cpu',
-                                  mode='legacy', m=None, tau_mean=None, dim=None):
+                                  mode='legacy', dim=None, schedule='uniform', live=None):
         """
         Same block-tridiagonal system as _solve_regularised, solved via block-Thomas
         elimination with block-Jacobi preconditioning instead of a dense (n*r, n*r)
@@ -937,40 +981,46 @@ class SDE(torch.nn.Module):
         buffer is the elimination factor c', so the full fine grid (n_subsample=1)
         fits in host RAM. At lam=0 this reduces to the per-step solves M_k theta_k = b_k.
 
-        mode selects the discrete energy (all minimised by the same Thomas sweep):
+        Everything here is in the CODE sign: theta_code = -theta_MGD, the walkers'
+        exponential family is p ∝ exp(+theta_code . phi). The energy (weights a, q, l
+        from reg_energy_weights) is
 
             E = sum_k a_k (1/2 Theta_k^T M_k Theta_k - b_k^T Theta_k)
               + sum_k [ q_k/2 dTheta_k^T C_k dTheta_k + l_k ct_k^T dTheta_k ],
-            dTheta_k = Theta_{k+1} - Theta_k.
+            dTheta_k = Theta_{k+1} - Theta_k,
 
-          'legacy' -- a = 1, q = lam/dt^2, l = -lam/dt, C = G, ct = c. The system
-                      used up to 2026-09-29 (kept so old results reproduce). Its time
-                      term targets G Theta_dot = c, which is WRONG for MGD's theta:
-                      MGD writes p_t ∝ exp(+theta.phi) (dH = -theta.mdot), Guth et al.
-                      write p ∝ exp(-U), and tau = -d_t log p(X_t|X) was taken from
-                      Guth without flipping the sign. Also G is uncentred, so the
-                      d_t log Z_t part of tau (which no theta.phi can represent) biases
-                      it. (Checked on a 1-D Gaussian: E[phi tau] = -Cov(phi) theta_dot,
-                      scratchpad tau_sign_check.py, 2026-09-29.)
-          'fixed'  -- the same weights as legacy but the correct time term:
-                      C = G - m m^T (Cov of phi), ct = c - m tau_mean (Cov(phi, tau)),
-                      l = +lam/dt, i.e. the energy lam/2 int E_c[(Theta_dot.phi + tau)^2].
-                      Needs m.
-          'guth'   -- correct time term AND Guth et al. (2025, eq. 8) weights, mapped
-                      to the Cos schedule (Y = X_t/sin a has noise variance s = cot^2 a;
-                      their E_{p(s) ∝ 1/s}[(s/d) DSM + (s/d)^2 TSM] in our t):
-                        a_k = h_k w_D(t_k),  w_D = 2 adot cos a / (d sin^3 a)
-                        q_k = lam w_T(t_k+1/2) / dt_k,  l_k = lam w_T(t_k+1/2),
-                        w_T = sin a cos a / (2 adot d^2)
-                      (h_k trapezoid node weights). The effective coupling w_T/w_D is
-                      sin^4(a) / (pi^2 d): no free parameter; lam is a multiplier on
-                      Guth's choice (lam = 1 is theirs). Needs m and dim.
+        M_k = E[grad phi grad phi^T] at y_k, b_k = (m_{t_k} - phibar(y_k)) / (h sigma^2):
+        its per-node minimiser is the corrector's theta_k.
 
-        m : per-node E[phi] (r,) on the walkers the system was built on; tau_mean :
-            per-node mean of tau (scalar), 0 if None (its expectation).
+          'legacy' -- Gf = G = E[phi phi^T] (uncentred), cc = c = E[phi tau] on the
+                      walkers; C_k = G_k, ct_k = c_k (left point), a = 1, q = lam/dt^2,
+                      l = -lam/dt: targets G Theta_dot = c. Kept so old results
+                      reproduce. It is wrong twice: tau was copied from Guth et al.
+                      (p ∝ exp(-U)) without the sign flip and G is uncentred; and the
+                      walkers are NOT paired with Z = x_0 (independent draws), so
+                      E[tau | x] = adot d cot a is a constant and c carries no information
+                      on theta_dot (notes/guth_reg_audit_0930).
+          'moment' -- Gf = Sigma_w = Cov_w(phi) (centred, on the walkers), cc = mdot =
+                      d/dt E[phi(I_t)] (pathwise). Time-score matching on the walker law
+                      p_t^sigma with model time score theta_code_dot . phi + c_t (c_t
+                      free) has normal equations
+                          Sigma_w Theta_code_dot = Cov_w(phi, d_t log p_t^sigma)
+                                                 = d/dt E_w[phi] = mdot
+                      by the MGD constraint E[phi(X_t)] = m_t alone (MGD sign:
+                      Sigma_w theta_dot = -mdot). Per cell: C = (Sigma_k + Sigma_k+1)/2,
+                      ct = -(mdot_k + mdot_k+1)/2, so the cell energy
+                      lam w_T dt [1/2 Th'^T C Th' - mdot^T Th'] is minimised at
+                      C Th' = mdot. Weights: quadrature (schedule 'uniform' or 'guth',
+                      see reg_energy_weights). No tau anywhere.
 
-        (Called unbound by codes/resolve_theta_reg.py and the bimodal port with a
-        SimpleNamespace as self, so the body uses no other method of self.)
+        live : optional (n, r) bool. A potential dead at node k (False) is pinned,
+               Theta_{k,i} = 0, as the per-step solve does (_live_potentials): its row
+               and column of A are replaced by the identity and its right-hand side by
+               0. Neighbouring nodes keep their time coupling to the pinned value 0.
+
+        (Called unbound by codes/resolve_theta_reg.py, codes/lam_select_cv.py and the
+        bimodal port with a SimpleNamespace as self, so the body uses no other method
+        of self.)
 
         Blocks are built on the fly from M/Gf/bb/cc (any device/dtype, typically
         float32 on CPU) and all arithmetic is in `dtype` on `device` (float64 CPU by
@@ -982,7 +1032,8 @@ class SDE(torch.nn.Module):
         complements stay SPD and elimination without pivoting across blocks is stable.
 
         ridge : M_k += ridge * diag(M_k) -- a ridge on the data term of the original
-                problem (same system for any solver). 0 disables it.
+                problem (same system for any solver); equal to the per-step solve's
+                Jacobi-scaled `regularization` when ridge = regularization. 0 disables it.
         eps_reg_theta : legacy ridge added to each Schur complement, relative to its
                 mean diagonal. It is NOT a regularisation of the original problem and
                 biases Theta when M, G are ill-conditioned; keep 0 unless debugging.
@@ -994,30 +1045,34 @@ class SDE(torch.nn.Module):
         dt = np.diff(t)
         if (dt <= 0).any():
             raise ValueError("t must be strictly increasing for the regularised solve")
-        a, w, l = reg_energy_weights(t, lam, mode=mode, dim=dim)   # data, coupling, c weights
-        centre = mode != 'legacy'
-        if centre and m is None:
-            raise ValueError(f"mode={mode!r} needs m (per-node E[phi]) to centre G and c")
+        a, w, l = reg_energy_weights(t, lam, mode=mode, dim=dim, schedule=schedule)
 
         get = lambda X: X.to(device=device, dtype=dtype)
         sym = lambda X: (X + X.T) / 2
+
+        dead = None
+        if live is not None:
+            dead = ~torch.as_tensor(np.asarray(live), dtype=torch.bool).reshape(n, r).to(device)
+            if not bool(dead.any()):
+                dead = None
+        dead_idx = lambda k: None if dead is None or not bool(dead[k].any()) else dead[k].nonzero().flatten()
 
         def Mb(k):
             m_ = sym(get(M[k]))
             return m_ + ridge * torch.diag(torch.diagonal(m_)) if ridge else m_
 
-        def Gb(k):                                         # C_k: Gram (legacy) or Cov of phi
-            G = sym(get(Gf[k]))
-            if centre:
-                mk = get(torch.as_tensor(m[k])).reshape(-1)
-                G = G - torch.outer(mk, mk)
-            return G
+        if mode == 'legacy':
+            def Gb(k):                                     # C_k: uncentred Gram, left point
+                return sym(get(Gf[k]))
 
-        def cb(k):                                         # ct_k: E[phi tau] or Cov(phi, tau)
-            c = get(cc[k]).reshape(-1)
-            if centre and tau_mean is not None:
-                c = c - float(tau_mean[k]) * get(torch.as_tensor(m[k])).reshape(-1)
-            return c
+            def cb(k):                                     # ct_k = E[phi tau], left point
+                return get(cc[k]).reshape(-1)
+        else:
+            def Gb(k):                                     # C on cell k: midpoint Sigma_w
+                return (sym(get(Gf[k])) + sym(get(Gf[k + 1]))) / 2
+
+            def cb(k):                                     # ct on cell k: -midpoint mdot
+                return -(get(cc[k]).reshape(-1) + get(cc[k + 1]).reshape(-1)) / 2
 
         def Db(k):                                         # diagonal block A[k, k]
             D = a[k] * Mb(k)
@@ -1025,6 +1080,12 @@ class SDE(torch.nn.Module):
                 D = D + w[k - 1] * Gb(k - 1)
             if k < n - 1:
                 D = D + w[k] * Gb(k)
+            i = dead_idx(k)
+            if i is not None:                              # pin Theta_{k,i} = 0
+                D = D.clone()
+                D[i, :] = 0
+                D[:, i] = 0
+                D[i, i] = 1
             return D
 
         def fb(k):                                         # second member f[k]
@@ -1033,13 +1094,25 @@ class SDE(torch.nn.Module):
                 f = f + l[k] * cb(k)
             if k > 0:
                 f = f - l[k - 1] * cb(k - 1)
+            i = dead_idx(k)
+            if i is not None:
+                f = f.clone()
+                f[i] = 0
             return f
 
         # block-Jacobi scales (sqrt of diag of A), needed one block ahead for U_k
         S = torch.stack([torch.diagonal(Db(k)).clamp_min(1e-300).sqrt() for k in range(n)])
 
         def Ub(k):                                         # scaled A[k, k+1] = -w_k C_k
-            return -w[k] * Gb(k) / (S[k][:, None] * S[k + 1][None, :])
+            U = -w[k] * Gb(k) / (S[k][:, None] * S[k + 1][None, :])
+            i, j = dead_idx(k), dead_idx(k + 1)
+            if i is not None or j is not None:
+                U = U.clone()
+                if i is not None:
+                    U[i, :] = 0
+                if j is not None:
+                    U[:, j] = 0
+            return U
 
         eye = torch.eye(r, device=device, dtype=dtype)
         c_prime = torch.empty((max(n - 1, 0), r, r), device=device, dtype=dtype)
@@ -1319,6 +1392,7 @@ class SDE(torch.nn.Module):
         # forward_regularised can reuse it instead of recomputing G(y_k) (2026-09-25).
         self._G_theta = G_k
         live                     = self._live_potentials(G_k, rhs_constraint_correction, k, 'theta')
+        self._live_theta          = live               # per-node mask for the moment-mode system
 
         def _solve(G_k, rhs_constraint_correction):
             out_dtype = G_k.dtype

@@ -1,0 +1,345 @@
+\documentclass[11pt,a4paper]{article}
+\usepackage[margin=2.3cm]{geometry}
+\usepackage{amsmath,amssymb,amsthm}
+\usepackage{booktabs}
+\usepackage{graphicx}
+\usepackage{enumitem}
+\usepackage{xcolor}
+\usepackage[hidelinks]{hyperref}
+\setlist{itemsep=2pt,topsep=4pt}
+
+\newcommand{\code}[1]{\texttt{#1}}
+\newcommand{\ver}{\textcolor{teal}{\textsf{[verified]}}}
+\newcommand{\rep}{\textcolor{blue!70!black}{\textsf{[reported, not re-run]}}}
+\newcommand{\hyp}{\textcolor{orange!80!black}{\textsf{[hypothesis]}}}
+\newcommand{\ext}{\textcolor{purple!80!black}{\textsf{[derived, external review]}}}
+\newcommand{\E}{\mathbb{E}}
+\newcommand{\R}{\mathbb{R}}
+\newcommand{\Cov}{\operatorname{Cov}}
+\newcommand{\Id}{\mathrm{Id}}
+\newcommand{\dt}{\Delta t}
+\newcommand{\MGD}{\textsc{mgd}}
+\newcommand{\cs}{\textsc{code}}
+\newtheorem*{claim}{Claim}
+
+\title{Time-regularised Lagrange multipliers in MGD:\\
+audit, corrections and the \emph{moment} energy}
+\author{Chiara Zelco \quad(prepared with Claude Code)}
+\date{30 September 2026 (revised after the 30 Sep external review)}
+
+\begin{document}
+\sloppy\emergencystretch=3em
+\maketitle
+
+\noindent\textbf{Provenance tags.}
+\ver: derived in this note and/or checked by a script in \code{notes/guth\_reg\_audit\_0930/}, whose output is quoted.
+\rep: from the 29 Sep notes or the 30 Sep review agent, not re-run.
+\ext: stated by the 30 Sep external review (checked against the MGD PDF project copy, Guth et al.\ and the
+draft \emph{ExtremeScattering\_7}); not re-checked here, because those documents are not available to me.
+\hyp: not tested.
+
+\noindent\textbf{Sign conventions.} Every formula states its sign. \MGD\ sign: $p_\theta\propto e^{-\theta^\top\phi}$.
+\cs\ sign: $\theta^{\rm code}=-\theta$, i.e.\ $p\propto e^{+\theta^{\rm code}\cdot\phi}$ (what \code{theta\_t},
+\code{Theta\_reg} and the saved systems hold).
+
+\tableofcontents
+
+%======================================================================
+\section{Summary}
+%======================================================================
+\begin{itemize}
+  \item The time term of $\Theta_{\rm reg}$ used so far (\code{legacy}) is uninformative. It is built from the conditional time
+        score $\tau$ of Guth et al., evaluated on walkers that are independent of the noise $Z$, so it targets a constant
+        (Section~\ref{sec:indep}). Every past $\Theta_{\rm reg}$, including the bimodal REG figures (A8), was smoothed toward that target.
+  \item New energy \code{moment} (now the default with \code{--reg\_solver thomas}). Its time term is time-score matching on the
+        walker law, whose normal equations are exact by the MGD constraint alone (A4):
+        $\hat\Sigma_w\dot\Theta=-\hat{\dot m}$ (\MGD\ sign). It uses no $\tau$, costs nothing extra per step, and can be
+        rebuilt offline for old runs.
+  \item Implemented B1--B8 (Section~\ref{sec:impl}). Unit and end-to-end tests pass. The legacy path is bit-identical to 4baf4c2
+        (Section~\ref{sec:tests}).
+  \item Validation in 1-D against a Fokker--Planck ground truth (C1, C2) and a check of the per-step noise model (B4):
+        Section~\ref{sec:valid}. C3 (existing turbulence systems) needs Jean Zay; the commands are in Section~\ref{sec:c3}.
+\end{itemize}
+
+%======================================================================
+\section{Corrections (30 Sep review)}\label{sec:corr}
+%======================================================================
+\begin{description}[leftmargin=1.2em,style=nextline]
+\item[A1. Algorithm~1 corrector sign: closed.]
+  The PDF has the same line as the HTML, $x_{k+1}=y_k+h\hat\theta^\top\nabla\phi(y_k)$. It is a typo in the paper, wrong in both
+  the sign and the missing $\sigma^2$ \ext. The correct corrector is MGD eq.~(19), $X_{t+h}=Y-h\sigma^2\hat\theta^\top\nabla\phi(Y)$
+  (\MGD\ sign), with $\hat\theta$ from eq.~(21) \ext. The code follows eq.~(19) \ver\ (\code{x\_k\_plus\_one = y\_k + theta\_raw.grad phi},
+  $\theta_{\rm raw}=h\sigma^2\theta^{\rm code}=-h\sigma^2\theta$). All notes now cite eqs.~(19)/(21), not Algorithm~1.
+\item[A2. Numbering.] In the project copy: $D_{\rm KL}(p^\sigma_1\|p_*)\le C\sigma^{-2}$ is Conjecture~4.1 (eq.~25); $\frac{d}{dt}H\ge\theta^\top\dot m$
+  is Proposition~4.3 (eqs.~28--29); the entropy bound is Conjecture~4.4 (eq.~32) \ext. The arXiv HTML version I read
+  numbers them Conj.~4.3 / Prop.~4.4 / Conj.~4.5; this note uses the project-copy numbers. ``Nothing is claimed for
+  intermediate $t$'' was too strong: the formal $\sigma\to\infty$ limit (eqs.~22--24) holds for all $t$, and only the conjecture is
+  stated at $t=1$ \ext.
+\item[A3. The premise of the old \S3.1 was wrong; its conclusion stands.]
+  The MGD constraint is $\E[\phi(X_t)]=m_t$ for the walker law $p^\sigma_t$ (eqs.~12, 17), not $\E_{p_{\theta_t}}[\phi]=m_t$ \ext.
+  MGD's $\theta_t$ solves $G_t\theta_t=\E[\Delta\phi(X_t)]$ (eq.~15, \MGD\ sign): it is the Fisher (score-matching) projection of
+  $p^\sigma_t$ onto the family, with the gap given by eq.~(31) \ext. The identity $\Sigma_\theta\dot\theta=-\dot m$ holds for the
+  max-entropy multiplier $\theta^{\rm ME}(m_t)$, which equals $\theta_t$ only formally as $\sigma\to\infty$. Re-derived \ver. Numerically, in 1-D
+  (bimodal, Fokker--Planck ground truth), $\|\theta_t-\theta^{\rm ME}\|_G/\|\theta^{\rm ME}\|_G=1.35\cdot10^{-3}$ at $\sigma=10$ and
+  $3.6\cdot10^{-2}$ at $\sigma=2$ \ver. The sign and centring conclusion (legacy targets $K\dot\Theta=-\E[\phi\tau]$ with the wrong sign and uncentred) stands.
+\item[A4. The proposed P2 is exact; it is the draft's eq.~(6).]
+  Take time-score matching on $p^\sigma_t$ with model time score $-\dot\Theta^\top\phi+c_t$, where $c_t$ is free (\MGD\ sign). Its normal equations are
+  \[\Sigma_w\dot\Theta=-\Cov_w\big(\phi,\partial_t\log p^\sigma_t\big)\quad\text{and}\quad
+    \Cov_w(\phi,\partial_t\log p^\sigma_t)=\tfrac{d}{dt}\E_w[\phi]=\dot m_t\]
+  by the constraint alone. Re-derived \ver\ ($\E_w[\partial_t\log p^\sigma_t]=0$ and $\frac{d}{dt}\E_w\phi=\E_w[\phi\,\partial_t\log p^\sigma_t]$).
+  It is the draft's eq.~(6), derived in its Appendix \ext. Consequences:
+  \begin{itemize}
+    \item ``unbiased when $\Sigma_w=\Sigma_\theta$'' and ``not a TSM on a single law'' are deleted;
+    \item the old open question~1 is answered: $C=\hat\Sigma_w$;
+    \item empirically the identity holds to $O(h)$, because the corrector enforces the moment condition on walker averages \ext.
+  \end{itemize}
+  What remains is a \emph{projection mismatch}. The data term targets the Fisher projection of $p^\sigma_t$ ($\theta_t$); the time term
+  targets its time-score projection. They coincide only when $p^\sigma_t$ is in the family (formally $\sigma\to\infty$). The earlier wording
+  calling the dynamics model ``nearly exact'' is withdrawn. The $\tau$-based modes were a mis-implementation of the draft's eq.~(4) \ext.
+\item[A5. The old C5 was not a test of MGD's $\theta_t$.]
+  In \code{verify\_bias.py}, $\theta$ is obtained by moment matching, i.e.\ it is $\theta^{\rm ME}$. The $10^{-10}$ row checks the
+  quadrature and the finite differences only \ver. Restated conclusion: the interpolant-side TSM projects the time score of the
+  \emph{interpolant} law $p_t$, while the data term projects the score of $p^\sigma_t$. It mixes two laws. The recommendation to drop it stands.
+\item[A6. Guth invariance (old open question 4): resolved; $\lambda$ stays free.]
+  (a) Guth's loss written in \code{Cos} time is invariant. Data rescaling $X\to cX$ gives $Y'=c\,Y_\beta$ with $\tan\beta=c\tan\alpha$, which is
+  Guth's rescaling. I checked this algebra \ver: $Y'=cX+\cot\alpha\,Z=c(X+\cot\beta\,Z)$. The improper $p(s)$ is not a new problem:
+  $w_D=2\dot\alpha\cos\alpha/(d\sin\alpha)\approx2/(dt)$ as $t\to0$ \ver, the same log divergence as $\int ds/s$, with $t_1$ in the role of $s_{\max}$ \ext.
+  (b) Our estimator is not invariant at finite $\sigma$, whatever the weights. The rescaling acts as a time reparametrisation plus a
+  time-dependent dilation, which turns constant-$\sigma$ MGD into MGD with a time-dependent effective volatility. Invariance
+  returns only formally as $\sigma\to\infty$, and only for homogeneous $\phi_k$ \ext. So invariance does not justify a fixed trade-off.
+  The $w_D$, $w_T$ formulas (with the $\sin^2\alpha$ fix) were re-derived by the review and are correct \ext; they were already checked here \ver.
+\item[A7. Entropy and $\log\mathcal Z$: keep the per-step $\theta$.]
+  Replacing $\theta$ by $\Theta_{\rm reg}$ inside $H^*$ (MGD eq.~30) or the draft's $\log\mathcal Z$ bound (eq.~8) loses the lower-bound guarantee.
+  In the \MGD\ sign, $\frac{d}{dt}H-\Theta^\top\dot m=(\theta-\Theta)^\top\dot m+\sigma^2\cdot(\text{Fisher gap})$, and the first term has no sign \ext.
+  The per-step noise averages out in these integrals anyway. With the B4 noise model,
+  $\mathrm{Var}\big(\sum_kh\,\hat\theta_k^\top\dot m\big)\approx\frac{2}{n\sigma^2}\int_0^1\dot m^\top G^{-1}\dot m\,dt$, finite as $h\to0$
+  (derivation \ver, given B4).\newline
+  \emph{Current use in the code} \ver\ (\code{codes/utils\_entropy.py} and the notebooks calling it): $H^*$ always integrates the per-step
+  \code{dH\_t\_bound}; $\Theta_{\rm reg}$ enters only as the end point $\theta_1$ in $\log\mathcal Z\ge H^*+\theta_1^{\rm code}\cdot m_1$
+  (\code{log\_Z\_bound(..., 'Theta\_reg')}; \code{jets/jets\_KL\_divergence.ipynb}; \code{turbulence/turb\_KL\_divergence.ipynb};
+  \code{theta\_interpretation/}). By Gibbs' inequality, $\log\mathcal Z_\vartheta\ge H(q)-\vartheta^\top\E_q\phi$ holds for \emph{any} $\vartheta$
+  (\MGD\ sign; $q=p^\sigma_1$, $H(q)\ge H^*$). So that end-point use is still a valid lower bound, but on $\log\mathcal Z$ at $\vartheta=\Theta_{\rm reg}(1)$,
+  a different model from the one at $\theta_1$ \ver\ (derivation). Recommendation: per-step $\theta$ for $H^*$ and $\log\mathcal Z$;
+  $\Theta_{\rm reg}$ for $\theta(t)$ and $\theta_1$ as a coupling/interpretation object.\newline
+  \emph{Side finding} \ver: \code{compute\_log\_Z\_sigma} in \code{jets/jets\_KL\_divergence.ipynb} computes $H-\theta_1^{\rm code}\cdot m_1$, while
+  \code{utils\_entropy.log\_Z\_bound} (and the derivation, \cs\ sign) gives $H+\theta_1^{\rm code}\cdot m_1$. The notebook is not edited.
+\item[A8. Draft Fig.~1 (``regularised MGD, 2 orders of magnitude''): flagged for re-run.]
+  I cannot see the draft. The bimodal REG pipeline is the candidate: \code{bimodal\_experiment/kl\_bimodal.ipynb} (\code{KL\_bimodal\_paper\_1.png},
+  \code{LAM='selected'}) and \code{analyse\_lamsweep.ipynb}, on \code{results\_bim\_theta\_beta}. It solves the \code{legacy} energy
+  (\code{codes/lam\_selection.py}: uncentred $G$, \code{f[:-1] -= lam/dt c}) \ver, with $\lambda$ from the $z^2$ rule. Its walkers start at
+  $x_0=Z$ (\code{xt = x0.clone()}, \code{sde\_routines\_scalar\_reg.py}) \ver, so the time term is the ``walkers started at $Z$'' case of
+  Section~\ref{sec:indep}: unrelated to $\dot\theta$. If Fig.~1 comes from this pipeline, its gain came from smoothing toward an unrelated target \hyp.
+  The bimodal port is not changed yet (see Section~\ref{sec:open}).
+\end{description}
+
+%======================================================================
+\section{Notation}
+%======================================================================
+\paragraph{MGD} (Lempereur et al., arXiv:2602.17211; equation numbers of the project copy \ext).
+$x\in\R^d$; statistics $\phi:\R^d\to\R^r$; $Z\sim\mathcal N(0,\Id)$, $X\sim p$; interpolant $I_t=\cos\alpha_t\,Z+\sin\alpha_t\,X$,
+\code{Cos} schedule $\alpha_t=\pi t/2$, $\dot\alpha=\pi/2$. Target moments $m_t=\E[\phi(I_t)]$. Walkers $X_t\sim p^\sigma_t$, constraint
+$\E[\phi(X_t)]=m_t$ (eqs.~12, 17). Gram $G_t=\E[\nabla\phi(X_t)\nabla\phi(X_t)^\top]$.
+\MGD\ sign: $G_t\eta_t=\dot m_t$, $G_t\theta_t=\E[\Delta\phi(X_t)]$ (eq.~15); SDE $dX_t=(\eta_t-\sigma^2\theta_t)^\top\nabla\phi\,dt+\sqrt2\sigma\,dW_t$,
+$X_0=Z$; Fokker--Planck form eq.~(22). Corrector eqs.~(19), (21).
+\paragraph{Two multipliers} (\MGD\ sign). $\theta_t$: MGD's, the Fisher projection of $p^\sigma_t$ (eq.~15). $\theta^{\rm ME}(m)$: the max-entropy
+multiplier, $\E_{p_{\theta^{\rm ME}}}[\phi]=m$. They are equal formally as $\sigma\to\infty$.
+\paragraph{Guth et al.} (arXiv:2506.05310). Their noise variance ``$t$'' is written $s$ here. $y=x+\mathcal N(0,s\Id)$, $p\propto e^{-U}$;
+$\ell=\E_{s}\big[\frac sd\ell_{\rm DSM}+(\frac sd)^2\ell_{\rm TSM}\big]$ with $p(s)\propto1/s$ (their eq.~8); $\partial_s$ in $\ell_{\rm TSM}$ at fixed $y$.
+\paragraph{Other symbols.} $K=\E[\phi\phi^\top]$, $\Sigma=\Cov(\phi)$; subscripts $w$ (walker empirical law), $I$ (interpolant); hats are Monte-Carlo
+estimates. $n$ walkers, SDE step $h=t_{k+1}-t_k$, nodes $t_k$ of the regularised problem, $\dt_k$ node spacing, $h_k$ trapezoid weights.
+$\tau(x;Z)=-\dot\alpha[\tan\alpha(d-\|Z\|^2)+Z^\top X]$, $X=(x-\cos\alpha Z)/\sin\alpha$: minus the conditional time score of $p_t(x|X)$ (sign-free).
+
+\begin{table}[h]\centering\small
+\resizebox{\textwidth}{!}{%
+\begin{tabular}{@{}lll@{}}\toprule
+symbol (\cs\ sign unless noted) & saved key & definition at node $t_{k+1}$\\\midrule
+$\hat M_k$ & \code{M} & $\frac1n\sum_i\nabla\phi(y^i_k)\nabla\phi(y^i_k)^\top$ (= $\hat G'_k$), float32\\
+$\hat b_k$ & \code{b} & $(\hat m_{t_{k+1}}-\bar\phi(y_k))/(h\sigma^2)$, float32; \MGD\ sign: $\hat\beta_k=-\hat b_k$\\
+$\hat\Sigma_{w,k}$ & \code{Sigma} (moment) & $\frac1n\sum_i(\phi^i-\hat m_w)(\phi^i-\hat m_w)^\top$, $\phi^i=\phi(x^i_{k+1})$, float64 accumulation, stored float32\\
+$\hat m_{w,k}$ & \code{m} & $\frac1n\sum_i\phi(x^i_{k+1})$ (moment), $\phi(y^i_k)$ (legacy), float64\\
+$\hat{\dot m}_k$ & \code{mdot} (moment) & $\frac1n\sum_i\nabla\phi(I^i_{t_{k+1}})\cdot\dot I^i_{t_{k+1}}$ (sign-free), float64\\
+$h_k$, live & \code{h}, \code{live} & SDE step ending at the node; per-step mask of the corrector\\
+$\hat K_{w,k}$, $\hat c_{w,k}$, $\bar\tau$ & \code{G}, \code{c}, \code{tau\_mean} (legacy) & $\frac1n\sum\phi\phi^\top$, $\frac1n\sum\phi(y^i_k)\tau(y^i_k;x^i_0)$ at $y_k$\\
+\bottomrule\end{tabular}}
+\caption{Per-node quantities of the saved systems (\code{\_save\_reg\_system}; \code{meta['reg\_mode']} says which set).}\label{tab:dict}
+\end{table}
+
+%======================================================================
+\section{The estimators as implemented}\label{sec:impl}
+%======================================================================
+\subsection{Per-step $\hat\theta_k$ and its noise (B4)}
+\cs\ sign: $(\hat M_k+\varepsilon D_k)\,\hat\theta^{\rm code}_k=\hat b_k$, $D_k=\operatorname{diag}\hat M_k$, $\varepsilon=$\code{regularization}; potentials below
+\code{\_live\_floor} are set to 0. \MGD\ sign: $(\hat M_k+\varepsilon D_k)\hat\theta_k=\hat\beta_k\approx\E[\Delta\phi]$ (eq.~21).
+\begin{claim}[noise model, \ext; derivation \ver; holds numerically at $\sigma=2$, Table~\ref{tab:B4}]
+$\Cov(\hat\theta_k)\approx\frac{2}{nh\sigma^2}\hat M_k^{-1}$, white in $k$.
+\end{claim}
+Derivation: given $x_k$, the Brownian increment makes $\bar\phi(y_k)$ fluctuate with covariance $\approx\frac{2h\sigma^2}{n}\hat M_k$.
+Dividing by $h\sigma^2$ gives $\Cov(\hat\beta_k)\approx\frac{2}{nh\sigma^2}\hat M_k$, hence the claim. It is white because each corrector step resets the walker
+averages to $\hat m_{t_{k+1}}$, so no fluctuation carries over to the next step.
+
+\subsection{Regularised energy}
+\cs\ sign (what \code{\_solve\_regularised\_thomas} minimises; weights from \code{reg\_energy\_weights}):
+\begin{equation}\label{eq:energy}
+\mathcal E[\Theta]=\sum_ka_k\Big(\tfrac12\Theta_k^\top\hat M_k\Theta_k-\hat b_k^\top\Theta_k\Big)
++\sum_{k<N}\Big(\tfrac{q_k}2\Delta\Theta_k^\top C_k\Delta\Theta_k+l_k\,\tilde c_k^\top\Delta\Theta_k\Big).
+\end{equation}
+\begin{table}[h]\centering\small
+\begin{tabular}{@{}lllll@{}}\toprule
+mode & $a_k$ & $q_k,\ l_k$ & $C_k$ (cell $k$) & $\tilde c_k$ (cell $k$) \\\midrule
+\code{legacy} (reproduction) & 1 & $\lambda/\dt_k^2,\ -\lambda/\dt_k$ & $\hat K_{w,k}$ & $\hat c_{w,k}$\\
+\code{moment}, uniform (default) & $h_k$ & $\lambda/\dt_k,\ \lambda$ & $\frac12(\hat\Sigma_{w,k}+\hat\Sigma_{w,k+1})$ & $-\frac12(\hat{\dot m}_k+\hat{\dot m}_{k+1})$\\
+\code{moment}, Guth schedule & $h_kw_D(t_k)$ & $\lambda w_T/\dt_k,\ \lambda w_T$ & same & same\\\bottomrule
+\end{tabular}
+\caption{Energies. Guth schedule: $w_D=2\dot\alpha\cos\alpha/(d\sin\alpha)$, $w_T(t_{k+1/2})=\sin\alpha\cos\alpha/(2\dot\alpha d^2)$,
+$\lambda_{\rm eff}=w_T/w_D=\sin^2(\pi t/2)/(\pi^2d)$. It is a comparison option: the default weight is uniform in $t$ because MGD eq.~(31)
+weights the Fisher gap uniformly in $t$ \ext.}\label{tab:modes}
+\end{table}
+
+\paragraph{Moment mode, both signs.} Per cell, the moment time term is $\lambda w_T\dt[\frac12\dot\Theta_c^\top C\dot\Theta_c-\dot m^\top\dot\Theta_c]$ (\cs),
+minimised at $C\dot\Theta^{\rm code}=\dot m$. With $\Theta=-\Theta^{\rm code}$ this is $C\dot\Theta=-\dot m$ (\MGD), the draft's eq.~(6). Checked by
+unit test T2: exact to $O(\dt^2)$ for every $\lambda\in[0,10^4]$, and the flipped sign fails \ver.
+
+\paragraph{Interpretation (B4), \ext; to be checked.} With the quadrature weights $a_k=h_k$ and the noise model, the data term is
+$\frac{2}{n\sigma^2}$ times the Gaussian negative log-likelihood of the $\hat\theta_k$:
+$\sum_kh_k\frac12(\Theta_k-\hat\theta_k)^\top\hat M_k(\Theta_k-\hat\theta_k)=\frac{2}{n\sigma^2}\sum_k\frac{nh_k\sigma^2}{4}(\dots)$ (up to a constant) \ver\ (algebra).
+The time term is then a Gaussian prior on the residual $r=\hat\Sigma_w\dot\Theta+\hat{\dot m}$ (\MGD\ sign) with precision $\lambda n\sigma^2/2$ in the
+$\hat\Sigma_w^{-1}$ metric. Consequence used in the selection: $\chi^2(\lambda)=\sum_k\frac{nh_k\sigma^2}{2}(\hat\theta_k-\Theta_k)^\top\hat M_k(\hat\theta_k-\Theta_k)/N_{\rm live}$
+should be $\lesssim1$ when $\lambda$ removes only noise.
+
+\paragraph{Projection mismatch (A4).} In the moment mode the data term pulls toward $\theta_t$ (Fisher projection) and the time term toward the
+time-score projection of $p^\sigma_t$. These differ unless $p^\sigma_t$ is in the family, so large $\lambda$ trades one for the other. This is the only
+bias of the moment energy with exact inputs.
+
+\subsection{What was implemented (B1--B8)}
+\begin{description}[leftmargin=1.2em,style=nextline]
+\item[B1] \code{interp\_time\_terms} is off by default and exposed as \code{--interp\_time\_terms}. $\hat K_I$ is no longer saved; if on, only the $r$-vector
+  diagnostics \code{diag\_c\_I}, \code{diag\_m\_I}, \code{diag\_tau\_mean\_I} are.
+\item[B2] Mode \code{moment} (\code{--reg\_mode}; default \code{moment} with \code{--reg\_solver thomas}, \code{legacy} with \code{dense}; the config name gets
+  \code{\_moment}). $\hat\Sigma_w$ is taken at the moment-matched walkers $x_{k+1}$; $\hat{\dot m}$ is the pathwise \code{dt\_phi\_I\_k}, already
+  computed for the predictor. There is no $\tau$ anywhere. Old systems: $\hat\Sigma=\hat K_w-\hat m\hat m^\top$ with $\hat m=$\code{barphi\_p}, and
+  $\hat{\dot m}$ from a 3-point non-uniform finite difference of \code{barphi\_e} (row $j$ at $t_{j+1}$) (\code{resolve\_theta\_reg.py --mode moment
+  --results\_root}). Caveat: there $\hat K_w$ is float32 and at $y_k$.
+\item[B3] $\hat\Sigma_w$ accumulated centred in float64. It is stored float32, like $\hat M$, so the offline re-solve reproduces the in-run one exactly (F3).
+\item[B4] Quadrature weights by default in the moment mode (table above); the noise-model interpretation above; the numerical check in Table~\ref{tab:B4} (holds at $\sigma=2$).
+\item[B5] Dead-statistic masking in the Thomas solve: identity row and column, right-hand side 0 (\code{live} argument; unit test T3). New runs save
+  the per-step mask. Old runs: \code{--mask theta} rebuilds it from the saved $\theta_t$, which the corrector set to exactly 0 (F7); \code{--mask diag}
+  is also available. \code{resolve\_lamsweep.sh}: default \code{RIDGE=1e-4}, comment corrected.
+\item[B6] $w_D=2\dot\alpha\cos\alpha/(d\sin\alpha)$ (T5). The Guth schedule is \code{--reg\_schedule guth} of the moment mode; the $\tau$-based
+  \code{fixed}/\code{guth} modes of 29 Sep are removed.
+\item[B7] \code{forward\_regularised} docstring and assert message corrected; the walker $\tau$ is computed only in legacy mode.
+\item[B8] \code{codes/lam\_select\_cv.py}, via \code{resolve\_theta\_reg.py --select} (\code{SELECT=1}). It computes a held-out moment-matching loss
+  (fit on even nodes, score the data term on odd nodes; equal up to a constant to $\frac12\sum h_k\|\hat M_k\Theta_k-\hat b_k\|^2_{\hat M_k^{-1}}$, the
+  linearised moment mismatch), an amplitude veto ($\max_k|\Theta_{k,i}|>10A_i$, with $A_i$ from block medians of $\Theta(0)$), and $\chi^2(\lambda)$.
+  The whole path $\Theta(\lambda)$ is saved.
+\end{description}
+
+%======================================================================
+\section{Audit findings that stand}
+%======================================================================
+\subsection{The walkers are independent of $Z$}\label{sec:indep}
+\code{run\_experiment} passes neither \code{x\_0} nor \code{x\_k} to \code{SDE}, so they are separate \code{torch.randn} draws
+(\code{codes/sde\_routines.py}, \code{init\_interpolants\_and\_workers}) \ver. With $Z\perp x$, $\E[\tau|x]=\dot\alpha d\cot\alpha$ is a constant, so
+$\Cov_w(\phi,\tau)=0$ and $\E_w[\phi\tau]=\dot\alpha d\cot\alpha\,m_w$ (sign-free) \ver\ (derivation; \code{verify\_claims.py} C2: $\E_w\tau=77.28$/25.12/8.12 vs.\
+77.35/25.13/8.17). Starting the walkers at $Z$ (the bimodal port) does not help (C3 of \code{verify\_claims.py}) \ver.
+
+\subsection{$\tau$ on true pairs, and the interpolant path}
+On the interpolant, $\E_I[\tau]=0$ and $\E_I[\phi\tau]=-\dot m$ (sign-free), so $-\hat c_I$ is a score-function estimate of $\dot m$. It is 3.5--21$\times$
+noisier than the pathwise $\hat{\dot m}$ ($d=16$, \code{verify\_claims.py} C1) \ver. The interpolant TSM mixes two laws (A5).
+
+\subsection{Other}
+The ridge equivalence $(\hat M+\varepsilon\operatorname{diag}\hat M)^{-1}$ is exact (F7 reproduces $\theta_t$ to $3\cdot10^{-7}$) \ver. Legacy weights are
+unweighted sums, so on non-uniform grids the node density weights the energy (derivation \ver); the moment mode uses quadrature. Centring a
+float32 $\hat K$ loses precision (toy: 7\% error on a variance at mean/std $=1000$) \ver, which is why B3 accumulates centred.
+
+%======================================================================
+\section{Tests and validation}\label{sec:valid}
+%======================================================================
+\subsection{Unit and end-to-end tests}\label{sec:tests}
+All run locally and pass \ver:
+\begin{itemize}
+\item \code{test\_moment\_mode.py}:
+  \begin{itemize}
+    \item T1: legacy is bit-identical to 4baf4c2 (12 random systems).
+    \item T2: moment mode, \cs\ sign, noise-free Gaussian ($\phi=(x^2,x^4)$). Max relative error $2.5\cdot10^{-4}$ ($N=100$) and $1.5\cdot10^{-5}$ ($N=400$)
+          for all $\lambda\in[0,10^4]$ and both schedules. The flipped sign gives an error of 2.17.
+    \item T3: masking. T4: finite difference exact on quadratics. T5: $\lambda_{\rm eff}=\sin^2/(\pi^2d)$.
+  \end{itemize}
+\item \code{test\_forward\_regularised.py} (64 walkers, $M=64$, $n_t=20$, in-process; not \code{run\_SDE.py}):
+  \begin{itemize}
+    \item F1: legacy outputs and saved system are bit-identical to 4baf4c2.
+    \item F2: the moment mode leaves the SDE evolution bit-identical, and the saved $\hat{\dot m}$ equals \code{compute\_rhs\_dt\_phi\_I\_t} exactly.
+    \item F3: offline re-solve $=$ in-run. F4: moment rebuilt on a legacy system (1.1\% from F3). F5: \code{--select}. F6: \code{n\_subsample}$=2$.
+    \item F7: legacy, $\lambda=0$, \code{--mask theta} reproduces $\theta_t$.
+  \end{itemize}
+\end{itemize}
+
+\subsection{C1, C2: 1-D ground truth}
+\code{mgd1d.py}, \code{run\_validation.py}.
+\begin{itemize}
+\item \textbf{Ground truth} (\MGD\ sign). Self-consistent Fokker--Planck solution of eq.~(22) from $p_0=\mathcal N(0,1)$: Scharfetter--Gummel fluxes, implicit Euler with $\dt\le10^{-4}$, and the
+  constraint re-imposed by an exponential tilt after each step (a projection; the exact dynamics conserves it). $\theta_t$ from eq.~(15); $\theta^{\rm ME}(m_t)$ by Newton.
+\item \textbf{Convergence} \ver. Relative change of $\theta_t$ from ($N=1401$, $\dt=10^{-4}$) to ($N=2801$, $\dt=2.5\cdot10^{-5}$): $8\cdot10^{-5}$ ($\sigma=10$) and
+  $10^{-4}$ ($\sigma=2$). Without the tilt: $5\cdot10^{-2}$.
+\item \textbf{Particles.} The code's predictor--corrector in NumPy float64 (\cs\ sign, $\varepsilon=10^{-6}$), with walkers \emph{independent} of $Z$. The
+  systems are solved by the real \code{\_solve\_regularised\_thomas}, and $\lambda$ is selected by \code{lam\_path}.
+\end{itemize}
+\input{tables_C1C2.tex}
+
+\paragraph{Reading} (one seed per row; all numbers from \code{results.json}, full $\lambda$ curves there) \ver.
+\begin{itemize}
+\item \textbf{$\sigma=2$ is the clean regime}: $h\sigma^2=0.002$, and the B4 noise model holds (Table~\ref{tab:B4}).
+  \begin{itemize}
+  \item The per-step error falls like $n^{-1/2}$: C2 0.71/0.35/0.18; C1 1.30/0.65/0.34 vs.\ $\theta_t$.
+  \item \emph{Legacy} is U-shaped in $\lambda$. Small $\lambda$ removes noise, but at large $\lambda$ the error climbs back up, to 0.68--0.70 (C2) and 0.58--0.59 (C1) at $\lambda=10^2$: it converges to the wrong target.
+  \item \emph{Moment, uniform} flattens instead. C2 error at $\lambda=10^2$: 0.065/0.018/0.019, against a best of 0.065/0.017/0.014. The flatness is to within 0.005 over $\lambda\in[10^{-1},10^2]$; it is not exactly flat. It is the best oracle in every $\sigma=2$ row except C2, $n=1000$ (Guth schedule, 0.064 vs.\ 0.065), and CV selection lands on or next to the oracle (C2 selected = oracle; C1 0.095/0.027/0.046 vs.\ oracle 0.089/0.027/0.044).
+  \item In C1 the moment error stops decreasing between $n=4000$ and $16000$ (0.027 $\to$ 0.044, one seed). This is consistent with a floor from the projection mismatch of A4 ($\theta_t$ and $\theta^{\rm ME}$ differ by 3.6\% at $\sigma=2$) \hyp.
+  \item \emph{Moment, Guth schedule}: similar at its best $\lambda$, but the error rises again for $\lambda\ge10$ (at $\lambda=10^2$: C1 0.26--0.59, C2 up to 0.14). Its data weight $w_D\to0$ as $t\to1$, so the time term alone carries the end. CV selection is also worse for it (C1, $n=4000$: 0.112 selected vs.\ 0.034 oracle). This supports keeping it as a comparison option only.
+  \end{itemize}
+\item \textbf{$\sigma=10$ with $n_t=2000$ is under-resolved}: $h\sigma^2=0.05$. B4 shows a deterministic bias of $\hat\theta_k$: mean $z$ grows like $\sqrt n$, and it falls faster than $\sqrt h$ from $n_t=1000$ to 4000, i.e.\ the bias is $O(h)$. So all estimators that trust the data term sit at a floor: 0.41--0.45 (C1, selected) and 0.15--0.20 (C2). The held-out loss scores against the same biased data, so it cannot see this. Only large-$\lambda$ Guth solutions, which rely mostly on the time term, get below it (oracle 0.08--0.13 in C1, 0.04--0.10 in C2). A resolved $\sigma=10$ test needs $n_t\gtrsim2\cdot10^4$ (hours on this CPU); not run. For reference, the bimodal experiment uses $n_t=5\cdot10^4$ ($h\sigma^2=2\cdot10^{-3}$).
+\end{itemize}
+
+\subsection{B4: per-step noise model}
+\ver: at $\sigma=2$ the model $\Cov(\hat\theta_k)=2\hat M_k^{-1}/(nh\sigma^2)$, white, holds: $\E[z^2]\in[0.85,1.06]$ and $|\text{lag-1}|\le0.05$ for every $n$ and $n_t$ tested.
+At $\sigma=10$, $n_t\le4000$, a smooth $O(h)$ bias dominates (lag-1 up to 0.99); the noise part cannot be isolated there.
+\begin{table}[h]\centering\small
+\input{table_B4.tex}
+\caption{$z_k=\sqrt{nh\sigma^2/2}\,L_k^\top(\hat\theta_k-\theta_t)$, $L_kL_k^\top=\hat M_k+\varepsilon D_k$, $0.05\le t\le0.95$ (\MGD\ sign; reference $\theta_t$ from
+Fokker--Planck in C1, exact in C2). The model predicts $\E[z^2]=1$ and lag-1 autocorrelation 0. A deterministic $O(h)$ bias of $\hat\theta_k$ adds to
+$\E[z^2]$ in proportion to $nh$.}\label{tab:B4}
+\end{table}
+
+\subsection{C3: existing turbulence systems (Jean Zay; not run)}\label{sec:c3}
+After pushing this code, on Jean Zay (from \code{turbulence/launch}; \code{P} selects one \code{zfloor} system):
+{\small\begin{verbatim}
+P="*zfloor_two_phase_reg1e-4*seed_900*.pt"
+SYSTEM_PATTERN="$P" MODE=legacy MASK=none  RIDGE=1e-4 LAMS="0" bash resolve_lamsweep.sh
+SYSTEM_PATTERN="$P" MODE=legacy MASK=theta RIDGE=1e-4 LAMS="0" bash resolve_lamsweep.sh
+SYSTEM_PATTERN="$P" MODE=moment MASK=theta RIDGE=1e-4 SELECT=1 \
+  LAMS="0 1e-8 1e-7 1e-6 1e-5 1e-4 1e-3 1e-2 1e-1 1" bash resolve_lamsweep.sh
+# then, from the project root, for that config:
+python notes/guth_reg_audit_0930/c3_check.py <config> --root turbulence --ridge 1e-4
+\end{verbatim}}
+\noindent\code{c3\_check.py} prints: (a) masked $\Theta(0)$ vs.\ $\theta_t$; (b) the B5 \hyp: are the exploded entries of the unmasked $\Theta(0)$ the ones with $\theta_t=0$?;
+(c) the moment path (selected $\lambda$, vetoes, $\chi^2$) and the distance to the block averages of $\theta_t$.
+
+%======================================================================
+\section{Open}\label{sec:open}
+%======================================================================
+\begin{itemize}
+  \item C3 on Jean Zay (above); C4 (one smoke run of \code{run\_SDE.py} saving the moment system) only after that, and only on request.
+  \item Bimodal port (\code{bimodal\_experiment/sde\_routines\_scalar\_reg.py}, \code{codes/lam\_selection.py}): still legacy. Porting the moment mode there
+        and re-running the REG figure is the A8 follow-up.
+  \item Sizes: a moment system has the same size as a legacy one ($\hat M$ and $\hat\Sigma_w$ float32, plus $r$-vectors): 37.9\,GB/seed at $n_t=60\,000$,
+        $r=281$ \rep\ (the legacy size from 29 Sep).
+  \item The draft's eqs.~(4), (6), (8) and the MGD eq.~numbers are taken from the external review \ext.
+\end{itemize}
+
+\appendix
+\section{Scripts (\code{notes/guth\_reg\_audit\_0930/})}
+\begin{itemize}
+\item \code{verify\_claims.py}, \code{verify\_bias.py}: the checks of the first version of this note (\code{verify\_bias.py} computes $\theta^{\rm ME}$, see A5).
+\item \code{test\_moment\_mode.py}, \code{test\_forward\_regularised.py}: tests T1--T5, F1--F7.
+\item \code{mgd1d.py}, \code{run\_validation.py}, \code{make\_tables.py}: C1, C2, B4 (\code{results.json}, \code{validation\_log.txt}).
+\item \code{c3\_check.py}: C3, to run on Jean Zay.
+\end{itemize}
+\end{document}

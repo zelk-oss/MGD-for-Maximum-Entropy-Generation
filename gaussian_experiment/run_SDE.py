@@ -140,6 +140,18 @@ def parse_args():
     p.add_argument('--reg_ridge', type=float, default=0.0,
                     help='thomas only: M_k += reg_ridge * diag(M_k) in the Theta_reg '
                          'problem (0 = off)')
+    p.add_argument('--reg_mode', type=str, default=None, choices=['legacy', 'moment'],
+                    help="Energy of Theta_reg (thomas only for 'moment'). Default: 'moment' "
+                         "with --reg_solver thomas, 'legacy' with dense. 'moment': time term "
+                         "Sigma_w Theta_dot = mdot (walker covariance, pathwise mdot, no tau); "
+                         "adds _moment to the name. 'legacy': the pre-2026-09-30 tau-based "
+                         "term (reproduction only, see notes/guth_reg_audit_0930)")
+    p.add_argument('--reg_schedule', type=str, default='uniform', choices=['uniform', 'guth'],
+                    help="moment mode: quadrature weights uniform in t (default) or Guth et "
+                         "al.'s schedule mapped to Cos time (comparison option)")
+    p.add_argument('--interp_time_terms', action='store_true',
+                    help='thomas only: also save r-vector diagnostics of the tau term on the '
+                         'interpolant samples (c_I, m_I, mean tau_I); off by default')
     p.add_argument('--deduplicate_filters', action='store_true',
                     help='Drop filters_Q channels proportional to an earlier one for the '
                          'channel-list potentials (L_6_psi, Scalar_psi_*): lossless, removes '
