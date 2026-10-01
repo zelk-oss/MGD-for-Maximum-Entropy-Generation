@@ -107,10 +107,10 @@ def lam_path(inp, lams, veto=10.0, block_frac=0.01, verbose=True):
         scale = inp['n_walkers'] * h * inp['sigma'] ** 2 / 2   # (n,)
         n_live = int(live.sum()) if live is not None else n * r
         ridge = inp.get('ridge', 0.0)
-        Ms = []
-        for Mk in inp['M']:
-            Mk = _sym(Mk)
-            Ms.append(Mk + ridge * torch.diag(torch.diagonal(Mk)) if ridge else Mk)
+
+        def Mr(k):                                             # M_k + ridge, float64, built on
+            Mk = _sym(inp['M'][k])                             # the fly: a stored float64 copy
+            return Mk + ridge * torch.diag(torch.diagonal(Mk)) if ridge else Mk   # = 38 GB at nt 60000
 
     out = {k_: [] for k_ in ('Theta', 'cv_loss', 'veto', 'amp_ratio', 'chi2', 'residual')}
     for lam in lams:
@@ -124,7 +124,7 @@ def lam_path(inp, lams, veto=10.0, block_frac=0.01, verbose=True):
         chi2 = None
         if chi2_ok:
             D = Th0 - Th
-            q = torch.stack([D[k] @ Ms[k] @ D[k] for k in range(n)])
+            q = torch.stack([D[k] @ Mr(k) @ D[k] for k in range(n)])
             chi2 = float((scale * q).sum() / n_live)
         out['Theta'].append(Th.to(torch.float32)); out['cv_loss'].append(cv)
         out['veto'].append(ratio > veto); out['amp_ratio'].append(ratio)

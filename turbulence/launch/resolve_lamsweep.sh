@@ -59,10 +59,15 @@ else
     PARTITION="gpu_p6"
     CONSTRAINT="h100"
     GRES="gpu:1"
-    CPUS=24                      # a quarter of an H100 node; host RAM scales with it
+    CPUS="${CPUS:-24}"           # a quarter of an H100 node; host RAM scales with it
+                                 # (--select at nt 60000, r 281 peaks ~80 GB: system 38 + Thomas c' 38)
     MODULE_PRE="arch/h100"
+    # dev QoS: starts almost immediately, but max 2 h; QOS="" falls back to the default
+    # (t3, 20 h, queued). The array is all-or-nothing per task: a task killed at the
+    # time limit saves nothing, so split LAMS over two launches if 2 h is too short.
+    QOS="${QOS-qos_gpu_h100-dev}"
 fi
-TIME="06:00:00"
+TIME="${TIME:-$( [ -n "${QOS}" ] && [[ "${QOS}" == *-dev ]] && echo 02:00:00 || echo 06:00:00 )}"
 MODULE="pytorch-gpu/py3/2.8.0"
 
 # ── paths ────────────────────────────────────────────
@@ -80,6 +85,7 @@ shopt -u nullglob
 if [ ${#FILES[@]} -eq 0 ]; then
     echo "No system files match ${REG_SYSTEM_DIR}/${SYSTEM_PATTERN}"; exit 1
 fi
+echo "QoS ${QOS:-default}, time ${TIME}, ${CPUS} CPUs"
 echo "Re-solving ${#FILES[@]} systems for ${#LAM_LIST[@]} lam values (ridge ${RIDGE}, mode ${MODE:-from file}, schedule ${SCHEDULE}${DIM:+, dim ${DIM}}, mask ${MASK}, select ${SELECT}):"
 printf '  %s\n' "${FILES[@]##*/}"
 
@@ -89,6 +95,7 @@ JOBID=$(sbatch --parsable <<EOT
 #SBATCH -A ${ACCOUNT}
 #SBATCH --array=0-$(( ${#FILES[@]} - 1 ))
 #SBATCH --partition=${PARTITION}
+${QOS:+#SBATCH --qos=${QOS}}
 ${CONSTRAINT:+#SBATCH -C ${CONSTRAINT}}
 ${GRES:+#SBATCH --gres=${GRES}}
 #SBATCH --cpus-per-task=${CPUS}
