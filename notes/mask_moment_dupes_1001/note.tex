@@ -1,0 +1,148 @@
+\documentclass[11pt,a4paper]{article}
+\usepackage[margin=2.2cm]{geometry}
+\usepackage{amsmath,amssymb,booktabs}
+\usepackage[T1]{fontenc}
+\sloppy\setlength{\parindent}{0pt}\setlength{\parskip}{4pt}
+\newcommand{\E}{\mathbb{E}}
+\title{Mask, moment time term, cross-bank near-copies}
+\date{1 October 2026}
+\begin{document}\maketitle
+
+Tags: [code] = read in the code; [measured] = number from a run or script; [hypothesis] = not verified.
+
+\section*{Notation}
+\begin{tabular}{@{}lp{0.78\textwidth}@{}}
+$x\in\mathbb R^M$ & one signal ($M=256$); $x^i_k$, $i=1..N$: the $N$ walkers at step $k$, time $t_k$; $\Delta t_k=t_{k+1}-t_k$\\
+$\phi=(\phi_1,\dots,\phi_r)$ & the $r=281$ statistics, all families concatenated\\
+$u\cdot v$ & dot product in $\mathbb R^M$\\
+$G$ & Gram matrix on a walker set: $G_{nm}=\frac1N\sum_i\nabla\phi_n(x^i)\cdot\nabla\phi_m(x^i)$\\
+$Gc=b$ & generic form of the two systems solved at each step: predictor ($c=\eta$, $G$ at $x_k$)\\
+& and corrector ($c=\theta$, $G$ at the predicted walkers $y_k$)\\
+$D,\ \tilde G$ & $D=\mathrm{diag}(G)$, $\tilde G=D^{-1/2}GD^{-1/2}$ (so $\tilde G_{nn}=1$)\\
+$\varepsilon$ & ridge (\texttt{--regularization}; $10^{-4}$ in the zfloor runs)\\
+\end{tabular}
+
+The step solves $(\tilde G+\varepsilon I)\tilde c=D^{-1/2}b$, $c=D^{-1/2}\tilde c$, i.e.\ $(G+\varepsilon D)\,c=b$ [code].
+
+\section{Dead statistics and the mask \hfill\small(applied)}
+\textbf{Definition} [code]. At step $k$, statistic $n$ is \emph{dead} if $G_{nn}\le\tau_n$; its coefficient
+is set to 0 and the system is solved for the others. With the live set $L=\{n:G_{nn}>\tau_n\}$:
+\[
+c_n=0\ (n\notin L),\qquad (G_{LL}+\varepsilon D_{LL})\,c_L=b_L .
+\]
+\textbf{Why.} If statistic $n$ is nearly decoupled ($G_{nm}\approx0$, $m\neq n$), then
+$c_n\approx b_n/\big((1+\varepsilon)G_{nn}\big)$; its term in the walker update is $c_n\nabla\phi_n$, of mean square
+$c_n^2G_{nn}\approx b_n^2/G_{nn}$. This diverges as $G_{nn}\to0$ unless $b_n$ vanishes at least as fast as
+$\sqrt{G_{nn}}$. The ridge does not prevent it, since it is proportional to $G_{nn}$.
+Job 268295 (walker blow-up at step 163) was diagnosed as this on 28 Sep, and the rerun with the
+mask completed [measured].
+
+\textbf{Thresholds} [code]. $\tau_n=10^{-6}$ for the region statistics (\texttt{Scalar\_psi\_gaussianK},
+\texttt{Scalar\_morlet\_gaussianK}); these are rescaled so that $\E_{\rm data}|\nabla\phi_n|^2=1$, so this is
+$10^{-6}$ of the data value. $\tau_n=0$ for all other statistics (dead only if exactly zero); these are
+not rescaled.
+
+\textbf{Why only the region statistics.} A region statistic is [code]
+$\phi_{j\ell}(x)=\frac1{s_{j\ell}M}\sum_u w_\ell\big(|z_j(u)|\big)\,|z_j(u)|^{\alpha_{j\ell}}$, with $z_j=\mathrm{Re}(x\star\psi_j)$, $\psi_j$ filter $j$,
+$|\cdot|$ slightly smoothed, $s_{j\ell}$ the rescaling constant, and $w_\ell$ a window selecting the
+amplitude range $\ell$ with sigmoid edges of width $s$. For the outermost range,
+$w_\ell(a)=\big(1+e^{-(a-c)/s}\big)^{-1}\approx e^{-(c-a)/s}$ when $c-a\gg s$: if all amplitudes are well below
+the cut $c$, the gradient is exponentially small but not zero. On the walkers $G_{nn}$ reached
+$10^{-16}$--$10^{-8}$ for such regions (coarse channel, early $t$) [measured, 28 Sep]. The threshold
+was added only where this was observed. For the other families nothing guarantees $G_{nn}$
+stays away from 0 [hypothesis that it does]. A possible exception: $L_6^\psi[21]$ uses the pure
+mean filter (frequency bin 0), so its gradient is $\propto$ (signal mean)$^5$, which is small on
+noise-like walkers (not checked). This is not monitored: run 382722 logs
+$\min_nG_{nn}/\tau_n$ only over statistics with $\tau_n>0$.
+
+\textbf{In $\Theta_{\rm reg}$} [code]. Same mask: $\Theta_n(t_k)=0$ for $n\notin L_k$ (row and column replaced by
+the identity, right-hand side 0).
+
+\section{Moment time term of $\Theta_{\rm reg}$ \hfill\small(applied, default)}
+\begin{tabular}{@{}lp{0.78\textwidth}@{}}
+$\theta_k$ & corrector coefficients at step $k$, divided by $\Delta t_k\sigma^2$ ($\sigma$: noise level)\\
+$\Theta(t)\in\mathbb R^r$ & smoothed coefficient path ($\Theta_{\rm reg}$), the unknown\\
+$p_t$ & law of the walkers at time $t$ (no exponential form assumed)\\
+$m_t$ & target moments, $m_t=\E[\phi(I_t)]$, $I_t$ the interpolant; the corrector enforces $\E_{p_t}[\phi]\approx m_t$\\
+$\dot m_t$ & $\frac{d}{dt}\E[\phi(I_t)]=\E[\nabla\phi(I_t)\cdot\dot I_t]$ (pathwise, already used by the predictor)\\
+$\Sigma_t$ & $\mathrm{Cov}_{p_t}(\phi)$, centred, computed on the corrected walkers $x_{k+1}$\\
+$M_k,\ b_k$ & $M_k=G(y_k)+\varepsilon'\,\mathrm{diag}\,G(y_k)$, $b_k=\big(m_{t_{k+1}}-\tfrac1N\sum_i\phi(y^i_k)\big)/(\Delta t_k\sigma^2)$\\
+& with $\varepsilon'=\varepsilon$, $M_k\theta_k=b_k$ is the corrector's equation [code]\\
+& ($\varepsilon'$: \texttt{RIDGE} of the offline solve, default $10^{-4}$)\\
+\end{tabular}
+
+\textbf{Time term.} Fit the time derivative of $\log p_t$ with $\dot\Theta\cdot\phi(x)+a$ ($a\in\mathbb R$ free)
+in least squares: $\min_{\dot\Theta,a}\E_{p_t}\big[(\partial_t\log p_t-\dot\Theta\cdot\phi-a)^2\big]$.
+Eliminating $a$ (using $\E_{p_t}[\partial_t\log p_t]=0$) gives
+\[
+\Sigma_t\,\dot\Theta=\mathrm{Cov}_{p_t}(\phi,\partial_t\log p_t)=\int\phi\,\partial_tp_t\,dx
+=\frac{d}{dt}\E_{p_t}[\phi]=\dot m_t .
+\]
+The last step uses only $\E_{p_t}[\phi]=m_t$. The old (legacy) term was built from the noise $Z$ of
+the interpolant, but the walkers are drawn independently of $Z$ [code], so its conditional mean
+given the walkers is a constant [derived].
+
+\textbf{Energy} ($\lambda\ge0$ chosen after the run):
+\[
+\mathcal E[\Theta]=\int_0^1\Big[\tfrac12\Theta^\top M_t\Theta-b_t^\top\Theta\Big]dt
++\lambda\int_0^1\Big[\tfrac12\dot\Theta^\top\Sigma_t\dot\Theta-\dot m_t^\top\dot\Theta\Big]dt .
+\]
+$\lambda=0$: $\Theta(t_k)=\theta_k$. Large $\lambda$: $\Sigma_t\dot\Theta\to\dot m_t$, the data term fixing the rest.
+Stationarity: $M_t\Theta-b_t=\lambda\frac{d}{dt}\big(\Sigma_t\dot\Theta-\dot m_t\big)$.
+
+\textbf{Discretisation} [code] (trapezoid weights $w_k$): first integral $\to\sum_kw_k[\cdot]_k$; second
+$\to\sum_k\lambda\Delta t_k\big[\tfrac12\delta_k^\top C_k\delta_k-\bar{\dot m}_k^\top\delta_k\big]$ with
+$\delta_k=(\Theta_{k+1}-\Theta_k)/\Delta t_k$, $C_k=\tfrac12(\Sigma_k+\Sigma_{k+1})$, $\bar{\dot m}_k=\tfrac12(\dot m_k+\dot m_{k+1})$.
+Solved exactly (block tridiagonal, float64).
+
+\section{Cross-bank near-copies \hfill\small(found; fix proposed, not applied)}
+\textbf{Meaning.} With $g_n=\nabla\phi_n/\sqrt{G_{nn}}$ (unit mean-square norm),
+$\tilde G_{nm}=\frac1N\sum_ig_n(x^i)\cdot g_m(x^i)$ is the cosine similarity of the two gradients (uncentred),
+over walkers and positions. An eigenvector $v\approx(e_a\mp e_b)/\sqrt2$ of $\tilde G$ with eigenvalue $\mu$ gives
+\[
+\tilde G_{ab}\approx\pm(1-\mu),\qquad \frac1N\sum_i|g_a(x^i)\mp g_b(x^i)|^2\approx2\mu ,
+\]
+i.e.\ the two normalised gradients are equal up to a relative difference $\sim\sqrt{2\mu}$.
+The walker update contains $\tilde c_ag_a+\tilde c_bg_b\approx(\tilde c_a\pm\tilde c_b)\,g_a$
+($\tilde c_n=\sqrt{G_{nn}}\,c_n$), so the data fix only $\tilde c_a\pm\tilde c_b$. The component along $v$ is
+$v^\top\tilde c=v^\top\tilde b/(\mu+\varepsilon)\approx v^\top\tilde b/\varepsilon$: its size is set by $\varepsilon$, not by $\mu$.
+
+\textbf{Found} [measured; zfloor run, seed 900, \texttt{find\_duplicate\_statistics.py} on $M_k$, 25 nodes]
+(global index in brackets; $S^{\rm morlet}$, $S^\psi$ = \texttt{Scalar\_morlet/psi\_gaussianK}):
+\begin{center}\small\begin{tabular}{lll}\toprule
+pair & first seen & $\mu$ when first seen as a separate pair\\\midrule
+$L_6[7]$ (7) $\approx L_6^\psi[20]$ (29) & $t=0.0002$ & $6.9\cdot10^{-7}$\\
+$L_6[8]$ (8) $\approx L_6^\psi[21]$ (30) & $t=0.23$ & $6.2\cdot10^{-7}$ (at $t=0.45$)\\
+$S^{\rm morlet}[30]$ (140) $\approx S^\psi[77]$ (109) & $t=0.23$ & $5.8\cdot10^{-6}$ (at $t=0.45$)\\\bottomrule
+\end{tabular}\end{center}
+At $t=0.23$ the last two pairs appear mixed in two 4-statistic directions ($\mu=1.0\cdot10^{-7}$, $2.1\cdot10^{-6}$).
+The tool prints only the first appearance, so presence at all later times is not shown by it.
+Separately, the per-step $\tilde G$ of the corrector has $\mu_{\min}\approx1$--$6\cdot10^{-7}$ at all steps with largest
+loadings on 7, 8, 29, giving $\kappa(\tilde G)\sim10^7$--$10^8$ [measured, offline job 382751]. $\kappa$ with these pairs
+removed has not been computed.
+
+\textbf{Mechanism} [measured, \texttt{check\_cross\_bank.py}, synthetic signals]. $L_6$ and \texttt{Scalar\_morlet}
+use the $Q=1$ bank (9 filters), $L_6^\psi$ and \texttt{Scalar\_psi} the $Q=3$ bank (25 filters, 22 kept by dedup;
+kept index 21 is bank channel 24). Filter deficit $1-|\langle f,g\rangle|/(\|f\|\|g\|)$ (Fourier domain):
+\begin{center}\small\begin{tabular}{lccc}\toprule
+pair & content & filter deficit & $1-|\tilde G_{ab}|$ of $L_6$ grads (white / $k^{-2}$)\\\midrule
+$Q{=}1$ \#7 vs kept $\psi$ \#20 & bin 1 & $5.8\cdot10^{-4}$ & $2.4\cdot10^{-6}$ / $4.0\cdot10^{-7}$\\
+$Q{=}1$ \#8 vs kept $\psi$ \#21 & bin 0 (\#8: + bin 1) & $1.5\cdot10^{-3}$ & $1.2\cdot10^{-5}$ / $1.4\cdot10^{-5}$\\\bottomrule
+\end{tabular}\end{center}
+So the filters differ by $\sim10^{-3}$ but the gradients by only $10^{-7}$--$10^{-5}$, the same order as the
+$\mu$ measured on the walkers. Likely reason: the gradient applies the filter a second time
+[hypothesis]. On these signals the dependence is a near-copy, not an exact one; on the walkers
+$\mu$ sits close to float32 resolution, so walker values alone could not tell. Not checked: the
+filters behind the \texttt{Scalar} pair (requires the fitted state).
+
+\textbf{Why dedup missed them} [code]. \texttt{deduplicate\_filters} drops a filter whose deficit to an
+earlier one is $\le$ tol ($10^{-8}$ in these runs), and it only compares filters \emph{inside} the $Q=3$ bank.
+The two banks are never compared, and the deficits here ($\sim10^{-3}$) are far above $10^{-8}$ anyway.
+
+\textbf{Proposed fix.} Apply the same filter test between the banks and drop the $Q=1$ filter (for $L_6$,
+and for \texttt{Scalar\_morlet} if it uses the same filter) when its deficit to a kept $\psi$ filter is below
+$10^{-2}$. The gap is clean [measured]: the two copies are at $5.8\cdot10^{-4}$ and $1.5\cdot10^{-3}$; every other
+$Q{=}1$ filter is $\ge7.4\cdot10^{-2}$ from its closest $\psi$ filter; kept $\psi$ filters are $\ge4.2\cdot10^{-2}$
+from each other. This removes $Q{=}1$ filters \#7 and \#8 only.
+
+\end{document}

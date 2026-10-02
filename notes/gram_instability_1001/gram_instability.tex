@@ -1,0 +1,391 @@
+\documentclass[11pt,a4paper]{article}
+\usepackage[margin=2.5cm]{geometry}
+\usepackage{amsmath,amssymb}
+\usepackage{booktabs}
+\usepackage{enumitem}
+\usepackage{xcolor}
+\usepackage[hidelinks]{hyperref}
+\setlist{itemsep=2pt,topsep=4pt}
+\newcommand{\code}[1]{\texttt{#1}}
+\newcommand{\meas}{\textcolor{teal}{\textsf{[measured]}}}
+\newcommand{\hyp}{\textcolor{orange!80!black}{\textsf{[hypothesis]}}}
+\newcommand{\E}{\mathbb{E}}
+\newcommand{\Gt}{\widetilde{G}}
+
+\title{When is the Gram matrix of MGD unstable, and what we do about it\\[2pt]
+\large A step-by-step explanation, with the measurements of the 30 September run}
+\author{}
+\date{1 October 2026}
+
+\begin{document}
+\maketitle
+
+\section*{What this note is for}
+At every time step, MGD moves the walkers by solving a linear system whose matrix is the
+\emph{Gram matrix} $G$ of the gradients of the statistics. If $G$ is ``unstable''
+(the word used in numerics is \emph{ill-conditioned}), the solution can become huge or
+meaningless. This note explains, without assuming any background in numerical linear
+algebra:
+\begin{enumerate}
+  \item where $G$ comes from (Sections~\ref{sec:mgd}--\ref{sec:where});
+  \item the two ways in which $G$ can make the solve fail (Section~\ref{sec:two});
+  \item the three remedies used in the code: rescaling, ridge, mask (Section~\ref{sec:remedies});
+  \item what we measured along the transport in the run of 30 September (Section~\ref{sec:measured});
+  \item what this does and does not explain (Section~\ref{sec:scope}).
+\end{enumerate}
+\meas\ marks a number computed on the run or in a controlled test; \hyp\ marks an
+interpretation that has not been tested directly.
+
+%=====================================================================================
+\section{MGD in one page}\label{sec:mgd}
+
+\paragraph{Statistics.} A signal is a vector $x\in\mathbb R^M$ (here $M=256$). We describe it by
+$r$ real-valued \emph{statistics} $\phi_1(x),\dots,\phi_r(x)$ (here $r=281$): $L^6$ norms of
+wavelet coefficients, region statistics, scattering coefficients, \dots. We write
+$\phi=(\phi_1,\dots,\phi_r)$. Each $\phi_n$ has a gradient $\nabla\phi_n(x)\in\mathbb R^M$: the
+direction in which one should move the signal $x$ to increase $\phi_n$ fastest.
+
+\paragraph{Walkers and their moments.} MGD evolves $N$ signals $x^1,\dots,x^N$, the
+\emph{walkers} (here $N=8500$), from time $t=0$ to $t=1$ on a grid $t_0<t_1<\dots<t_{n_t}$.
+The walkers at step $k$ are written $x_k^i$. Their \emph{empirical moments} are the averages
+\[
+  \bar\phi_n(x_k)=\frac1N\sum_{i=1}^N\phi_n(x_k^i),\qquad n=1,\dots,r .
+\]
+
+\paragraph{Target moments.} Let $x_1^1,\dots,x_1^P$ be the data and $x_0^1,\dots,x_0^P$ independent
+Gaussian noise. The \emph{interpolant} between noise and data is
+\[
+  I_t^j=\cos\!\Big(\frac{\pi t}{2}\Big)x_0^j+\sin\!\Big(\frac{\pi t}{2}\Big)x_1^j,\qquad j=1,\dots,P,
+\]
+pure noise at $t=0$, the data at $t=1$. The \emph{target moments} at time $t$ are
+\[
+  m^\star_n(t)=\frac1P\sum_{j=1}^P\phi_n\big(I_t^j\big).
+\]
+No model of the data is needed: the targets are computed from data and noise.
+The aim of MGD is that, at every time, the walkers have the target moments,
+$\bar\phi_n(x_k)\approx m^\star_n(t_k)$ for all $n$, while being otherwise as random
+(maximum entropy) as possible.
+
+\paragraph{One time step.} With $h=t_{k+1}-t_k$, each step has two parts (code:
+\code{iteration\_step\_projection}).
+\begin{itemize}
+  \item \textbf{Predictor.} Move the walkers along the gradients so that their moments follow
+    the motion of the target, and add noise of strength $\sigma$ (here $\sigma=3.5$):
+    \[
+      y_k^i=x_k^i+h\sum_{m=1}^r\eta_m\nabla\phi_m(x_k^i)+\sqrt{2h}\,\sigma\,\xi^i,
+      \qquad \xi^i\sim\mathcal N(0,I).
+    \]
+  \item \textbf{Corrector.} Move the walkers once more along the gradients to remove the
+    remaining gap to the target at $t_{k+1}$:
+    \begin{equation}
+      x_{k+1}^i=y_k^i+\sum_{m=1}^r\theta_m\nabla\phi_m(y_k^i).
+      \label{eq:corrector}
+    \end{equation}
+\end{itemize}
+The unknowns are the coefficients $\eta=(\eta_1,\dots,\eta_r)$ and $\theta=(\theta_1,\dots,\theta_r)$,
+one per statistic. (The $\theta$ saved to disk is divided by $h\sigma^2$; this does not
+matter here.) Both are obtained by solving a linear system with the Gram matrix. We now see why.
+
+%=====================================================================================
+\section{Where the Gram matrix comes from}\label{sec:where}
+
+Take the corrector \eqref{eq:corrector}. How much does it change the moment $\bar\phi_n$?
+For a small move, a function changes by (gradient)$\cdot$(displacement); this is the
+first-order Taylor expansion:
+\[
+  \phi_n(x_{k+1}^i)\;\approx\;\phi_n(y_k^i)+\nabla\phi_n(y_k^i)\cdot\big(x_{k+1}^i-y_k^i\big)
+  =\phi_n(y_k^i)+\sum_{m=1}^r\theta_m\,\nabla\phi_n(y_k^i)\cdot\nabla\phi_m(y_k^i).
+\]
+Averaging over the walkers,
+\[
+  \bar\phi_n(x_{k+1})-\bar\phi_n(y_k)\;\approx\;\sum_{m=1}^r G_{nm}\,\theta_m,
+  \qquad
+  \boxed{\,G_{nm}=\frac1N\sum_{i=1}^N\nabla\phi_n(y_k^i)\cdot\nabla\phi_m(y_k^i)\,}
+\]
+$G$ is the \textbf{Gram matrix of the gradients}: entry $(n,m)$ is the inner product of the
+gradients of statistics $n$ and $m$, averaged over the walkers. We want the change to close
+the gap to the target, $b_n=m^\star_n(t_{k+1})-\bar\phi_n(y_k)$. This gives one linear equation
+per statistic,
+\begin{equation}
+  G\,\theta=b .
+  \label{eq:system}
+\end{equation}
+The predictor gives the same kind of system, $G\,\eta=\dot m^\star(t_k)$, with $G$ evaluated on
+$x_k$ and the right-hand side equal to the speed at which the target moments move.
+
+\paragraph{Reading $G$.}
+\begin{itemize}
+  \item The \textbf{diagonal entry} $G_{nn}=\frac1N\sum_i|\nabla\phi_n(y_k^i)|^2$ says how strongly
+    statistic $n$ reacts when the walkers move. If $\nabla\phi_n=0$ on every walker, no move of
+    the form \eqref{eq:corrector} can change $\bar\phi_n$.
+  \item The \textbf{off-diagonal entry} $G_{nm}$ says how much moving along $\nabla\phi_m$ also changes
+    $\phi_n$. If the two gradients are orthogonal on average over the walkers, $G_{nm}=0$: the two
+    statistics can be adjusted independently. If they are almost parallel, adjusting one also
+    adjusts the other.
+\end{itemize}
+
+%=====================================================================================
+\section{Two ways in which the solve can fail}\label{sec:two}
+
+Solving \eqref{eq:system} means finding the coefficients $\theta$ that produce the requested
+changes $b$. It fails when some requested change can only be produced by an enormous move.
+This happens in two distinct ways.
+
+\subsection{Failure 1: a statistic that the walkers cannot move}\label{sec:fail1}
+Take the simplest case: the gradient of statistic $n$ is orthogonal, on average over the walkers,
+to the gradients of all the others ($G_{nm}=0$ for every $m\neq n$). Row $n$ of
+\eqref{eq:system} then reads $G_{nn}\theta_n=b_n$, so
+\[
+  \theta_n=\frac{b_n}{G_{nn}} .
+\]
+The size of the resulting move is $\frac1N\sum_i|\theta_n\nabla\phi_n(y_k^i)|^2=\theta_n^2G_{nn}=b_n^2/G_{nn}$.
+If $G_{nn}\to0$ and the gap $b_n$ does not shrink at least as fast as $\sqrt{G_{nn}}$, the move
+diverges: we ask for a change of a moment that the walkers can barely influence. Nothing in the
+method forces $b_n$ to shrink that fast: $b_n$ is the difference of two averages over finitely many
+samples, and their sampling noise does not depend on $G_{nn}$.
+
+\textbf{Where it happens.} Region statistics (\code{Scalar\_*\_gaussianK}) measure how much of a
+wavelet channel falls in a given range of amplitudes. Early in the transport the walkers are close to
+Gaussian noise, and some amplitude ranges contain almost no walker. There $\nabla\phi_n\approx0$
+and $G_{nn}\approx0$ (on the walkers, $G_{nn}$ reached $10^{-16}$--$10^{-8}$ times its data value
+\meas). The walker blow-up of job 268295 at step 163 (28 September) was diagnosed as this, and the
+rerun with the mask of Section~\ref{sec:remedies} completed \meas.
+
+\subsection{Failure 2: two statistics that move the walkers in the same way}\label{sec:fail2}
+Now take two statistics $a$ and $b$ whose gradients are almost the same (after normalising both to
+the same size). With unit diagonal, their $2\times2$ block of $G$ is
+\[
+  G=\begin{pmatrix}1&1-\delta\\ 1-\delta&1\end{pmatrix},\qquad \delta \text{ small}.
+\]
+Solving $G\theta=b$ by hand (add and subtract the two equations):
+\[
+  \theta_a+\theta_b=\frac{b_a+b_b}{2-\delta},\qquad
+  \theta_a-\theta_b=\frac{b_a-b_b}{\delta}.
+\]
+The \emph{sum} $\theta_a+\theta_b$ is well determined. The \emph{difference} is divided by
+$\delta$. Both statistics push the walkers in (almost) the same direction, so the walkers only
+``see'' their sum, and the difference is decided by a tiny $\delta$. Whatever is in $b_a-b_b$,
+including sampling noise (targets and walker moments are averages over finitely many samples) and
+rounding errors, is multiplied by $1/\delta$. For instance, with $\delta=10^{-7}$, a difference
+$b_a-b_b=10^{-6}$ gives $\theta_a-\theta_b=10$. Whether the result is actually large depends on
+how small $b_a-b_b$ happens to be; the point is that the solve has no control over it.
+
+Note that \emph{neither statistic is weak}: both have $G_{aa}=G_{bb}=1$. Failure~2 is invisible on
+the diagonal; it is in the off-diagonal entry $1-\delta$.
+
+\subsection{The general picture: eigen-directions and the condition number}
+Both failures are special cases of one picture. $G$ is symmetric, so it has $r$ orthogonal
+\emph{eigen-directions} $u_1,\dots,u_r$ (each is a combination of the $r$ coefficients) with
+eigenvalues $\mu_1\le\mu_2\le\dots\le\mu_r$, all $\ge0$. The solution of \eqref{eq:system} is
+\[
+  \theta=\sum_{i=1}^r\frac{u_i\cdot b}{\mu_i}\,u_i .
+\]
+Read it as: the eigenvalue $\mu_i$ says how much the moments change when the coefficients move
+along $u_i$; to obtain the requested change, the solve divides by $\mu_i$. A \textbf{small eigenvalue}
+is a combination of coefficients that the walkers barely see, and whatever part of $b$ lies along it
+is blown up. In the $2\times2$ example, the eigenvalues are $2-\delta$ (direction ``$a+b$'')
+and $\delta$ (direction ``$a-b$''). In Failure~1, the small eigenvalue is $G_{nn}$ itself, with
+direction ``statistic $n$ alone''.
+
+The \textbf{condition number} is the ratio of the largest to the smallest eigenvalue,
+\[
+  \kappa=\frac{\mu_{\max}}{\mu_{\min}} .
+\]
+Rule of thumb: errors in $G$ or $b$ can be amplified by up to a factor $\kappa$ in the solution,
+i.e.\ one can lose about $\log_{10}\kappa$ significant digits. A computer number in single precision
+(\code{float32}) carries about 7 digits, in double precision (\code{float64}) about 16. So when
+$\kappa$ approaches $10^7$, a matrix stored in \code{float32} no longer determines the solution
+along its weakest directions.
+
+%=====================================================================================
+\section{The three remedies in the code}\label{sec:remedies}
+
+\paragraph{1. Rescaling (Jacobi).} The statistics have different units, so the raw $G$ mixes large and
+small numbers for no physical reason. The code first divides each statistic by $\sqrt{G_{nn}}$:
+\[
+  \Gt_{nm}=\frac{G_{nm}}{\sqrt{G_{nn}G_{mm}}},\qquad \Gt_{nn}=1 .
+\]
+$\Gt_{nm}$ is then the \emph{cosine} between the two gradients, each seen as one long vector over all
+walkers and all positions: $0$ if they are orthogonal on average, close to $\pm1$ if almost parallel. All condition numbers below are for $\Gt$. Rescaling
+removes differences of units but cannot fix either failure: in Failure~2 the cosine stays
+$1-\delta$, and in Failure~1 the division is by the vanishing $\sqrt{G_{nn}}$ itself.
+
+\paragraph{2. Ridge $\varepsilon$.} The code solves $(\Gt+\varepsilon I)\tilde\theta=\tilde b$ with
+$\varepsilon=10^{-4}$ (\code{--regularization}). In the eigen-picture,
+\[
+  \tilde\theta=\sum_i\frac{u_i\cdot\tilde b}{\mu_i+\varepsilon}\,u_i :
+\]
+directions with $\mu_i\gg\varepsilon$ are untouched; directions with $\mu_i\ll\varepsilon$ get the
+coefficient $(u_i\cdot\tilde b)/\varepsilon$ instead of $(u_i\cdot\tilde b)/\mu_i$. So the ridge
+\emph{caps} Failure~2, at the price that the coefficient along these directions is set by the
+arbitrary $\varepsilon$ and not by the data.
+
+The ridge does \emph{not} cure Failure~1. Undoing the rescaling, the solved system is
+$(G+\varepsilon\,\mathrm{diag}\,G)\,\theta=b$. In the uncoupled case this gives
+$\theta_n=b_n/\big((1+\varepsilon)G_{nn}\big)$: the ridge is proportional to $G_{nn}$ and vanishes with it.
+
+\paragraph{3. The mask (for Failure 1).} At each step we keep only the statistics that can still act on
+the walkers,
+\[
+  L=\big\{\,n:\ G_{nn}>\tau_n\,\big\},
+\]
+with $\tau_n=10^{-6}$ for the region statistics and $\tau_n=0$ for all others. Each statistic is
+normalised so that $\E_{\rm data}|\nabla\phi_n|^2=1$, so $\tau_n=10^{-6}$ means one millionth of its
+value on the data. In practice, row and column $n$ of $G$ are removed for every $n\notin L$: we solve
+the smaller system $(G_{LL}+\varepsilon\,\mathrm{diag}\,G_{LL})\,\theta_L=b_L$ and set $\theta_n=0$
+for the others. This barely affects the live statistics, because by the Cauchy--Schwarz inequality
+$|G_{nm}|\le\sqrt{G_{nn}G_{mm}}$: when $G_{nn}$ is close to zero, the whole row and column $n$ are
+close to zero as well. Setting $\theta_n=0$ removes almost no control, since the walkers could barely
+move $\bar\phi_n$ anyway; the price is that $\bar\phi_n$ is not corrected while the statistic is masked. When the amplitude range fills up again, $G_{nn}>\tau_n$ and the statistic
+re-enters $L$ automatically.
+
+The mask looks only at the diagonal, so it cannot see Failure~2: two near-copies each have a normal
+diagonal.
+
+%=====================================================================================
+\section{What we measured along the transport (run of 30 September)}\label{sec:measured}
+
+Job 382722: turbulence, seed 900, two-phase time grid ($n_t=60\,000$), $N=8500$, $r=281$,
+$\varepsilon=10^{-4}$. The run logged the eigenvalues of $\Gt$ every 10 steps (6000 logged steps),
+for both solves; the figures are in \code{turbulence/gram\_along\_transport.ipynb}. The run
+finished normally \meas.
+
+\subsection{Failure 1: masking}
+Only 5 of the 281 statistics were ever masked, all region statistics, all before $t=0.15$ \meas:
+\begin{center}\small
+\begin{tabular}{lcc}
+\toprule
+statistic & masked during & masked steps\\
+\midrule
+\code{Scalar\_morlet\_gaussianK[21]} & $t<0.021$ & 236\\
+\code{Scalar\_psi\_gaussianK[55]} & $t<0.044$ (short breaks at $t\approx0.021$ and $0.0435$) & 478\\
+\code{Scalar\_psi\_gaussianK[33]} & $t<0.055$ (short break at $t\approx0.021$) & 603\\
+\code{Scalar\_morlet\_gaussianK[30]} & $t<0.148$ & 1646\\
+\code{Scalar\_psi\_gaussianK[77]} & $t<0.149$ & 1657\\
+\bottomrule
+\end{tabular}
+\end{center}
+Seven statistics have a coefficient jump, defined as $|\theta_n|$ above 100 times its own running
+median. For all seven, the largest jump is at $t\approx0.0213$--$0.0215$ \meas. This is the moment
+when \code{Scalar\_morlet\_gaussianK[21]} is switched back on, with little margin above its threshold,
+and \code{Scalar\_psi\_gaussianK[33]} and \code{[55]} are briefly switched on as well \meas. That the
+re-activation causes the jumps is likely but not proven \hyp. Four of the seven statistics have a
+second, smaller jump episode, whose time I have not located.
+
+\subsection{Failure 2: near-copies}
+The four smallest eigenvalues of $\Gt$ (corrector), median over each time window \meas:
+\begin{center}\small
+\begin{tabular}{lccccc}
+\toprule
+$t$ window & $\mu_1$ & $\mu_2$ & $\mu_3$ & $\mu_4$ & $\kappa=\mu_{\max}/\mu_1$\\
+\midrule
+$[0,\,0.1)$     & $6.0\cdot10^{-7}$ & $4.4\cdot10^{-6}$ & $2.6\cdot10^{-5}$ & $2.7\cdot10^{-4}$ & $2.5\cdot10^{7}$\\
+$[0.1,\,0.5)$   & $1.9\cdot10^{-7}$ & $5.0\cdot10^{-7}$ & $5.3\cdot10^{-6}$ & $3.5\cdot10^{-4}$ & $6.2\cdot10^{7}$\\
+$[0.5,\,0.9)$   & $1.6\cdot10^{-7}$ & $6.7\cdot10^{-7}$ & $1.2\cdot10^{-5}$ & $5.1\cdot10^{-4}$ & $7.2\cdot10^{7}$\\
+$[0.99,\,0.999)$& $1.5\cdot10^{-7}$ & $6.7\cdot10^{-7}$ & $1.3\cdot10^{-5}$ & $5.1\cdot10^{-4}$ & $1.3\cdot10^{8}$\\
+$[0.999,\,1)$   & $1.4\cdot10^{-7}$ & $6.7\cdot10^{-7}$ & $1.3\cdot10^{-5}$ & $5.0\cdot10^{-4}$ & $1.5\cdot10^{8}$\\
+\bottomrule
+\end{tabular}
+\end{center}
+Three eigenvalues are below the ridge $\varepsilon=10^{-4}$ at almost every logged step (two or four
+at a few steps near $t=0$), and $\mu_4$ is a factor 10--70 above $\mu_3$ \meas. So $\Gt$ has
+\textbf{three directions far weaker than all the others}.
+
+\paragraph{Which statistics.} For the smallest direction, the log records the statistics with the
+largest weight. At 96\% of the steps it is the pair $L_6[7]$ / $L_6^\psi[20]$; at 3\% the pair
+$L_6[8]$ / $L_6^\psi[21]$; at a few steps the pair \code{Scalar\_psi\_gaussianK[77]} /
+\code{Scalar\_morlet\_gaussianK[30]} \meas. A search for numerically null directions on the saved
+systems (25 times checked) finds, at $t=0.9985$, the direction $0.71\,[L_6[7]]-0.71\,[L_6^\psi[20]]$:
+exactly the ``$a-b$'' direction of Section~\ref{sec:fail2} \meas. The log records the composition of the
+smallest direction only. That $\mu_1$ and $\mu_2$ are the two $L_6$ pairs is therefore an inference from
+which pairs show up as smallest, and the third direction ($\mu_3$) is probably the Scalar pair; neither
+has been checked directly \hyp.
+
+\paragraph{Why these pairs exist.} $L_6$ is computed on a wavelet bank with $Q=1$, $L_6^\psi$ on a
+bank with $Q=3$. In the usual construction of such banks, $Q$ sets the bandwidth \emph{relative} to the
+centre frequency. But the grid has $M=256$ points, so frequencies only come in integer bins. At the
+coarsest scales, both filters of each pair put essentially all their weight on the same one or two bins
+(bin~1 for the first pair, bin~0 for the second) \meas, so they are almost identical. Measured as
+$1-|\cos|$ between the filters, they differ by $5.8\cdot10^{-4}$ and $1.5\cdot10^{-3}$; between the
+gradients of the corresponding $L_6$ statistics, on synthetic signals and in \code{float64}, the
+difference is only $4\cdot10^{-7}$--$1.4\cdot10^{-5}$ \meas. The code already removes duplicate filters
+\emph{inside} the $Q=3$ bank, but never compares the two banks with each other.
+
+\paragraph{How reliable are these numbers.} $G$ is accumulated in \code{float32} (about 7 digits) and
+only then converted to \code{float64} for the solve. Rounding each entry to 7 digits moves the eigenvalues
+by an amount that, for a $281\times281$ matrix, can reach roughly $10^{-7}$--$10^{-6}$ \hyp\ (order-of-magnitude
+estimate, not measured). At 5\% of the logged steps the smallest eigenvalue indeed comes out slightly
+\emph{negative} ($\approx-10^{-7}$), which is impossible for a Gram matrix \meas. So:
+\begin{itemize}
+  \item $\mu_1$ and $\mu_2$ ($\sim10^{-7}$--$10^{-6}$) are at the precision limit. Their order of magnitude
+    is consistent with the \code{float64} test on synthetic signals above, but their values, and hence
+    $\kappa\sim10^7$--$10^8$, cannot be trusted precisely. What is certain is that these directions are
+    far below the ridge.
+  \item $\mu_3$ and $\mu_4$ ($\sim10^{-5}$ and $\sim5\cdot10^{-4}$) are well above the precision limit.
+\end{itemize}
+Only building $G$ in \code{float64} would give the true $\mu_1$, $\mu_2$.
+
+\subsection{Without the near-copies}
+Removing $k$ statistics from $G$ (deleting their rows and columns) cannot make the new smallest
+eigenvalue larger than the old $\mu_{k+1}$; this is a standard result, \emph{eigenvalue interlacing}.
+The bound is approximately reached when the removed statistics are the ones that make up the weak
+directions. The largest eigenvalue barely changes when 2--3 of 281 statistics are removed. So the table
+above gives, approximately, the best condition number that removing statistics can achieve:
+\begin{center}\small
+\begin{tabular}{lcc}
+\toprule
+statistics removed & new smallest eigenvalue & best $\kappa$\\
+\midrule
+none & $\mu_1\approx1.5\cdot10^{-7}$ & $\sim10^{8}$ (at the precision limit)\\
+2 statistics (one per $L_6$ pair)$^*$ & $\mu_3\approx1.2\cdot10^{-5}$ & $\sim10^{6}$\\
+3 statistics (also the third direction) & $\mu_4\approx5\cdot10^{-4}$ & $\sim2$--$5\cdot10^{4}$\\
+\bottomrule
+\end{tabular}\\[2pt]
+{\footnotesize $^*$ assuming $\mu_1,\mu_2$ are the two $L_6$ pairs (see above).}
+\end{center}
+The last value stays between $2\cdot10^4$ and $5\cdot10^4$ in every time window, from $t=0$ to $t=1$
+\meas. Near $t=1$ the walkers should be distributed approximately like the data, so this suggests that
+$\sim3\cdot10^4$ is also the conditioning of the full set of 281 statistics on the data, i.e.\ a property
+of the statistics rather than something the transport creates \hyp. A direct check is to compute $\Gt$ on
+the data. At that level the ridge still acts, but mildly: along the weakest remaining direction the
+solution is multiplied by $\mu_4/(\mu_4+\varepsilon)\approx0.7$--$0.8$, and by almost $1$ along all the
+others. \code{float32} has a comfortable margin.
+
+\paragraph{Correction to the note of 30 September.} The value $\kappa\approx12$ quoted there was for the
+73 \code{Scalar\_psi\_gaussianK} statistics alone, on the data. The full 281-statistic Gram contains
+near-dependencies \emph{between} families (e.g.\ $L_6$ on $Q=1$ and on $Q=3$ filters) that a single family
+cannot show.
+
+%=====================================================================================
+\section{What this explains, and what it does not}\label{sec:scope}
+
+\begin{itemize}
+  \item \textbf{Explained.} The crash of 28 September (Failure~1, cured by the mask), and why $\Gt$ has a
+    very large condition number (Failure~2: three weak directions, whose coefficients are set by
+    $\varepsilon$; the weakest certainly, and most likely the second, come from near-copy filters).
+  \item \textbf{Not explained.} The moments that are still not matched at the end of the run: 11
+    moments miss their target by more than 1\% at the last time, all of them region statistics, with errors
+    that first exceed 1\% between $t=0.957$ and $t=0.995$ \meas. None of these statistics is ever masked, and
+    none is ever among the main components of the smallest eigen-direction \meas. We have no evidence
+    linking them to the conditioning of $G$; but the composition of the second and third weakest
+    directions is unknown, so this is not excluded. Their cause is under investigation.
+\end{itemize}
+
+\paragraph{About the supervisor's suggestion (conjugate gradient with early stopping).} Stopping when
+$\|G\theta-b\|$ falls below the statistical noise of $b$ is another way of regularising, in which the noise,
+not a hand-picked $\varepsilon$, sets the threshold (the \emph{discrepancy principle}). Replayed on the
+logged systems, at 5999 of 6000 steps the gap $b$ is already below its estimated noise level before any
+correction ($\theta=0$), so the method would stop immediately and not correct at all \meas. This holds with both the plain and the
+noise-weighted norm. The noise estimate itself may be too large, for instance if the noise of the target is
+not independent from step to step \hyp; until that is checked, the criterion cannot be used as is.
+
+\section*{Proposed next steps}
+\begin{enumerate}
+  \item Remove the cross-bank near-copies when the filters are built: drop the $Q=1$ filters 7 and 8
+    (difference to a $Q=3$ filter below $10^{-2}$; all other $Q=1$ filters are at least $7\cdot10^{-2}$ away).
+  \item Identify the third near-singular direction, from the eigenvector of $\mu_3$ on the saved systems.
+  \item Optionally, build $G$ in \code{float64}, to measure the smallest eigenvalues beyond the
+    \code{float32} limit.
+\end{enumerate}
+
+\end{document}

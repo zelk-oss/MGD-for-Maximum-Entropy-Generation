@@ -1,0 +1,194 @@
+\documentclass[11pt]{article}
+\usepackage[margin=2.5cm]{geometry}
+\usepackage{amsmath,amssymb}
+\usepackage{booktabs}
+\usepackage[hidelinks]{hyperref}
+\usepackage{xcolor}
+
+\newcommand{\E}{\mathbb{E}}
+\newcommand{\code}[1]{\texttt{#1}}
+\newcommand{\Gt}{\widetilde{G}}
+
+\title{Two epsilons and the conditioning of $G$\\[2pt]\large recap of the September 2026 changes}
+\author{}
+\date{30 September 2026}
+
+\begin{document}
+\maketitle
+
+\noindent The phrase \emph{``I removed epsilon''} mixed up two different constants.
+This note separates them, lists what changed in each, and summarises what we know
+about the conditioning of the Gram matrix.
+
+\section{Setup and notation}
+
+At step $k$, MGD solves two linear systems on the walker ensemble $x_k$:
+\[
+  G_k\,\eta_k = \dot{\bar\phi}(I_{t_k}), \qquad
+  G_k\,\theta_k = r_k, \qquad
+  (G_k)_{nm} = \E_{x_k}\!\big[\langle \nabla\phi_n(x), \nabla\phi_m(x)\rangle\big].
+\]
+$G_k$ is the \textbf{Gram matrix of the gradients} $\nabla\phi_n$ in $L^2(p_k)$. So
+\[
+  G_k \text{ singular} \iff \exists\, c\neq 0:\ \textstyle\sum_n c_n \nabla\phi_n = 0 \ \ p_k\text{-a.s.}
+  \iff \textstyle\sum_n c_n\phi_n \text{ is constant on the support.}
+\]
+The $\phi_n$ are nonlinear in $x$, but this is linear dependence between the
+\emph{functions} $\nabla\phi_n$. Below I call it ``(near) linear dependence of the
+gradients'' rather than ``collinearity of the potentials''.
+
+\section{Epsilon \#1: the Tikhonov ridge on $G$ (unchanged)}
+
+Every per-step solve (\code{compute\_eta}, \code{compute\_theta}) uses Jacobi scaling plus a ridge:
+\[
+  D = \operatorname{diag}(G_k),\qquad
+  \Gt_k = D^{-1/2} G_k D^{-1/2} + \lambda I,\qquad
+  \eta_k = D^{-1/2}\,\Gt_k^{-1} D^{-1/2}\,\dot{\bar\phi}.
+\]
+Here $\lambda$ is \code{--regularization}. The current runs use $\lambda = 10^{-4}$
+(labels \code{reg1e-4}) or $10^{-2}$. \textbf{It has never been removed.}
+
+\paragraph{It is already a ``vector epsilon''.} In the original coordinates,
+\[
+  \Gt_k = D^{-1/2}\,\big(G_k + \lambda D\big)\,D^{-1/2},
+\]
+so the ridge on coordinate $n$ is $\lambda\,\E_{x_k}|\nabla\phi_n|^2$: it scales with the
+statistic. Also, \code{stat\_scale} normalises each scalar statistic at fit time so that
+\[
+  \E_{\text{data}}\,|\nabla\phi_n|^2 = 1 ,
+\]
+which is the proposed normalisation $\E|\nabla\phi_n| = 1$, taken in $L^2$ instead of $L^1$.
+
+\section{Epsilon \#2: the $|z|$ floor inside the scalar potentials (replaced)}
+
+\code{Scalar\_GGD\_KRegion} splits each wavelet channel $z_j = \psi_j * x$ into
+regions of $|z_j|$ separated by cuts $c_{j,1} < c_{j,2} < \dots$, fitted on the
+\emph{raw} $|z_j|$. Forward and gradient use a smoothed modulus:
+\[
+  |z|_\varepsilon = \sqrt{z^2 + \varepsilon},
+\]
+so that the core gradient $\alpha z|z|^{\alpha-2}$ stays finite at $0$ when $\alpha<1$.
+
+\paragraph{The bug.} With $\varepsilon = 10^{-6}$ we get $|z|_\varepsilon \ge 10^{-3}$.
+The finest channels live at $|z| \sim 10^{-4}$: for $\psi$ channels 0--7, \emph{all}
+cuts are below $10^{-3}$. So every point landed above the cuts.
+
+\begin{center}
+\begin{tabular}{lcccc}
+\toprule
+channel 0, region & 1 & 2 & 3 & 4\\
+\midrule
+share in the data      & 40\% & 50\% & 8\%   & 2\%\\
+share seen by $\phi$   & 0\%  & 0\%  & 0.5\% & 99.5\%\\
+\bottomrule
+\end{tabular}
+\end{center}
+
+\noindent The inner regions had $\nabla\phi_n \approx 0$ or identical gradients. $G$ was
+therefore rank-deficient \emph{on the data}, and \code{prune\_collinear} dropped these
+statistics: 52 of 81 in the full fit, keeping 1 of 77 on a 1000-series fit. The
+near-zero mass (sparsity) and the fine-scale tails were left unconstrained.
+
+\paragraph{The fix} (commit \code{27bd5b8}): a per-channel floor
+\[
+  \varepsilon_j = \big(q_{10^{-3}}(|z_j|)\big)^2 ,
+\]
+computed on the data at fit time. It moves at most $0.1\%$ of the points of each channel.
+Region shares seen by $\phi$ now match the fitted ones to within 1.4 points. The floor was
+replaced, not removed. Old fits reload with the scalar $\varepsilon$ and reproduce.
+
+\paragraph{The only genuine redundancy inside the $\psi$ bank} is $\psi$ channel 21 vs 20 (filter
+overlap $1.0000$, but not bit-identical copies). \code{--dedup\_tol 1e-8} removes it. (Redundancies
+\emph{between} the $Q=1$ and $Q=3$ banks were not checked here; see the update of 1 October in the
+conditioning section.)
+
+\section{What changed around the ridge: masking near-empty statistics}
+
+The per-channel floor makes regions that are empty on the walkers \emph{nearly} dead
+rather than \emph{exactly} dead. Early in the transport, walkers look like noise, and
+the outer regions of some channels get $G_{nn}(x_k) \sim 10^{-16}$--$10^{-8}$ times
+their data value. For such a nearly decoupled coordinate, the scaled solve gives
+\[
+  \eta_n \;\approx\; \frac{\dot{\bar\phi}_n}{G_{nn}\,(1+\lambda)} .
+\]
+\textbf{The ridge doesn't help here}: after Jacobi scaling it is relative, so a
+vanishing $G_{nn}$ still produces a huge coefficient. Observed: drift up to 45--129
+(vs 1.6--3.5 with the old statistics), and the walkers blew up at step 163 (job 268295).
+
+\paragraph{Fix} (commit \code{1c343be}): at each step, solve only on the live set
+\[
+  L_k = \big\{\,n:\ (G_k)_{nn} > \tau\cdot (G_{\text{data}})_{nn}\,\big\},\qquad \tau = 10^{-6},
+\]
+and set $\eta_{k,n} = \theta_{k,n} = 0$ for $n\notin L_k$. Such a statistic cannot move the
+walkers at that step anyway. $\tau=0$ for non-region potentials, which gives back the
+older exact-zero test (added for singular solves near $t=1$, jobs 115127/115128).
+With the mask, $\tau = 10^{-6}$ removes the tail of large drifts and masks nothing from $t\approx0.3$ on.
+
+\paragraph{In $\Theta_{\text{reg}}$} (commit \code{62d2c0e}): the same live mask is
+passed to the block-Thomas solve (dead potentials pinned to $\Theta_{k,n}=0$). The data
+block uses the same ridge as the per-step solve, $M_k + \lambda\operatorname{diag}(M_k)$.
+A mismatch there (offline $\lambda=10^{-6}$ vs $10^{-4}$ in the run) was one cause of
+the $\Theta_{\text{reg}}$ explosions.
+
+\section{Conditioning of $G$: what we know}
+
+We use $\kappa(\Gt) = \lambda_{\max}(\Gt)/\lambda_{\min}(\Gt)$ on the Jacobi-scaled matrix
+(the only one that is solved).
+
+\begin{center}
+\begin{tabular}{lcc}
+\toprule
+\code{Scalar\_psi\_gaussianK} only, data Gram, 1000 series & statistics kept & $\kappa$\\
+\midrule
+old floor $\varepsilon=10^{-6}$ & 1 / 77 & --- \\
+per-channel floor & 77 / 77 & $9.6\times10^{4}$\\
+per-channel floor + \code{dedup\_tol 1e-8} & 73 / 73 & $11.9$\\
+\bottomrule
+\end{tabular}
+\end{center}
+
+\noindent These numbers are for the \code{Scalar\_psi\_gaussianK} statistics \emph{alone}
+(73--77 of the $r=281$ statistics). Once the floor is fixed and the near-copy filter removed,
+\emph{this block} of the data Gram is well conditioned, and the large $\kappa$ of this block came
+from one duplicated filter. The full $281\times281$ Gram, which also contains the other families and
+the near-dependencies \emph{between} families, was not computed here; see the update below.
+The Jean Zay fit keeps 78/78 $\psi$ statistics ($r=281$ in total).
+
+\paragraph{What we don't know yet: $\kappa(\Gt_k)$ along the transport.} We haven't
+measured it step by step. We know two regimes where $G_k$ degenerates on the walkers:
+\begin{itemize}
+  \item early $t$: near-empty regions ($G_{nn}\to 0$), now handled by the mask;
+  \item $t\to1$: exactly dead regions, also masked.
+\end{itemize}
+\textbf{Next step:} log $\kappa(\Gt_k|_{L_k})$ and $\lambda_{\min}$ at each step (or every
+$N$ steps) in \code{compute\_eta}, together with $|L_k|$. That tells us whether
+ill-conditioning in the bulk of the transport contributes to the numerical problems, and
+if so, whether to use a per-coordinate $\lambda$, a truncated or early-stopped solve, or
+further masking. This needs a new Jean Zay run.
+
+\paragraph{Update, 1 October 2026.} The run with this logging (job 382722, 30 September, every 10
+steps) has been analysed; details in \code{notes/gram\_instability\_1001/gram\_instability.pdf}.
+In short:
+\begin{itemize}
+  \item The full Jacobi-scaled $\Gt_k$ (all 281 statistics) has three directions far weaker than
+    all the others, at almost every step from $t=0$ to $t=1$. The weakest is the near-copy pair
+    $L_6[7]$ / $L_6^\psi[20]$: the $Q=1$ and $Q=3$ banks put almost the same filter at the coarsest
+    scale, and the existing deduplication only compares filters inside the $Q=3$ bank.
+  \item The two weakest eigenvalues ($\sim10^{-7}$--$10^{-6}$, i.e.\ $\kappa\sim10^7$--$10^8$) are at
+    the precision limit of $G$, which is accumulated in \code{float32}; their exact values cannot be
+    trusted. The fourth smallest is $\sim3$--$5\cdot10^{-4}$, so without the three weak directions
+    $\kappa$ would be at best $\sim2$--$5\cdot10^4$, roughly constant in $t$.
+  \item The mask acted on 5 statistics, all before $t=0.15$.
+\end{itemize}
+
+\paragraph{Take-home.}
+\begin{enumerate}
+  \item The Tikhonov ridge was never removed. The $|z|$ floor in the potential was made per-channel.
+  \item The old floor made fine-scale statistics degenerate. That, not a missing ridge, is what got them pruned.
+  \item A relative ridge cannot control statistics that become nearly empty on the walkers. Masking can.
+  \item The \code{Scalar\_psi\_gaussianK} block of the data Gram is now well conditioned ($\kappa\approx12$).
+    The full Gram along the transport is not (update of 1 October): three weak directions, at least the
+    weakest due to near-copy filters across the $Q=1$ and $Q=3$ banks.
+\end{enumerate}
+
+\end{document}
