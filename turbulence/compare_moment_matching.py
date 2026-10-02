@@ -3,7 +3,7 @@
 For every run whose label is in --labels, loads the saved aux moments
 (saved_results/aux_moments/<config>_aux_moments.pt: barphi_e = interpolant /
 target moments, barphi_p = walker moments, one row per SDE step, aligned with
-t[1:]) and computes the same relative error as check_moments.plot_moment_matching:
+t[1:]) and computes the relative error (check_moments.plot_moment_matching used it until 2026-09-30):
 
     rel_err = 2 |barphi_e - barphi_p| / (|barphi_e| + |barphi_p|)
 

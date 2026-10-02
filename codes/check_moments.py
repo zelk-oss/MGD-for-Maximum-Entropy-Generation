@@ -1491,113 +1491,81 @@ def plot_log_Z_gap_vs_sigma2(summary_df, log_Z_reference, theta_key='theta_t', a
     return ax
 
 
-def plot_moment_matching(barphi_e, barphi_p, t, threshold, save=None):
+def plot_moment_matching(barphi_e, barphi_p, t, threshold, save=None, target=1e-2):
     """
-    Plot the relative moment-matching error between interpolant and walkers.
+    Plot how well the walkers match the interpolant moments, on each moment's own scale.
 
-    If save is None:
-        show the two figures as before.
+    barphi_e (steps x moments) are the interpolant (target) moments, barphi_p the walker
+    moments, row k aligned with t[k + 1]. Only moments whose final target value
+    barphi_e[-1] exceeds `threshold` are kept (so moments with a negative final target
+    are not shown). The error of moment i at step k is
 
-    If save is provided:
-        save one figure with two side-by-side panels.
+        own[k, i] = |barphi_e[k, i] - barphi_p[k, i]| / max_t |barphi_e[:, i]|
+
+    i.e. the mismatch in units of that moment's largest value over the run. This replaces
+    the relative error 2|e - p| / (|e| + |p|) used before 2026-09-30, which blows up
+    whenever a target moment crosses zero (all 45 bulk spikes of long_full_sched3_reg1e-2
+    were such crossings) and made well-matched runs look poor.
+
+    With ~200 moments a mean is carried by the worst few, so the ensemble is summarised
+    by three curves: median (dashed, a typical moment), p90 (solid) and max (dotted,
+    the worst moment). Panels: error vs t, the same vs 1 - t (log, zoom on t -> 1),
+    and the histogram of the final-step error over moments (log bins). The grey dashed
+    line is `target`. Same metric as turbulence/run_comparison.plot_moment_matching.
+
+    If save is None the figure is shown; otherwise it is saved to save["filename"] with
+    save["title"] as suptitle. Prints the final-step median / p90 / max and the number
+    of moments above `target`.
     """
+    e = barphi_e.detach().cpu().double().numpy()
+    p = barphi_p.detach().cpu().double().numpy()
+    t = t.detach().cpu().double().numpy()[1:len(e) + 1]
 
-    # Move everything to CPU once
-    barphi_e = barphi_e.cpu()
-    barphi_p = barphi_p.cpu()
-    t = t.cpu()
+    keep = e[-1] > threshold
+    if not keep.any():
+        print(f"Warning: no moments with final target > {threshold}; showing all moments "
+              f"with a nonzero target instead.")
+        keep = np.abs(e).max(0) > 0
+    e, p = e[:, keep], p[:, keep]
+    err = np.abs(e - p) / np.abs(e).max(0)
 
-    keep_mask = barphi_e[-1] > threshold
+    final = err[-1]
+    print(f"moment matching, {keep.sum()} moments, final step (own scale): "
+          f"median {np.median(final):.2e} | p90 {np.percentile(final, 90):.2e} | "
+          f"max {final.max():.2e} | {(final > target).sum()} above {target:g}")
 
-    if not keep_mask.any():
-        print(f"Warning: No moments exceeded threshold {threshold}.")
+    fig, (a1, a2, a3) = plt.subplots(1, 3, figsize=(18, 4.5))
+    for name, v, ls in (('median', np.median(err, 1), '--'),
+                        ('p90', np.percentile(err, 90, 1), '-'),
+                        ('max', err.max(1), ':')):
+        a1.semilogy(t, v, color='tab:blue', ls=ls, lw=1.0, label=name)
+        a2.loglog(1 - t[t < 1], v[t < 1], color='tab:blue', ls=ls, lw=1.0)
+    for a in (a1, a2):
+        a.axhline(target, color='0.5', lw=0.8, ls='--')
+    a1.set_xlabel('t')
+    a1.set_ylabel(r'$|e - p|\,/\,\max_t |e|$')
+    a1.set_title('own-scale moment error over moments')
+    a1.legend(fontsize=8, frameon=False)
+    a2.set_xlabel('1 - t'); a2.invert_xaxis(); a2.set_title('same, zoomed on t -> 1')
 
-        error_last = (
-            2 * (barphi_e - barphi_p).abs()
-            / (barphi_e.abs() + barphi_p.abs())
-        )[-1]
-
-        if save is None:
-            plt.figure(figsize=(6, 4))
-            plt.hist(error_last, bins=100)
-            plt.yscale("log")
-            plt.title("Distribution of moment matching error (all moments)")
-            plt.tight_layout()
-            plt.show()
-        else:
-            fig, ax = plt.subplots(figsize=(6, 4))
-            ax.hist(error_last, bins=100)
-            ax.set_yscale("log")
-            ax.set_title("Distribution of moment matching error (all moments)")
-            fig.suptitle(["title"])
-            fig.tight_layout(rect=[0, 0, 1, 0.95])
-            fig.savefig(save["filename"], dpi=200, bbox_inches="tight")
-            plt.close(fig)
-
-        return
-
-    # Keep only significant moments
-    barphi_e = barphi_e[:, keep_mask]
-    barphi_p = barphi_p[:, keep_mask]
-
-    rel_error = (
-        2 * (barphi_e - barphi_p).abs()
-        / (barphi_e.abs() + barphi_p.abs())
-    )
-
-    min_len = min(t.shape[0], rel_error.shape[0])
-    t_sliced = t[:min_len][2:-1]
-    error_mean = rel_error.mean(dim=1)[:min_len][2:-1]
-    error_last = rel_error[-1]
+    lo = max(final[final > 0].min() if (final > 0).any() else 1e-12, 1e-12)
+    a3.hist(np.clip(final, lo, None), bins=np.logspace(np.log10(lo), np.log10(max(final.max(), 10 * target)), 60),
+            histtype='step', lw=1.5, color='tab:blue')
+    a3.axvline(target, color='0.5', lw=0.8, ls='--')
+    a3.set_xscale('log'); a3.set_yscale('log')
+    a3.set_xlabel('final-step own-scale error'); a3.set_ylabel('moments')
+    a3.set_title(f'final step (dashed: target {target:g})')
+    for a in (a1, a2, a3):
+        a.grid(alpha=0.2, which='both')
 
     if save is None:
-
-        # -------- Time evolution --------
-        plt.figure(figsize=(6, 4))
-        plt.plot(t_sliced, error_mean, marker='.')
-        plt.xlabel("t")
-        plt.ylabel("Mean relative error")
-        plt.yscale("log")
-        plt.title("Relative moment matching error")
-        plt.tight_layout()
+        fig.tight_layout()
         plt.show()
-
-        # -------- Final histogram --------
-        plt.figure(figsize=(6, 4))
-        plt.hist(error_last, bins=100)
-        plt.xlabel("Relative error")
-        plt.ylabel("Count")
-        plt.yscale("log")
-        plt.title("Distribution of moment matching error")
-        plt.tight_layout()
-        plt.show()
-
     else:
-
-        fig, (ax1, ax2) = plt.subplots(
-            1, 2,
-            figsize=(12, 4)
-        )
-
-        # Left panel
-        ax1.plot(t_sliced, error_mean, marker='.')
-        ax1.set_xlabel("t")
-        ax1.set_ylabel("Mean relative error")
-        ax1.set_yscale("log")
-        ax1.set_title("Time evolution")
-
-        # Right panel
-        ax2.hist(error_last, bins=100)
-        ax2.set_xlabel("Relative error")
-        ax2.set_ylabel("Count")
-        ax2.set_yscale("log")
-        ax2.set_title("Final distribution")
-
         fig.suptitle(save["title"])
         fig.tight_layout(rect=[0, 0, 1, 0.95])
         fig.savefig(save["filename"], dpi=200, bbox_inches="tight")
         plt.close(fig)
-
 
 
 def plot_image_row(Data, N):
@@ -1710,3 +1678,45 @@ def Compare_time_series_row(Data, Synth, N, save=None):
         plt.close(fig)
     else:
         plt.show()
+
+def compare_time_series_grid(Data, Synth, n_rows=2, n_cols=8, channel=0,
+                             start=0, save=None):
+    """Grid of data vs synthesis: n_rows pairs of rows, n_cols series each.
+
+    Each pair is a Data row (grey) above a Synth row (blue), taking series
+    start + r*n_cols ... start + (r+1)*n_cols - 1. All panels share one y
+    range so amplitudes are directly comparable; no markers, minimal ticks.
+    """
+    to_np = lambda a: a.detach().cpu().numpy() if hasattr(a, "detach") else np.asarray(a)
+    D = to_np(Data)[:, channel]
+    S = to_np(Synth)[:, channel]
+    n_avail = min(len(D), len(S)) - start
+    n_rows = min(n_rows, max(n_avail // n_cols, 0))
+    if n_rows == 0:
+        print(f"compare_time_series_grid: need {n_cols} series from start={start}, "
+              f"have {n_avail} — skipping.")
+        return
+    sl = slice(start, start + n_rows * n_cols)
+    both = np.concatenate([D[sl], S[sl]])
+    lo, hi = both.min(), both.max()
+    pad = 0.05 * (hi - lo)
+
+    fig, axs = plt.subplots(2 * n_rows, n_cols, figsize=(1.9 * n_cols, 1.3 * 2 * n_rows),
+                            sharex=True, sharey=True, squeeze=False)
+    for r in range(n_rows):
+        for (arr, color, label, k) in ((D, "0.35", "Data", 0), (S, "tab:blue", "MGD", 1)):
+            for c in range(n_cols):
+                ax = axs[2 * r + k, c]
+                ax.plot(arr[start + r * n_cols + c], color=color, lw=0.7)
+                ax.set_ylim(lo - pad, hi + pad)
+                ax.set_xticks([]); ax.set_yticks([])
+                for s in ("top", "right"):
+                    ax.spines[s].set_visible(False)
+            axs[2 * r + k, 0].set_ylabel(label, fontsize=11, color=color)
+        if r < n_rows - 1:  # visual gap between row-pairs
+            for ax in axs[2 * r + 1]:
+                ax.spines["bottom"].set_linewidth(1.5)
+    fig.subplots_adjust(wspace=0.05, hspace=0.08)
+    if save:
+        fig.savefig(save, dpi=200, bbox_inches="tight")
+    plt.show()
