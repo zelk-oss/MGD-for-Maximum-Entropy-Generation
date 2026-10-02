@@ -81,6 +81,7 @@ EXTRA_FLAGS=""
 [ -n "${SCHEDULE_ARGS}" ] && EXTRA_FLAGS+=" ${SCHEDULE_ARGS}"
 [ -n "${REG_MODE}" ]    && EXTRA_FLAGS+=" --reg_mode ${REG_MODE}"
 [ -n "${COND_EVERY}" ]  && EXTRA_FLAGS+=" --cond_every ${COND_EVERY}"
+[ -n "${DROP_STATS}" ]  && EXTRA_FLAGS+=" --drop_stats ${DROP_STATS}"
 if [ "${SAVE_REG_SYSTEM}" = "true" ]; then
     EXTRA_FLAGS+=" --save_reg_system"
     [ -n "${REG_SYSTEM_DIR}" ] && EXTRA_FLAGS+=" --reg_system_dir ${REG_SYSTEM_DIR}"

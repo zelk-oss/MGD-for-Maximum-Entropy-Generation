@@ -314,6 +314,12 @@ class SDE(torch.nn.Module):
         self.cond_every = 0
         self._cond_log = {'eta': [], 'theta': []}
         self._cond_spec = {'eta': [], 'theta': []}
+        # Partial dumps of that log while the run is going (2026-10-01): if cond_path is set,
+        # the log collected so far is written there every cond_flush_rows logged theta steps
+        # (atomic replace, so a reader never sees a half-written file). The final save in
+        # run_experiment overwrites it with the complete log. Set by run_experiment.
+        self.cond_path = None
+        self.cond_flush_rows = 200
         self.potential_labels = [f'{name}[{i}]' for name, p in self.potentials.items()
                                  for i in range(p.num_coefficients)]
 
@@ -1475,6 +1481,19 @@ class SDE(torch.nn.Module):
             margin, margin_idx = float('inf'), -1
         self._cond_log[name].append([k, n, lmin, lmax, *top, margin, margin_idx])
         self._cond_spec[name].append(spec)
+        if (name == 'theta' and self.cond_path is not None and self.cond_flush_rows
+                and len(self._cond_log['theta']) % self.cond_flush_rows == 0):
+            self._flush_cond_log()
+
+    def _flush_cond_log(self):
+        """Write the conditioning log collected so far to cond_path (partial; atomic replace)."""
+        import os
+        path = str(self.cond_path)
+        try:
+            torch.save(self.cond_log(), path + '.tmp')
+            os.replace(path + '.tmp', path)
+        except OSError as e:                                   # diagnostic only: never stop the run
+            print(f'[cond log] partial save to {path} failed ({e}); continuing')
 
     def cond_log(self):
         """The conditioning log as tensors (see _log_cond), plus the potential labels."""

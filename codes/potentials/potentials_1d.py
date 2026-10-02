@@ -1107,6 +1107,10 @@ class Scalar_GGD_KRegion():
         self.stat_scale = None
         self.num_coefficients = self.K * self.J
         self._filters_Kx = None
+        # (channel, region) statistics removed after the fit (--drop_stats), e.g. a region
+        # statistic that is a near-copy of one in another family (2026-10-01:
+        # Scalar_morlet ch 8 region 3 ~ Scalar_psi ch 21 region 3, 1 - |corr| = 6.7e-6)
+        self.drop_slots = ()
 
     def __call__(self, x, *args):
         return self.forward(x, *args)
@@ -1386,9 +1390,33 @@ class Scalar_GGD_KRegion():
         if self.auto_prune and self.num_coefficients > 1:
             self.prune_collinear(x, cond_tol=self.cond_tol,
                                  max_cols=self.prune_max_cols, verbose=self.verbose)
+        self._apply_drop_slots()
         self._compute_stat_scale(x)
         self.plot_fit(x)
         return self
+
+    def _apply_drop_slots(self):
+        """Remove the (channel, region) statistics in self.drop_slots from the active set.
+        Raises if one is not active (pruned or empty), so a wrong slot never passes silently."""
+        if not self.drop_slots:
+            return
+        J = self.J
+        flat = [int(f) for f in self.active_flat.cpu()]
+        drop = {int(k) * J + int(j) for j, k in self.drop_slots}
+        missing = sorted((f % J, f // J) for f in drop - set(flat))
+        if missing:
+            raise ValueError(f"drop_slots {missing} (channel, region) are not active statistics "
+                             f"of this fit; active: {[(f % J, f // J) for f in flat]}")
+        dev = self.active_flat.device
+        self.active_flat = torch.tensor([f for f in flat if f not in drop], dtype=torch.long, device=dev)
+        act = self.active.clone()
+        for j, k in self.drop_slots:
+            act[int(j), int(k)] = False
+        self.active = act
+        self.num_coefficients = int(self.active_flat.numel())
+        self.stat_scale = torch.ones(self.num_coefficients, dtype=self.stat_scale.dtype, device=dev)
+        print(f"[drop_slots] removed (channel, region) {sorted(tuple(map(int, s)) for s in self.drop_slots)}; "
+              f"{self.num_coefficients} statistics remain")
 
     def _compute_stat_scale(self, x, max_cols=None):
         self.stat_scale = torch.ones(self.num_coefficients, dtype=x.dtype
@@ -1638,6 +1666,7 @@ class Scalar_GGD_KRegion():
             eps_quantile=self.eps_quantile,
             eps_ch=None if self.eps_ch is None else self.eps_ch.cpu(),
             near_empty_tol=self.near_empty_tol,
+            drop_slots=[tuple(map(int, s)) for s in self.drop_slots],
             alpha_bounds=self.alpha_bounds, min_region_samples=self.min_region_samples,
             boundary_method=self.boundary_method, model_criterion=self.model_criterion,
             pi_active_min=self.pi_active_min, cond_tol=self.cond_tol,
@@ -1667,7 +1696,8 @@ class Scalar_GGD_KRegion():
         obj.active = d["active"]; obj.active_flat = d["active_flat"]
         obj.stat_scale = d["stat_scale"]; obj.num_coefficients = d["num_coefficients"]
         obj.eps_ch = d.get("eps_ch")        # None for old fits -> scalar eps_abs, as they ran
-        obj.J = d["J"]
+        obj.drop_slots = tuple(tuple(s) for s in d.get("drop_slots", ()))   # provenance only:
+        obj.J = d["J"]                      # active_flat already excludes them
         return obj
 
     @classmethod

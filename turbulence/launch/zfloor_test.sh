@@ -54,10 +54,21 @@
 # Compare afterwards with compare_runs.ipynb / compare_july_vs_sept.ipynb against
 # schedtest_two_phase_reg1e-4 (same data and settings, old floor).
 
+#
+# 2026-10-01 (notes/gram_instability_1001): the corrector Gram has three directions far below
+# the ridge at every step; the weakest is L_6[7] ~ L_6_psi[20] (the Q=1 and Q=3 banks put
+# the same filter at the coarsest scale; also L_6[8] ~ L_6_psi[21]). Test without L_6_psi
+# (frequency coverage stays complete with L_6 alone: min_w sum_j |psi_j(w)|^2 = 0.87):
+#         ONLY="zfloor_two_phase_noL6psi_reg1e-4" COND_EVERY=10 bash zfloor_test.sh
+# Not touched by this: Scalar_morlet[30] ~ Scalar_psi[77] (the same collision, between the
+# two region families).
+
 LAUNCH_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 FULL=(L_6 L_6_psi L_2_lowpass Scalar_psi_gaussianK Scalar_morlet_gaussianK
       Scattering_Fourth_Order_Mod2_Real_Q1 Scattering_Fourth_Order_Mod2_Imag_Q1)
+NO_L6PSI=(L_6 L_2_lowpass Scalar_psi_gaussianK Scalar_morlet_gaussianK
+          Scattering_Fourth_Order_Mod2_Real_Q1 Scattering_Fourth_Order_Mod2_Imag_Q1)
 
 SEEDS="${SEEDS:-900}"
 NT_TWO_PHASE="${NT_TWO_PHASE:-60000}"
@@ -68,14 +79,15 @@ ONLY="${ONLY:-zfloor_two_phase_reg1e-4 zfloor_adaptive_reg1e-4}"
 TWO_PHASE="--schedule two_phase --n_bulk ${N_BULK} --t_switch 0.9 --gap_end 5e-5"
 ADAPTIVE="--schedule adaptive --adapt_tol 1e-3 --adapt_ratio_max 1e-3 --gap_end 5e-5"
 
-submit() {   # submit <label> <nt> <schedule flags (one string)> <terms...>
+submit() {   # [REG=<ridge>] [DROP="<NAME:CH:REGION> ..."] submit <label> <nt> <schedule flags (one string)> <terms...>
   local label=$1 nt=$2 sched=$3; shift 3
   [[ " ${ONLY} " == *" ${label} "* ]] || return 0
   (
     EXP_NAME="${label}"
     SCHEDULE_ARGS="${sched}"
     TERMS=("$@")
-    REGULARIZATION=1e-4
+    REGULARIZATION="${REG:-1e-4}"
+    DROP_STATS="${DROP:-}"
     SEED_LIST=(${SEEDS})
 
     N1=8500
@@ -112,3 +124,16 @@ submit() {   # submit <label> <nt> <schedule flags (one string)> <terms...>
 
 submit zfloor_two_phase_reg1e-4 "${NT_TWO_PHASE}" "${TWO_PHASE}" "${FULL[@]}"
 submit zfloor_adaptive_reg1e-4  "${NT_ADAPTIVE}"  "${ADAPTIVE}"  "${FULL[@]}"
+submit zfloor_two_phase_noL6psi_reg1e-4 "${NT_TWO_PHASE}" "${TWO_PHASE}" "${NO_L6PSI[@]}"
+
+# 2026-10-01: no near-copy statistics at all. On the 8500 data signals (zfloor seed-900 fit)
+# exactly three pairs have 1 - |corr| < 1e-4: L_6[8]~L_6_psi[21] (6.8e-8), L_6[7]~L_6_psi[20]
+# (4.6e-7), Scalar_psi[77]~Scalar_morlet[30] (6.7e-6); the next is 2.2e-3. The zfloor runs'
+# theta on them is seed noise (log p of a data signal uncorrelated across seeds 900-904).
+# Removed here: L_6_psi, and Scalar_morlet[30] = channel 8 (coarsest), region 3 (outermost).
+# Two ridges, to tell the ridge effect from the statistic-set effect (5 seeds each):
+#   ONLY="zfloor_two_phase_noL6psi_noSm30_reg1e-4 zfloor_two_phase_noL6psi_noSm30_reg1e-2" \
+#     SEEDS="900 901 902 903 904" COND_EVERY=10 bash zfloor_test.sh
+NO_SM30="Scalar_morlet_gaussianK:8:3"
+REG=1e-4 DROP="${NO_SM30}" submit zfloor_two_phase_noL6psi_noSm30_reg1e-4 "${NT_TWO_PHASE}" "${TWO_PHASE}" "${NO_L6PSI[@]}"
+REG=1e-2 DROP="${NO_SM30}" submit zfloor_two_phase_noL6psi_noSm30_reg1e-2 "${NT_TWO_PHASE}" "${TWO_PHASE}" "${NO_L6PSI[@]}"

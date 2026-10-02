@@ -350,8 +350,14 @@ def run_experiment(args, M, config, x1, filters, t, logger, outdir, device,
         deduplicate_filters=getattr(args, 'deduplicate_filters', False),
         dedup_tol=getattr(args, 'dedup_tol', 1e-12),
     )
+    for spec in getattr(args, 'drop_stats', None) or []:     # NAME:CHANNEL:REGION
+        name, ch, reg = spec.split(':')
+        if not hasattr(potentials.get(name), 'drop_slots'):
+            raise ValueError(f'--drop_stats {spec}: {name} is not a region potential of this run')
+        potentials[name].drop_slots = tuple(potentials[name].drop_slots) + ((int(ch), int(reg)),)
+        logger.info('Dropping %s channel %s region %s after the fit', name, ch, reg)
 
-    if normalize_potentials: 
+    if normalize_potentials:
         for pot in potentials.values():          # <-- add this
             if hasattr(pot, 'fit_micro'):        # <-- add this
                 pot.fit_micro(x1)                # <-- add this
@@ -385,6 +391,11 @@ def run_experiment(args, M, config, x1, filters, t, logger, outdir, device,
     Solver.cond_every = int(getattr(args, 'cond_every', 0) or 0)
     if Solver.cond_every:
         logger.info('Logging the conditioning of the per-step Gram every %d steps', Solver.cond_every)
+        # partial dumps while the run is going, same path as the final save below
+        Solver.cond_path = outdir / 'saved_results' / 'aux_moments' / f'{config}_cond.pt'
+        Solver.cond_path.parent.mkdir(parents=True, exist_ok=True)
+        logger.info('Partial conditioning log every %d logged steps -> %s',
+                    Solver.cond_flush_rows, Solver.cond_path)
     xt, barphi_e, barphi_p, eta_t, theta_t, dH_t_bound, Theta_reg, t_reg = Solver.forward_regularised(
         lam=args.lam, n_subsample=args.n_subsample,
         time_limit_min=getattr(args, 'time_limit_min', None),

@@ -156,6 +156,11 @@ def parse_args():
                          'by 20\'s 1.1e-4 component at bin 2 (1 - cos = 6e-9): their statistics are '
                          'near-duplicates (normalized-gradient cond 9.6e4 with both, 12 without). '
                          'Adds the tol to the name when not the default')
+    p.add_argument('--drop_stats', nargs='*', default=None, metavar='NAME:CHANNEL:REGION',
+                    help='Region statistics removed after the fit, e.g. '
+                         'Scalar_morlet_gaussianK:8:3 (= Scalar_morlet[30] of the zfloor fit, a '
+                         'near-copy of Scalar_psi ch 21 region 3). Fails if the slot is not active. '
+                         'Not in the config name: use --label')
     p.add_argument('--solve_float64', action='store_true',
                     help='Per-step eta/theta solves in float64 (needed only for small '
                          '--regularization, ridge near float32 rounding); adds _f64 to the name')
