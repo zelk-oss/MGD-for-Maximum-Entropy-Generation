@@ -1,3 +1,40 @@
+# Decision (2026-10-05): the regularisation method of the paper
+
+**One method everywhere** (bimodal figure, turbulence, log p, log Z and entropy): the time-regularised
+Θ̃ of the draft's eqs. 5–6 (moment mode, **uniform** weights in t, the run's per-step ridge), with λ chosen
+by **cross-seed CV scored on t ≥ 0.99**: every seed's Θ(λ) is scored with the per-step equations (data
+term) of the other seeds of the same data, the scores are pooled over the seed pairs, and λ is the
+minimiser. It needs ≥ 2 MGD runs on the same data with different random seeds, and assumes nothing about
+how the noise of one run is correlated in time (only that different seeds have independent noise, true by
+construction).
+
+**Evidence** (bimodal benchmark, `bimodal_lamtest.py`, 10 datasets × 3 seeds per β, n = 10⁶, σ = 10;
+metric: the paper's D_KL(p_θ\* ‖ p_θ̂) at t = 1, exact; ratio to the best λ of the grid for the same run,
+median over the 30 runs; pass mark agreed: ≤ 10×, flagged above 3×):
+
+| rule | β = 0.1 | β = 0.9 | β = 1.9 |
+|---|---|---|---|
+| **cross-seed CV, t ≥ 0.99 (chosen)** | **1.2×** | **1.9×** (29/30 within 10×) | 117× |
+| cross-seed CV, whole transport | 1.8× | 11.7× | 140× |
+| even/odd CV (previous rule) | 1.8× | 11.7× | 140× |
+| block CV B = 200 (needs time independence) | 1.8× | 1.9× | 50× |
+| Guth weights, λ = 1 (no data) | 72× | 244× | 9.4× |
+
+**Accepted limit:** in the deep-well regime (β = 1.9, the closest to rare events) every data-driven
+rule smooths too little. There the error of MGD's θ is a *bias* shared by all seeds and datasets (the
+slow error over t ∈ [0.1, 0.9] is 92–100 % common to the seeds; at t ≥ 0.99 it is independent), which no
+rule that only sees the runs can detect; it is reduced by more particles, not by the λ rule. Even so,
+at β = 1.9 the chosen rule puts 9.5 % of the mass in the small well (truth 5.0 %), against 55 % for the
+raw per-step θ.
+
+**Not validated separately:** log Z and the entropy integrate Θ̃ over the whole transport; the same λ is
+used for them by decision (one method for the whole paper); only the KL at t = 1 was tested.
+
+**Turbulence:** `launch_turb_xseed.sh` per arm; the chosen λ is the `end0.99` line of the phase-2 log,
+and the Θ̃ file of each seed is `xseed_<arm>.pt['theta_files']['end0.99']`.
+
+---
+
 # Known-truth test of the λ choice for Theta_reg: Gaussian, d = 8
 
 `gauss_d8_lamtest.py` runs the **real** MGD pipeline (the same code as the turbulence runs:
