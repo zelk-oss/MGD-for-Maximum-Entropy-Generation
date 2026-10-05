@@ -213,5 +213,5 @@ per dataset, no cross-seed rule) is in `results/bimodal/`. Combined table, on a 
     python lam_selection_criterion/bimodal_lamtest.py --out lam_selection_criterion/results/bimodal_xseed --combine_only
 
 Then run `analyse_bimodal_lamtest.ipynb` on Jean Zay, next to the results (send it there with
-`rsync -avhR lam_selection_criterion/analyse_bimodal_lamtest.ipynb jz:<project path>/`; the push
+`rsync -avhR lam_selection_criterion/analyse_bimodal_lamtest.ipynb jz:/lustre/fswork/projects/rech/wbg/ukv59en/MGD-for-Maximum-Entropy-Generation/`; the push
 script skips `.ipynb`). It finds the repo root by itself and reads `results/bimodal_xseed` by default.
