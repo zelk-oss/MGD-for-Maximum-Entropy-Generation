@@ -119,3 +119,72 @@ the seed runs and deleted afterwards (unless `--keep_system`). Combined table, o
 More seeds: launch again with the same `OUT` and new `SEEDS`; the combine step pools every
 `seed_*.pt` in `OUT`. Different settings (`EXTRA="--rho 0.8"`, ...): use a new `OUT`; the script
 refuses to put seeds with different settings in the same folder.
+
+## Result of the Gaussian test (2026-10-05, nt 3000 two-phase, n 5000, σ 1, 5 seeds, job 617402)
+
+Uniform weights + even/odd CV picked λ = 1 in 5/5 seeds, median end-point KL equal to the uniform
+oracle's (0.0036 nats; 1.9× the max-likelihood floor of this dataset against the population). But
+the per-step noise was **independent** (τ_int 0.6–1.2, E[z²] 0.95–0.99): the favourable case for
+even/odd CV, not the turbulence one. Hence the bimodal test below.
+
+---
+
+# Known-truth test of the λ choice: the paper's 1-D bimodal benchmark
+
+`bimodal_lamtest.py`: same pipeline and same rules as the Gaussian test, on the benchmark of the
+draft's Figure 1, log p\*(x) = −β x⁴ + 5β x² + β x/2, φ_a = x^a / a (a = 1..4), at the paper's
+settings (n = 10⁶, σ = 10, nt = 5·10⁴). At σ = 10 the 1-D validation of 09-30 found the per-step
+noise correlated in time (lag-1 0.18–0.99) and even/odd CV picking λ 100–1000× too small, so this is
+the regime the turbulence runs are expected to be in. `analyse_bimodal_lamtest.ipynb` shows what
+each rule does to θ(t), to the final θ̂, to the density and to the weight of each well.
+
+Files: `bimodal_lamtest.py` (one run = one dataset at one β), `thomas_batched.py` (the moment-mode
+Thomas solve for all λ / CV masks in one sweep, r small only), `check_thomas_batched.py` (checks it
+against `SDE._solve_regularised_thomas`; PASS 2026-10-05, see its docstring for the tolerances),
+`launch_bimodal.sh`, `analyse_bimodal_lamtest.ipynb`.
+
+## Own decisions, with the argument against each
+
+- **B1. Shared SDE (`codes/sde_routines.py`, moment mode) instead of the bimodal port**
+  (`bimodal_experiment/sde_routines_scalar_reg.py`). For: it is the turbulence pipeline and the
+  draft's eqs. 5–6; the port still has the legacy time term. Against: results are not directly
+  comparable with the June/September bimodal runs, and the shared SDE's cost at n = 10⁶ is unmeasured.
+- **B2. Two-phase grid** (n_bulk = nt/6, t_switch 0.9, gap_end 5·10⁻⁵, the turbulence shape) instead
+  of the paper's grid. For: the λ question is about the turbulence grid. Against: the paper's
+  Figure 1 numbers come from another grid.
+- **B3. Truth.** End point: θ\* and the exact D_KL(p_θ\* ‖ p_θ̂) by quadrature on [−10, 10]
+  (8001 points, as `kl_bimodal.ipynb`); floor = max-likelihood fit of each x1. Along the run:
+  θ_ME(m_t), the max-ent fit of the interpolant's empirical moments, by Newton on the same grid.
+  Against: MGD's θ_t targets the Fokker–Planck projection, not θ_ME (0.13 % apart at σ = 10 in the
+  09-30 check), so "noise" along the run includes that slow difference.
+- **B4. Nodes where θ_ME does not exist on R are excluded** (θ₄ ≥ 0; a β = 1.9 interpolant had them
+  for t in [0.20, 0.36]: skewed, nearly Gaussian kurtosis, the known non-existence case of quartic
+  max-ent). They are dropped from every θ_ME-based number; the noise uses the longest valid stretch
+  per window. Against: the mid-run windows then miss part of [0.05, 0.95).
+- **B5. Block CV at fixed lengths B = 20, 200, 2000 nodes** instead of an automatic B from an
+  estimated τ_int. For: the Gaussian test showed the moving-average τ_int estimator reads far too
+  low; fixed B shows directly how long the blocks must be. Against: 2000 nodes is ~4 % of the grid,
+  coarse near t = 1 where the grid is dense in log(1 − t), not in t.
+- **B6. Oracle at the end against θ\*** (the paper's metric) rather than against θ_ME(t_end).
+  Against: it then also "fits" the sampling error of the dataset, which no λ can remove; both
+  numbers are reported (`end_true`, `end_sample`).
+- **B7. 3 β (0.1, 0.9, 1.9) × 10 runs**, each run its own dataset (seed k) as the paper's ensemble.
+  Against: 10 runs give a rough mean; the paper used 100.
+- **B8. λ grid 10⁻⁶ … 10³ in decades** (uniform-weight units; not comparable with the legacy grid of
+  `bimodal_sweep.sh`). Against: one point per decade; edges are flagged when a rule picks one.
+- **B9. Ridge 10⁻⁴ in the run and the solves** (turbulence reg1e-4 arm).
+
+## How to run
+
+Smoke (seconds, local): see the script docstring. Full (Jean Zay):
+
+    bash lam_selection_criterion/launch_bimodal.sh                        # 3 beta x 10 runs = 30 tasks
+    BETAS="0.9" K=1 bash lam_selection_criterion/launch_bimodal.sh        # one run first, to time it
+
+Outputs in `results/bimodal/beta_<b>/run_<k>.pt` (~1–2 MB each, incl. the Θ(t) curves on ~3000
+nodes for the notebook), `args.json`, slurm logs. Systems go to `$SCRATCH` and are deleted after use.
+Combined table, on a login node:
+
+    python lam_selection_criterion/bimodal_lamtest.py --out lam_selection_criterion/results/bimodal --combine_only
+
+Then pull `results/bimodal/` and run `analyse_bimodal_lamtest.ipynb` locally.
