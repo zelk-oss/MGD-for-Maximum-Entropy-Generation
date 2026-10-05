@@ -178,7 +178,8 @@ against `SDE._solve_regularised_thomas`; PASS 2026-10-05, see its docstring for 
 
 Smoke (seconds, local): see the script docstring. Full (Jean Zay):
 
-    bash lam_selection_criterion/launch_bimodal.sh                        # 3 beta x 10 runs = 30 tasks
+    bash lam_selection_criterion/launch_bimodal.sh                        # 10 tasks (run k), each does the 3 betas in turn
+                                                                          # (dev QoS: at most 10 submitted jobs per user)
     BETAS="0.9" K=1 bash lam_selection_criterion/launch_bimodal.sh        # one run first, to time it
 
 Outputs in `results/bimodal/beta_<b>/run_<k>.pt` (~1–2 MB each, incl. the Θ(t) curves on ~3000
