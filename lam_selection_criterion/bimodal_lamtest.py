@@ -6,8 +6,9 @@ statistics phi_a = x^a / a (a = 1..4, as bimodal_experiment), so in the CODE sig
 
 Unlike the Gaussian d = 8 test, the walker law is not in the exponential family and the noise of
 the per-step theta_t is expected to be correlated in time (1-D validation of 2026-09-30, sigma = 10:
-lag-1 0.18-0.99), which is the regime of the turbulence runs. One run = one dataset x1 of n
-samples at one beta, as one run of the paper's ensemble.
+lag-1 0.18-0.99), which is the regime of the turbulence runs. Run k = one dataset x1 of n samples
+at one beta (as one run of the paper's ensemble), pushed through MGD --seeds_per_data times with
+different SDE seeds (replicas, as the 5 seeds of a turbulence arm); one output file per replica.
 
 Pipeline (the turbulence one): SDE.forward_regularised (moment mode, two-phase grid, GPU) ->
 saved system -> resolve_theta_reg.build_inputs -> Theta(lam) for both weightings. The solves use
@@ -30,13 +31,16 @@ Truth, exact in 1-D (no Monte Carlo):
 
 Rules (per run, per weighting 'uniform' / 'guth'): even/odd CV (lam_select_cv.lam_path), block CV
 for each block length in --blocks, oracle at the end (exact KL to theta*), oracle mid-run (local KL
-to theta_ME over [0.05, 0.95)), guth at lam = 1, and lam = 0 (raw theta_t).
+to theta_ME over [0.05, 0.95)), guth at lam = 1, and lam = 0 (raw theta_t). Per dataset: cross-seed
+CV (add_xseed_rules): each replica's Theta(lam) scored with the data term of the OTHER replicas,
+which carry independent noise, so no assumption on the time correlation of the noise within a run;
+scored on the whole transport and on t >= each of --xseed_ends (2026-10-05, user's choice: compare both).
 
 Usage, from the repo root:
   one beta, runs 0..9 (Jean Zay, GPU):  python lam_selection_criterion/bimodal_lamtest.py --out DIR --beta 0.9 --runs 0 1 2 ...
   combine only:                         python lam_selection_criterion/bimodal_lamtest.py --out DIR --combine_only
   smoke (seconds, CPU):                 python lam_selection_criterion/bimodal_lamtest.py --out /tmp/x --nt 60 --n_bulk 10 \
-                                            --n 200 --beta 0.5 --runs 0 1 --lams 0 1e-3 1 --blocks 5 10
+                                            --n 200 --beta 0.5 --runs 0 --lams 0 1e-3 1 --blocks 5 10
 """
 import argparse
 import functools
@@ -96,6 +100,10 @@ def parse_args():
                    default=[0, 1e-6, 1e-5, 1e-4, 1e-3, 1e-2, 1e-1, 1, 10, 100, 1000])
     p.add_argument('--blocks', type=int, nargs='+', default=[20, 200, 2000], help='block CV lengths (nodes)')
     p.add_argument('--veto', type=float, default=10.0)
+    p.add_argument('--seeds_per_data', type=int, default=3,
+                   help='MGD runs (SDE seeds k + 1000 s) per dataset k; >= 2 enables the cross-seed CV')
+    p.add_argument('--xseed_ends', type=float, nargs='*', default=[0.99, 0.999],
+                   help='cross-seed CV also scored on t >= each of these (besides the whole transport)')
     p.add_argument('--n_plot', type=int, default=3000, help='nodes kept for the Theta(t) curves of the notebook')
     p.add_argument('--device', default='cuda' if torch.cuda.is_available() else 'cpu')
     p.add_argument('--keep_system', action='store_true')
@@ -297,21 +305,26 @@ def log(msg):
     print(f"[{time.strftime('%H:%M:%S')}] {msg}", flush=True)
 
 
-def run_one(args, k):
-    torch.manual_seed(k)
-    np.random.seed(k)
+def replica_path(args, k, s):
+    return args.out / f'beta_{args.beta:.2f}' / f'run_{k:03d}_s{s}.pt'
+
+
+def run_replica(args, k, s, x1):
+    """One MGD run (SDE seed k + 1000 s) on dataset k, and every per-run rule. Returns the result
+    dict (saved by run_dataset) and what the cross-seed rules need (systems, Theta(lam), truth)."""
+    torch.manual_seed(k + 1000 * s)
+    np.random.seed(k + 1000 * s)
     th_star = theta_star(args.beta)
-    x1 = sample(args.n, args.beta, k).to(args.device)
     t_grid, info = two_phase_schedule(args.nt, args.n_bulk, args.t_switch, args.gap_end)
     sysdir = args.system_dir or args.out / 'systems'
     sysdir.mkdir(parents=True, exist_ok=True)
-    sys_path = sysdir / f'bimodal_beta{args.beta:.2f}_run{k:03d}.pt'
+    sys_path = sysdir / f'bimodal_beta{args.beta:.2f}_run{k:03d}_s{s}.pt'
     solver = SDE(x1.clone(), args.n, args.n, t_grid.clone(), args.sigma, {'poly': Poly()}, args.n,
                  device=args.device, regularization=args.regularization, interpolant='Cos',
                  potentials_save_dir=sysdir / 'unused_potentials_dir',   # required by SDE, never written
                  solve_float64=True)
     t0 = time.time()
-    log(f'beta {args.beta:.2f} run {k}: SDE start ({args.nt} steps, n = {args.n}, device {args.device}); '
+    log(f'beta {args.beta:.2f} run {k} seed {s}: SDE start ({args.nt} steps, n = {args.n}, device {args.device}); '
         f'progress bar below, one update a minute')
     out = solver.forward_regularised(lam=0.0, reg_solver='thomas', reg_ridge=args.regularization,
                                      reg_system_path=sys_path, solve_reg=False, reg_mode='moment')
@@ -336,7 +349,7 @@ def run_one(args, k):
     kl_floor = float(kl_exact(th_star, theta_me[-1:])[0])           # max-likelihood fit of x1 vs theta*
     valid = (theta_me[:, 3] < 0).numpy()                             # theta_ME exists on R
 
-    res = dict(run=k, beta=args.beta, n_nodes=len(t), grid=info, t_sde_s=t_sde, t_truth_s=t_truth,
+    res = dict(run=k, seed=s, beta=args.beta, n_nodes=len(t), grid=info, t_sde_s=t_sde, t_truth_s=t_truth,
                maxent_residual=me_res, maxent_theta4_nonneg=int((~valid).sum()),
                maxent_invalid_t=[float(t[~valid].min()), float(t[~valid].max())] if (~valid).any() else None,
                theta_star=th_star, theta_mle=theta_me[-1], kl_floor=kl_floor, cr_bound=R / (2 * args.n),
@@ -347,7 +360,7 @@ def run_one(args, k):
     res['plot'] = dict(idx=torch.as_tensor(pidx), t=torch.as_tensor(t[pidx]), theta_t=theta_nodes[pidx].float(),
                        theta_me=theta_me[pidx].float(), valid=torch.as_tensor(valid[pidx]),
                        Theta={}, kl_local={})
-    kl_local_by, kl_true_by = {}, {}
+    kl_local_by, kl_true_by, S_by, Theta_by = {}, {}, {}, {}
     for sched in SCHEDULES:
         a_ = SimpleNamespace(schedule=sched, ridge=args.regularization, dim=None, n_walkers=None, sigma=None,
                              mask='auto', results_root=None, live_floor=0.0)
@@ -357,6 +370,7 @@ def run_one(args, k):
         log(f'{sched}: lam path + block CV ({len(lams)} lams, blocks {args.blocks})')
         path = tb.lam_path_batched(S_, lams, veto=args.veto)
         Theta = path['Theta']                                        # (L, n, 4) float64
+        S_by[sched], Theta_by[sched] = S_, Theta
         if sched == 'uniform':
             res['theta0_vs_theta_t_maxrel'] = float(((Theta[0] - theta_nodes).norm(dim=1) /
                                                      theta_nodes.norm(dim=1).clamp_min(1e-300)).max())
@@ -404,33 +418,101 @@ def run_one(args, k):
     res['theta_end']['theta_t'] = theta_nodes[-1]
     res['plot']['kl_local']['theta_t'] = kl0[torch.as_tensor(pidx)].float()
     res['t_total_s'] = time.time() - t0
-    dest = args.out / f'beta_{args.beta:.2f}' / f'run_{k:03d}.pt'
-    dest.parent.mkdir(parents=True, exist_ok=True)
-    tmp = dest.with_name(dest.name + '.tmp')
-    torch.save(res, tmp)
-    tmp.replace(dest)
-    if not args.keep_system:
-        sys_path.unlink(missing_ok=True)
-    return res
+    extra = dict(t=t, wts=wts, valid=valid, S=S_by, Theta=Theta_by, kl_local=kl_local_by, kl_true=kl_true_by,
+                 theta_me=theta_me, F_me=F_me, sys_path=sys_path)
+    return res, extra
+
+
+def add_xseed_rules(args, reps, lams):
+    """Cross-seed CV: Theta_A(lam) of each replica is scored with the data term of every OTHER replica
+    of the same dataset (independent SDE noise and Z), summed over the ordered pairs; one lam per
+    dataset and weighting, the minimiser. No assumption on the time correlation of the noise within
+    a run. Scored on all nodes ('whole') and on t >= e for e in --xseed_ends ('end<e>'); trapezoid
+    weights in t, as the other CV rules. Also stores how far apart the replicas' targets are
+    (their theta_ME differ through Z), as local KL, per time window."""
+    t = reps[0][1]['t']
+    for _, ex in reps[1:]:
+        assert np.array_equal(ex['t'], t), 'replicas on different node grids'
+    w = trapezoid_node_weights(t)
+    windows = {'whole': np.arange(len(t)), **{f'end{e:g}': np.flatnonzero(t >= e) for e in args.xseed_ends}}
+    for res, _ in reps:
+        res['xseed'] = {}
+    for sched in SCHEDULES:
+        for wname, nodes in windows.items():
+            nd = torch.as_tensor(nodes)
+            loss = np.zeros(len(lams))
+            for a, (_, ea) in enumerate(reps):
+                Th = ea['Theta'][sched][:, nd]                         # (L, nodes, 4)
+                for b, (_, eb) in enumerate(reps):
+                    if a != b:
+                        loss += tb.data_term(eb['S'][sched], Th, nodes, w).numpy()
+            sel = lams[int(np.argmin(loss))]
+            name = f'{sched}_xseed_{wname}'
+            for res, ex in reps:
+                res['xseed'][name] = dict(loss=loss.tolist(), selected=sel, n_nodes=int(len(nodes)))
+                res['rules'][name] = dict(lam=sel, sched=sched, edge=edge_flag(sel, lams),
+                                          end_true=ex['kl_true'][(sched, sel)],
+                                          end_sample=res['kl_end_sample'][f'{sched}|{sel:g}'],
+                                          **summarize(ex['kl_local'][(sched, sel)].numpy(), ex['t'], ex['wts'],
+                                                      ex['valid']))
+    gap = {}                                                           # target difference between replicas
+    for lo, hi in WINDOWS:
+        sel_t = ((t >= lo) & (t < hi)) if hi < 1 else (t >= lo)
+        vals = []
+        for a, (_, ea) in enumerate(reps):
+            for b, (_, eb) in enumerate(reps):
+                if a < b:
+                    m = sel_t & ea['valid'] & eb['valid']
+                    if m.any():
+                        mi = torch.as_tensor(np.flatnonzero(m))
+                        vals.append(float(local_kl(ea['theta_me'][mi] - eb['theta_me'][mi], ea['F_me'][mi]).median()))
+        gap[f'[{lo},{hi})'] = float(np.median(vals)) if vals else float('nan')
+    for res, _ in reps:
+        res['xseed_target_gap'] = gap
+
+
+def run_dataset(args, k):
+    """Dataset k: --seeds_per_data MGD runs (replicas) on the same x1, the per-run rules for each, the
+    cross-seed rules across them; one file per replica."""
+    x1 = sample(args.n, args.beta, k).to(args.device)
+    lams = sorted(set([0.0] + list(args.lams)))
+    reps = [run_replica(args, k, s, x1) for s in range(args.seeds_per_data)]
+    if len(reps) > 1:
+        log(f'cross-seed CV over {len(reps)} replicas')
+        add_xseed_rules(args, reps, lams)
+    for res, ex in reps:
+        dest = replica_path(args, k, res['seed'])
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        tmp = dest.with_name(dest.name + '.tmp')
+        torch.save(res, tmp)
+        tmp.replace(dest)
+        if not args.keep_system:
+            ex['sys_path'].unlink(missing_ok=True)
+    return [res for res, _ in reps]
 
 
 # ------------------------------------------------------------------ report
-def rule_order(blocks):
+def rule_order(blocks, xseed_ends=()):
     out = ['lam0', 'guth_lam1']
     for s in SCHEDULES:
         out += [f'{s}_cv_eo'] + [f'{s}_cv_block{B}' for B in blocks]
+    for s in SCHEDULES:
+        out += [f'{s}_xseed_whole'] + [f'{s}_xseed_end{e:g}' for e in xseed_ends]
     for s in SCHEDULES:
         out += [f'{s}_oracle_end', f'{s}_oracle_mid']
     return out
 
 
-def print_run(res, blocks):
+def print_run(res, blocks, xseed_ends=()):
     solves = ', '.join(f"{s} solves {res['cv'][s]['solve_s']:.0f} s" for s in SCHEDULES)
-    print(f"\n=== beta {res['beta']:.2f} run {res['run']}: {res['n_nodes']} nodes, total {res['t_total_s']:.0f} s "
+    print(f"\n=== beta {res['beta']:.2f} run {res['run']} seed {res.get('seed', 0)}: {res['n_nodes']} nodes, total {res['t_total_s']:.0f} s "
           f"(SDE {res['t_sde_s']:.0f} s, truth {res['t_truth_s']:.0f} s, {solves}); max rel |Theta(0) - theta_t| "
           f"= {res['theta0_vs_theta_t_maxrel']:.1e}; max-ent residual {res['maxent_residual']:.1e}, "
           f"theta_ME invalid (theta_4 >= 0) at {res['maxent_theta4_nonneg']} nodes, t in {res['maxent_invalid_t']}")
     print(f"floor KL(theta* || max-likelihood fit of x1) = {res['kl_floor']:.3g}   (r/2n = {res['cr_bound']:.3g})")
+    if 'xseed_target_gap' in res:
+        print('targets of the replicas (theta_ME through their Z), median local KL between them: ' +
+              ', '.join(f'{w} {v:.2g}' for w, v in res['xseed_target_gap'].items()))
     print('noise of theta_t (residual vs theta_ME(t); tau_int = 1 for independent steps):')
     for w, d in res['noise'].items():
         print(f"  t {w:>14}  steps {d['steps']:6d} [{d['t_from']:.4f}, {d['t_to']:.6f}]  acf(1) {d['acf1']: .3f}  acf(10) {d['acf10']: .3f}  "
@@ -438,7 +520,7 @@ def print_run(res, blocks):
               f"tau_int(<={d['tau_lmax']}) {d['tau_int']:7.1f}  E[z^2] {d['z2_median']:.3g}")
     print(f"{'rule':>22} {'lam':>7} | {'KL end vs theta*':>16} {'vs MLE':>9} | {'local KL [0.05,0.95)':>20} "
           f"{'[0.95,0.99)':>11} {'[0.99,0.999)':>12} {'[0.999,1)':>10}")
-    for name in rule_order(blocks):
+    for name in rule_order(blocks, xseed_ends):
         d = res['rules'].get(name)
         if d is None or 'end_true' not in d:
             print(f"{name:>22} {'none':>7}")
@@ -455,11 +537,11 @@ def combine(args):
             continue
         Rs = [torch.load(f, map_location='cpu', weights_only=False) for f in files]
         floor = np.array([r['kl_floor'] for r in Rs])
-        print(f"\n######## beta {Rs[0]['beta']:.2f}: {len(Rs)} runs; KL to theta* at the last node "
+        print(f"\n######## beta {Rs[0]['beta']:.2f}: {len(Rs)} runs (datasets x seeds); KL to theta* at the last node "
               f"(floor = max-likelihood fit of each x1: mean {floor.mean():.3g}; r/2n = {Rs[0]['cr_bound']:.3g})")
         print(f"{'rule':>22} | {'lam chosen (count)':>34} | {'KL end: mean':>12} {'median':>9} {'[q25, q75]':>21} "
               f"{'/floor':>7} {'inf':>4} | {'local KL [0.05,0.95)':>20}")
-        for name in rule_order(args.blocks):
+        for name in rule_order(args.blocks, args.xseed_ends):
             rows = [r['rules'].get(name, {}) for r in Rs]
             rows = [d for d in rows if 'end_true' in d]
             if not rows:
@@ -499,15 +581,16 @@ def main():
             sys.exit(f'{args.out} holds runs made with other settings {diff}: use a new --out')
     elif not args.combine_only:
         cfg_path.write_text(json.dumps(setting, indent=1))
-    if args.combine_only and cfg_path.exists():
-        args.blocks = json.loads(cfg_path.read_text())['blocks']       # the rules the runs were made with
+    if args.combine_only and cfg_path.exists():                      # the rules the runs were made with
+        cfg = json.loads(cfg_path.read_text())
+        args.blocks, args.xseed_ends = cfg['blocks'], cfg.get('xseed_ends', [])
     if not args.combine_only:
         for k in args.runs:
-            done = args.out / f'beta_{args.beta:.2f}' / f'run_{k:03d}.pt'
-            if done.exists():                                        # resubmit-safe
-                print(f'beta {args.beta:.2f} run {k}: {done} exists, skipped')
+            if all(replica_path(args, k, s).exists() for s in range(args.seeds_per_data)):   # resubmit-safe
+                print(f'beta {args.beta:.2f} run {k}: all {args.seeds_per_data} replicas exist, skipped')
                 continue
-            print_run(run_one(args, k), args.blocks)
+            for res in run_dataset(args, k):
+                print_run(res, args.blocks, args.xseed_ends)
     if not args.no_combine:
         combine(args)
 

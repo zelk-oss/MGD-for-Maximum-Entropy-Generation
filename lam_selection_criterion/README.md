@@ -174,18 +174,43 @@ against `SDE._solve_regularised_thomas`; PASS 2026-10-05, see its docstring for 
   `bimodal_sweep.sh`). Against: one point per decade; edges are flagged when a rule picks one.
 - **B9. Ridge 10⁻⁴ in the run and the solves** (turbulence reg1e-4 arm).
 
+- **B10. Cross-seed CV** (added 2026-10-05, after the first result below). Every dataset is run
+  with 3 SDE seeds; each seed's Θ(λ) is scored with the data term of the other seeds (independent
+  noise), pooled over the 6 ordered pairs, one λ per dataset and weighting. No assumption on how the
+  noise of θ_t is correlated in time within a run (user's requirement). Scored on the whole
+  transport and on t ≥ 0.99 / 0.999 (user: compare both; the end matters for log p, the whole
+  transport for log Z and the entropy). Against: the seeds also draw different Z, so their targets
+  differ early in the transport (stored as `xseed_target_gap`, vanishes at t = 1); it needs ≥ 2 runs
+  per dataset (the turbulence arms have 5 seeds on the same data).
+
+## First result (job 619951, one seed per dataset, 2026-10-05)
+
+Error D_KL(p_θ\* ‖ p_θ̂) at t = 1, mean over 10 datasets (floor = max-likelihood fit, 1.7–2.0e-6 = r/2n):
+
+| rule | β = 0.1 | β = 0.9 | β = 1.9 |
+|---|---|---|---|
+| oracle, uniform / Guth | 2.1e-6 / 2.3e-6 | 5.9e-6 / 4.5e-6 | 2.0e-4 / 1.1e-4 |
+| even/odd CV, uniform (current) | 3.6e-6 | 4.0e-5 (λ = 1e-6 = grid edge, 10/10) | 0.020 (λ = 1e-6, 10/10) |
+| block CV B = 200, uniform / Guth | 3.6e-6 / 2.3e-6 | 1.4e-5 / 1.5e-5 | 6.6e-3 / 3.1e-3 |
+| Guth, λ = 1 | 1.0e-4 | 5.9e-4 | 1.1e-3 |
+
+Noise of θ_t: correlated over most of the transport (τ_int ≈ 60–175 steps in [0.1, 0.9), growing with
+β; E[z²] 2–20), independent only for t ≥ 0.99 (τ_int ≈ 1, E[z²] ≈ 0.85). Even/odd CV fails as soon as
+the wells deepen; no tested rule is reliable at β = 1.9 (best: Guth block CV, 27× the oracle), hence B10.
+
 ## How to run
 
 Smoke (seconds, local): see the script docstring. Full (Jean Zay):
 
-    bash lam_selection_criterion/launch_bimodal.sh                        # 10 tasks (run k), each does the 3 betas in turn
-                                                                          # (dev QoS: at most 10 submitted jobs per user)
-    BETAS="0.9" K=1 bash lam_selection_criterion/launch_bimodal.sh        # one run first, to time it
+    bash lam_selection_criterion/launch_bimodal.sh      # 10 tasks (dataset k): 3 betas x 3 seeds each, ~63 min
+                                                        # (dev QoS: at most 10 submitted jobs per user)
 
-Outputs in `results/bimodal/beta_<b>/run_<k>.pt` (~1–2 MB each, incl. the Θ(t) curves on ~3000
-nodes for the notebook), `args.json`, slurm logs. Systems go to `$SCRATCH` and are deleted after use.
-Combined table, on a login node:
+Outputs in `results/bimodal_xseed/beta_<b>/run_<k>_s<s>.pt` (~1–2 MB each, incl. the Θ(t) curves on
+~3000 nodes for the notebook), `args.json`, slurm logs. The systems (~8 MB each) are kept on
+`$SCRATCH/.../systems_bimodal_xseed`, so new λ rules need no new SDE run. The first result (one seed
+per dataset, no cross-seed rule) is in `results/bimodal/`. Combined table, on a login node:
 
-    python lam_selection_criterion/bimodal_lamtest.py --out lam_selection_criterion/results/bimodal --combine_only
+    python lam_selection_criterion/bimodal_lamtest.py --out lam_selection_criterion/results/bimodal_xseed --combine_only
 
-Then pull `results/bimodal/` and run `analyse_bimodal_lamtest.ipynb` locally.
+Then fetch `results/bimodal_xseed/` (the `.pt` files too: the pull skips them) and run
+`analyse_bimodal_lamtest.ipynb` locally.
