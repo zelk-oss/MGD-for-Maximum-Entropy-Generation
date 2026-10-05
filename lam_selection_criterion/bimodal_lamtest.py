@@ -530,6 +530,29 @@ def print_run(res, blocks, xseed_ends=()):
               + ('  (grid edge)' if d.get('edge') else ''))
 
 
+PASS, HIGH = 3.0, 10.0          # pass mark agreed with the user 2026-10-05: <= 10x the best lam, flagged above 3x
+
+
+def verdict_table(Rs, args):
+    """Per practical rule: its KL at t = 1 divided by the best possible on the lam grid for the same
+    run (the better of the two oracles), median and share of runs within 10x; verdict on the median:
+    ok (<= 3x), HIGH (3-10x: passes but still high), FAIL (> 10x)."""
+    print(f"verdict: KL / best-possible KL of the same run (best of uniform and guth oracle); "
+          f"ok <= {PASS:g}x, HIGH {PASS:g}-{HIGH:g}x (passes, still high), FAIL > {HIGH:g}x")
+    best = np.array([min(r['rules']['uniform_oracle_end']['end_true'], r['rules']['guth_oracle_end']['end_true'])
+                     for r in Rs])
+    for name in rule_order(args.blocks, args.xseed_ends):
+        if 'oracle' in name or name == 'lam0':
+            continue
+        e = np.array([r['rules'].get(name, {}).get('end_true', np.nan) for r in Rs])
+        if np.isnan(e).all():
+            continue
+        ratio = e / best
+        med = np.nanmedian(ratio)
+        tag = 'ok' if med <= PASS else ('HIGH' if med <= HIGH else 'FAIL')
+        print(f"  {name:>22}: median {med:8.3g}x, runs within {HIGH:g}x: {int((ratio <= HIGH).sum())}/{len(ratio)}  {tag}")
+
+
 def combine(args):
     for bdir in sorted(args.out.glob('beta_*')):
         files = sorted(bdir.glob('run_*.pt'))
@@ -558,6 +581,7 @@ def combine(args):
                   f"{np.median(ends):9.4g} [{q[0]:9.3g}, {q[1]:9.3g}] "
                   f"{(fin.mean() / floor.mean()) if len(fin) else np.nan:7.2f} {int((~np.isfinite(ends)).sum()):4d} | "
                   f"{np.median([d['[0.05,0.95)'] for d in rows]):20.4g}")
+        verdict_table(Rs, args)
         print('noise of theta_t, median over runs (tau_int(<=100) | tau_int(<=lmax) | acf(1) | E[z^2]):')
         for w in Rs[0]['noise']:
             g_ = lambda key: np.median([r['noise'][w][key] for r in Rs if w in r['noise']])

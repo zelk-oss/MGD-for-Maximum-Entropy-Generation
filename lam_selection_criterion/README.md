@@ -215,3 +215,28 @@ per dataset, no cross-seed rule) is in `results/bimodal/`. Combined table, on a 
 Then run `analyse_bimodal_lamtest.ipynb` on Jean Zay, next to the results (send it there with
 `rsync -avhR lam_selection_criterion/analyse_bimodal_lamtest.ipynb jz:/lustre/fswork/projects/rech/wbg/ukv59en/MGD-for-Maximum-Entropy-Generation/`; the push
 script skips `.ipynb`). It finds the repo root by itself and reads `results/bimodal_xseed` by default.
+
+---
+
+# Applying the cross-seed choice to turbulence (`turb_xseed.py`, `launch_turb_xseed.sh`)
+
+For one arm (e.g. the noSm30 runs 465148 = ridge 1e-4, 465149 = ridge 1e-2; 5 seeds each, same data,
+potentials and settings, only the random seed differs): phase 1 solves every seed's saved system for
+every λ with the existing `codes/resolve_theta_reg.py` (uniform weights, the arm's ridge, saved live
+mask; Θ files on `$SCRATCH`); phase 2 (`turb_xseed.py`) scores each seed's Θ(λ) with the other seeds'
+data terms, pools the 20 ordered pairs and prints the chosen λ for the whole transport, t ≥ 0.99 and
+t ≥ 0.999, with the choice of each single pair (how stable it is) and a warning at a grid edge. Same rule
+as the bimodal test; checked on bimodal replicas: same λ, same losses (exactly at the end window;
+1–3 % apart on the whole transport, from the first node, which the phase-1 files drop).
+
+    DRY=1 ARM=noL6psi_noSm30_reg1e-4 RIDGE=1e-4 bash lam_selection_criterion/launch_turb_xseed.sh   # lists the files
+    ARM=noL6psi_noSm30_reg1e-4 RIDGE=1e-4 bash lam_selection_criterion/launch_turb_xseed.sh
+    ARM=noL6psi_noSm30_reg1e-2 RIDGE=1e-2 bash lam_selection_criterion/launch_turb_xseed.sh
+
+Cost not measured (phase 1 ≈ 10 λ × one 5–6 min solve per seed, inferred). Default queue H100 t3 (the
+dev QoS allows only 10 submitted jobs). The Θ of the chosen λ for each seed is listed in
+`results/turb_xseed/xseed_<arm>.pt` (`theta_files`).
+
+Pass mark for the bimodal test (agreed 2026-10-05): a rule passes if its error at t = 1 is at most 10×
+the best possible λ of the same run; above 3× it is flagged as still high (`verdict` lines of
+`--combine_only`).
