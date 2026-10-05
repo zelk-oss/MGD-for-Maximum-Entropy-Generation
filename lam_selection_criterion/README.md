@@ -212,5 +212,6 @@ per dataset, no cross-seed rule) is in `results/bimodal/`. Combined table, on a 
 
     python lam_selection_criterion/bimodal_lamtest.py --out lam_selection_criterion/results/bimodal_xseed --combine_only
 
-Then fetch `results/bimodal_xseed/` (the `.pt` files too: the pull skips them) and run
-`analyse_bimodal_lamtest.ipynb` locally.
+Then run `analyse_bimodal_lamtest.ipynb` on Jean Zay, next to the results (send it there with
+`rsync -avhR lam_selection_criterion/analyse_bimodal_lamtest.ipynb jz:<project path>/`; the push
+script skips `.ipynb`). It finds the repo root by itself and reads `results/bimodal_xseed` by default.
