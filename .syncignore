@@ -29,3 +29,8 @@ entropy_bounds
 # solutions ~90 MB each. Fetch specific ones with pull_results.
 reg_system
 theta_reg_lamsweep
+
+# Local write-ups (LaTeX notes, PDFs, one-off analysis scripts): never sent
+# to the cluster. Leading "/" anchors it to the project root, so only the
+# top-level notes/ is skipped, not any folder named notes deeper down.
+/notes/
