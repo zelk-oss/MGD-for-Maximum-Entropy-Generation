@@ -11,9 +11,9 @@ block cross-validation. The walker law stays exactly Gaussian, so the true theta
 every node (D5) and every rule is scored against it (D6, D7).
 
 Usage, from the repo root:
-  full (Jean Zay):  python notes/lam_selection_gauss_1002/gauss_d8_lamtest.py --out DIR --seeds 900 901 902 903 904
-  combine only:     python notes/lam_selection_gauss_1002/gauss_d8_lamtest.py --out DIR --combine_only
-  smoke (seconds):  python notes/lam_selection_gauss_1002/gauss_d8_lamtest.py --out /tmp/x --nt 60 --n_bulk 10 \
+  full (Jean Zay):  python lam_selection_criterion/gauss_d8_lamtest.py --out DIR --seeds 900 901 902 903 904
+  combine only:     python lam_selection_criterion/gauss_d8_lamtest.py --out DIR --combine_only
+  smoke (seconds):  python lam_selection_criterion/gauss_d8_lamtest.py --out /tmp/x --nt 60 --n_bulk 10 \
                         --n 200 --seeds 900 901 --lams 0 1e-3 1
 """
 import argparse
@@ -30,7 +30,7 @@ from types import SimpleNamespace
 import numpy as np
 import torch
 
-ROOT = Path(__file__).resolve().parents[2]
+ROOT = Path(__file__).resolve().parents[1]
 for p in (ROOT, ROOT / 'codes', ROOT / 'data'):
     if str(p) not in sys.path:
         sys.path.insert(0, str(p))
@@ -65,6 +65,9 @@ def parse_args():
     p.add_argument('--veto', type=float, default=10.0, help='amplitude veto of lam_select_cv')
     p.add_argument('--block', type=int, default=0, help='block length of the block CV; 0 = auto (D10)')
     p.add_argument('--keep_system', action='store_true', help='keep the saved system files')
+    p.add_argument('--system_dir', type=Path, default=None,
+                   help='where the ~0.6 GB/seed systems are written while a seed runs (default OUT/systems; '
+                        'the launcher puts them on $SCRATCH)')
     p.add_argument('--combine_only', action='store_true')
     p.add_argument('--no_combine', action='store_true', help='skip the combined table (array tasks)')
     p.add_argument('--threads', type=int, default=int(os.environ.get('SLURM_CPUS_PER_TASK', 0)) or None)
@@ -249,7 +252,7 @@ def run_seed(args, seed, x1, C):
     np.random.seed(seed)
     t_grid, info = two_phase_schedule(args.nt, args.n_bulk, args.t_switch, args.gap_end)
     pot = Quadratic(args.d)
-    sysdir = args.out / 'systems'
+    sysdir = args.system_dir or args.out / 'systems'
     sysdir.mkdir(parents=True, exist_ok=True)
     sys_path = sysdir / f'gauss_d{args.d}_seed{seed}.pt'
     solver = SDE(x1.clone(), args.n, args.n, t_grid.clone(), args.sigma, {'quad': pot}, args.n,
@@ -451,8 +454,18 @@ def main():
     if args.threads:
         torch.set_num_threads(args.threads)
     args.out.mkdir(parents=True, exist_ok=True)
-    (args.out / 'args.json').write_text(json.dumps({k: (str(v) if isinstance(v, Path) else v)
-                                                    for k, v in vars(args).items()}, indent=1))
+    # combine() pools every seed_*.pt in OUT, so all seeds there must share the problem settings:
+    # adding seeds to an OUT is fine, changing --rho / --nt / ... needs a new OUT.
+    run_only = {'seeds', 'out', 'combine_only', 'no_combine', 'threads', 'keep_system', 'system_dir'}
+    setting = {k: (str(v) if isinstance(v, Path) else v) for k, v in vars(args).items() if k not in run_only}
+    cfg_path = args.out / 'args.json'
+    if cfg_path.exists():
+        old = json.loads(cfg_path.read_text())
+        diff = {k: (old.get(k), v) for k, v in setting.items() if old.get(k) != v}
+        if diff and not args.combine_only:
+            sys.exit(f'{args.out} holds seeds run with other settings {diff}: use a new --out')
+    else:
+        cfg_path.write_text(json.dumps(setting, indent=1))
     if not args.combine_only:
         x1, C = make_data(args)
         for seed in args.seeds:

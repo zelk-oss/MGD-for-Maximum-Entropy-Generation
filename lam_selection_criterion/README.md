@@ -104,10 +104,18 @@ favourable case for the time term (and for Guth's "no tuning").
 
 ## How to run
 
-Smoke (seconds, local): see the script docstring. Full (Jean Zay, per seed ~0.6 GB of system on
-disk while it runs, deleted afterwards unless `--keep_system`):
+Smoke (seconds, local): see the script docstring. Full (Jean Zay), one array task per seed:
 
-    python notes/lam_selection_gauss_1002/gauss_d8_lamtest.py --out <dir> --seeds 900 901 902 903 904
+    bash lam_selection_criterion/launch_gauss_d8.sh                  # seeds 900-904
+    SEEDS="900" bash lam_selection_criterion/launch_gauss_d8.sh      # one seed first, to time it
 
-Per-seed results go to `<dir>/seed_<s>.pt`; the combined table is printed at the end and with
-`--combine_only`.
+Outputs, all in `results/gauss_d8/` (override with `OUT=`): `seed_<s>.pt` (~6 MB each),
+`args.json` (the problem settings), slurm logs, and the figure written by the combine step.
+The ~0.6 GB system per seed is written to `$SCRATCH/.../lam_selection_criterion/systems` while
+the seed runs and deleted afterwards (unless `--keep_system`). Combined table, on a login node:
+
+    python lam_selection_criterion/gauss_d8_lamtest.py --out lam_selection_criterion/results/gauss_d8 --combine_only
+
+More seeds: launch again with the same `OUT` and new `SEEDS`; the combine step pools every
+`seed_*.pt` in `OUT`. Different settings (`EXTRA="--rho 0.8"`, ...): use a new `OUT`; the script
+refuses to put seeds with different settings in the same folder.
