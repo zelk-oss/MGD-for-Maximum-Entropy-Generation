@@ -89,6 +89,11 @@ def parse_args():
                     help='Dataset size: number of samples kept from the '
                          'preprocessed data, i.e. Data[:n1] (replaces the '
                          'hardcoded 3000 slice)')
+    p.add_argument('--n1_spread', action='store_true',
+                   help='Opt-in (2026-10-07, small-window krylov_stopping runs): instead of the first n1 windows '
+                        '(consecutive windows of few trajectories), take n1 windows from n1 DIFFERENT trajectories, '
+                        'trajectories and window positions drawn with a fixed seed 0 (same data for every --seed). '
+                        'Adds "spread" to the experiment name. Default off: Data[:n1] as before.')
 
     # Coarse-graining
     p.add_argument('--subseries_len', type=int, default=1024, help='Base length after reshaping')
@@ -161,6 +166,19 @@ def parse_args():
                          'Scalar_morlet_gaussianK:8:3 (= Scalar_morlet[30] of the zfloor fit, a '
                          'near-copy of Scalar_psi ch 21 region 3). Fails if the slot is not active. '
                          'Not in the config name: use --label')
+    # Early-stopped Krylov per-step solves (codes/sde_krylov.py, krylov_stopping/), opt-in 2026-10-07.
+    # Unset --theta_solver = the plain SDE class, exactly as before.
+    p.add_argument('--theta_solver', type=str, default=None, choices=['ridge', 'jac_minres', 'ito_cg'],
+                   help='Use SDEKrylov with this corrector solver (ridge = --regularization). Adds '
+                        '_<solver> to the name, plus _eta<value> / _g64 for the options below')
+    p.add_argument('--eta_regularization', type=float, default=None,
+                   help='With --theta_solver: ridge of the eta solve, separate from --regularization (e.g. 1e-7)')
+    p.add_argument('--g64', action='store_true',
+                   help='With --theta_solver: accumulate the Gram in float64 (needs --solve_float64)')
+    p.add_argument('--monitor_abort', action='store_true',
+                   help='With --theta_solver: abort on the live stability criteria of SDEKrylov '
+                        '(non-finite, R_k spike > 100x, weak-direction growth); the monitoring file '
+                        'saved_results/aux_moments/<config>_monitor.pt is always written')
     p.add_argument('--solve_float64', action='store_true',
                     help='Per-step eta/theta solves in float64 (needed only for small '
                          '--regularization, ridge near float32 rounding); adds _f64 to the name')
@@ -376,7 +394,17 @@ def main():
     else:
         print(f'-- Current length {pre_len} <= target_len {args.target_len}; skipping coarse graining.')
 
-    x1 = normalize(data_tensor[:args.n1]).to(device)
+    if args.n1_spread:
+        # one window per trajectory; split_periodize_reshape orders windows trajectory-major
+        n_series, per_series = raw_data.shape[0], data_tensor.shape[0] // raw_data.shape[0]
+        if args.n1 > n_series:
+            raise ValueError(f'--n1_spread needs n1 <= number of trajectories ({n_series}), got {args.n1}')
+        g = np.random.default_rng(0)
+        series = g.choice(n_series, args.n1, replace=False)
+        idx = torch.as_tensor(series * per_series + g.integers(0, per_series, args.n1), device=data_tensor.device)
+        x1 = normalize(data_tensor[idx]).to(device)
+    else:
+        x1 = normalize(data_tensor[:args.n1]).to(device)
     B, channels, M = x1.shape
 
     config, exp_dir, fig_dir, potentials_dir, logger, loaded = resolve_or_setup_experiment_output(

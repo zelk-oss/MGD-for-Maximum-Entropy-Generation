@@ -163,6 +163,9 @@ def _config_name_parts(args, M, include_seed=True):
         f'n1_{args.n1}',
         f'lam{args.lam}',
     ]
+    # different data selection (turbulence --n1_spread, opt-in): own name, so it never reloads a Data[:n1] run
+    if getattr(args, 'n1_spread', False):
+        parts.append('spread')
     # Non-default regularised solver gets its own tag (dense runs keep their old
     # names). Needed because loading matches by name prefix: without it a thomas
     # run would silently reload a dense run with the same parameters.
@@ -177,6 +180,13 @@ def _config_name_parts(args, M, include_seed=True):
     # float64 per-step solves change the trajectory, so they get a tag too
     if getattr(args, 'solve_float64', False):
         parts.append('f64')
+    # early-stopped Krylov solver class (opt-in, krylov_stopping/): its own name so it never reloads an SDE run
+    if getattr(args, 'theta_solver', None):
+        parts.append(args.theta_solver)
+        if getattr(args, 'eta_regularization', None) is not None:
+            parts.append(f'eta{args.eta_regularization:g}')
+        if getattr(args, 'g64', False):
+            parts.append('g64')
     # fewer channels in L_6_psi / Scalar_psi_* -> a different statistic set
     if getattr(args, 'deduplicate_filters', False):
         tol = getattr(args, 'dedup_tol', 1e-12)
@@ -382,12 +392,21 @@ def run_experiment(args, M, config, x1, filters, t, logger, outdir, device,
         logger.info('Skipping in-run Theta_reg solve (--skip_reg_solve)')
 
     t0 = timer.time()
-    Solver = SDE(
-        x1, nb_workers, nb_interpolants, t, args.sigma, potentials, batch_size,
-        device=device, regularization=args.regularization, interpolant=args.interpolant,
-        potentials_save_dir=potentials_save_dir,
-        solve_float64=getattr(args, 'solve_float64', False),
-    )
+    sde_kwargs = dict(device=device, regularization=args.regularization, interpolant=args.interpolant,
+                      potentials_save_dir=potentials_save_dir,
+                      solve_float64=getattr(args, 'solve_float64', False))
+    if getattr(args, 'theta_solver', None):          # opt-in: early-stopped Krylov (krylov_stopping/)
+        from codes.sde_krylov import SDEKrylov
+        monitor_path = outdir / 'saved_results' / 'aux_moments' / f'{config}_monitor.pt'
+        monitor_path.parent.mkdir(parents=True, exist_ok=True)
+        logger.info('SDEKrylov: theta %s, eta ridge %s, g64 %s, monitoring -> %s (abort %s)',
+                    args.theta_solver, args.eta_regularization, args.g64, monitor_path, args.monitor_abort)
+        Solver = SDEKrylov(x1, nb_workers, nb_interpolants, t, args.sigma, potentials, batch_size,
+                           theta_solver=args.theta_solver, eta_regularization=args.eta_regularization,
+                           g64=args.g64, monitor=True, monitor_path=monitor_path,
+                           abort=args.monitor_abort, diagnostics=False, **sde_kwargs)
+    else:
+        Solver = SDE(x1, nb_workers, nb_interpolants, t, args.sigma, potentials, batch_size, **sde_kwargs)
     Solver.cond_every = int(getattr(args, 'cond_every', 0) or 0)
     if Solver.cond_every:
         logger.info('Logging the conditioning of the per-step Gram every %d steps', Solver.cond_every)
