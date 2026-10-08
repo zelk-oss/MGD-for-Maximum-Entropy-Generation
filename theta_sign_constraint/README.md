@@ -16,9 +16,17 @@ So Θ_reg is solved again with the bound Θ_{k,i} ≤ −ε_{k,i} on all 9 L_6 c
 - `codes/sde_routines.py`, `SDE._solve_regularised_thomas(..., pin=(mask, values))`: holds chosen
   entries at given values (same mechanism as the dead-statistic mask, which holds them at 0), with
   the exact coupling of the free entries to them. `pin=None` is bit-identical to before (tested).
-- `codes/theta_reg_bounds.py`: active-set loop. Solve; pin every bounded entry above its bound; free
-  every pinned entry whose energy gradient says it wants to go below the bound; repeat until nothing
-  changes (KKT conditions hold). A few Thomas solves per λ.
+- `codes/theta_reg_bounds.py`: the loop that enforces the bounds. Default = projected Newton: start
+  from the free solve clipped to the bounds; each round hold the entries at their bound that want to
+  stay there, refit the rest exactly (one pinned Thomas solve), step towards it, clip back onto the
+  bounds, keep the step only if the fit improves. Every round is feasible and better than the last,
+  so it cannot cycle.
+  - History (2026-10-08): the first version was the plain active set (pin every violated entry,
+    release every pinned entry that wants to go lower, all at once). On turbulence (job 781019,
+    cancelled) it oscillated: 40-50 thousand entries added and released every round. An "add only"
+    variant converges but on a synthetic system its fit was 64% worse than the optimum. Both are
+    still available (`--neg_method exact | add_only`) for comparison.
+  - `SDE._reg_energy_grad`: energy and gradient of the same system, for the step acceptance.
 - `codes/resolve_theta_reg.py --neg_cols 0:9 --neg_eps_nats EPS [--neg_t_min T]`: output
   `lam<λ>_ridge<ridge>_moment_mask_neg<EPS>.pt`, with `neg` (bounds, iterations, which entries ended
   pinned, convergence) next to `Theta_reg`.
@@ -44,6 +52,8 @@ What it does not fix: the mid-amplitude bumps of log p on fine/medium tones (TES
 at filters that are already negative.
 
 ## Tests
-`python theta_sign_constraint/tests/test_bounds.py` (local, seconds): pin=None bit-identical to HEAD;
-pinned solve = dense elimination (1e-14); bounded solve = L-BFGS-B on the dense energy (same energy,
-max rel diff 5e-7) and satisfies KKT; inactive bounds = free solve.
+`python theta_sign_constraint/tests/test_bounds.py` (local, ~1 min): pin=None bit-identical to HEAD;
+pinned solve = dense elimination (1e-14); exact active set = L-BFGS-B on the dense energy (max rel
+diff 5e-7) and KKT; inactive bounds = free solve; add-only feasible but worse (3e-3 and 0.64 relative
+energy gap); energy helper = dense; projected Newton = exact solution (energy and Θ identical) in 3
+and 9 rounds, KKT.

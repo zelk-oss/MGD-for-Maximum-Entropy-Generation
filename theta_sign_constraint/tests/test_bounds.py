@@ -4,8 +4,13 @@ Plain asserts, run from the repo root:  python theta_sign_constraint/tests/test_
 Small synthetic moment-mode systems (n nodes, r statistics), solved four ways:
   1. pin=None vs the solver as committed in git HEAD: bit-identical.
   2. pinned values vs a dense solve with those entries eliminated.
-  3. active-set bounded solve vs scipy L-BFGS-B on the dense energy with box bounds.
-  4. KKT of the bounded solution (feasible; multipliers >= 0; complementarity).
+  3. exact active set (release=True) vs scipy L-BFGS-B on the dense energy with box bounds.
+  4. KKT of the exact solution (feasible; multipliers >= 0; complementarity).
+  5. inactive bounds: one solve, identical to the free solve.
+  6. add-only loop: converged, feasible, free entries stationary, energy >= exact energy; reports
+     the gap. Also on a larger, strongly time-coupled system.
+  7. SDE._reg_energy_grad vs the dense energy and gradient.
+  8. projected Newton (the default): feasible, KKT, same energy as the exact active set / L-BFGS-B.
 """
 import importlib.util
 import subprocess
@@ -125,7 +130,7 @@ def main():
     n_viol0 = int((free[:, cols] > upper).sum())
     assert n_viol0 > 0, 'test system has no violations: make b larger'
     Th, info = run(solve_upper_bounded, me, t, M, S, b, v, lam, cols, upper, ridge=ridge, live=live,
-                   log=lambda m: None)
+                   release=True, log=lambda m: None)
     assert info['converged'], info['history']
     ub = np.full(n * r, np.inf); ub.reshape(n, r)[:, cols] = upper.numpy()
     lb = np.full(n * r, -np.inf)
@@ -156,6 +161,67 @@ def main():
                      live=live, log=lambda m: None)
     assert info2['iterations'] == 1 and info2['n_pinned'] == 0 and torch.equal(Th2, free)
     print('5. inactive bounds: one solve, identical to the free solve: OK')
+
+    # 6. add only
+    def check_add_only(t, M, S, b, v, live, lam, cols, upper, label):
+        n, r = len(t), M[0].shape[0]
+        me = types.SimpleNamespace(num_potentials=r)
+        A, f = dense(t, M, S, b, v, lam, ridge, live)
+        E = lambda X: float(0.5 * X.reshape(-1) @ A @ X.reshape(-1) - f @ X.reshape(-1))
+        Te, ie = run(solve_upper_bounded, me, t, M, S, b, v, lam, cols, upper, ridge=ridge, live=live,
+                     release=True, max_iter=60, log=lambda m: None)
+        Ta, ia = run(solve_upper_bounded, me, t, M, S, b, v, lam, cols, upper, ridge=ridge, live=live,
+                     method='add_only', log=lambda m: None)
+        assert ia['converged'] and not ia['release']
+        assert bool((Ta[:, cols] <= upper * (1 - 1e-9)).all()), 'add-only result infeasible'
+        gr = (A @ Ta.reshape(-1) - f).reshape(n, r)
+        free = torch.ones(n, r, dtype=torch.bool); free[:, cols] = ~ia['pinned']; free &= live
+        assert bool((gr[free].abs() <= 1e-8 * gr.abs().max()).all()), 'a free entry is not stationary'
+        gap = E(Ta) - E(Te)
+        assert gap >= -1e-9 * abs(E(Te)), 'add-only beat the exact optimum?'
+        print(f'6. add-only [{label}]: {ia["iterations"]} solves, {ia["n_pinned"]} pinned '
+              f'({ia["n_wants_out"]} would go lower); exact: {ie["iterations"]} solves, converged {ie["converged"]} | '
+              f'energy gap {gap:.3g} = {gap / abs(E(Te)):.2e} relative, '
+              f'max |Theta_add - Theta_exact| / max |Theta_exact| = {float((Ta - Te).abs().max() / Te.abs().max()):.2e}: OK')
+
+    check_add_only(t, M, S, b, v, live, lam, cols, upper, 'n=40, lam=1e-2')
+    t2, M2, S2, b2, v2, live2 = make_system(n=400, r=6, seed=3)
+    check_add_only(t2, M2, S2, b2, v2, live2, 1.0, cols, -0.05 * torch.ones(400, 3), 'n=400, lam=1')
+
+    # 7. energy / gradient helper vs dense
+    X = torch.randn(n, r, generator=g) * live
+    (E_h,), (G_h,) = SDE._reg_energy_grad(me, t, M, S, b, v, lam, [X], ridge=ridge, mode='moment')
+    E_d = float(0.5 * X.reshape(-1) @ A @ X.reshape(-1) - f @ X.reshape(-1))
+    G_d = (A @ X.reshape(-1) - f).reshape(n, r)
+    assert abs(E_h - E_d) <= 1e-12 * abs(E_d) and float((G_h - G_d).abs().max()) <= 1e-12 * float(G_d.abs().max())
+    print(f'7. energy/gradient helper vs dense: E {E_h:.12g} vs {E_d:.12g}: OK')
+
+    # 8. projected Newton
+    def check_pnewton(t, M, S, b, v, live, lam, upper, label):
+        n, r = len(t), M[0].shape[0]
+        me = types.SimpleNamespace(num_potentials=r)
+        A, f = dense(t, M, S, b, v, lam, ridge, live)
+        E = lambda X: float(0.5 * X.reshape(-1) @ A @ X.reshape(-1) - f @ X.reshape(-1))
+        Te, ie = run(solve_upper_bounded, me, t, M, S, b, v, lam, cols, upper, ridge=ridge, live=live,
+                     method='exact', max_iter=60, log=lambda m: None)
+        Tp, ip = run(solve_upper_bounded, me, t, M, S, b, v, lam, cols, upper, ridge=ridge, live=live,
+                     log=lambda m: None)
+        assert ie['converged'] and ip['converged'], (ie['converged'], ip['history'])
+        assert bool((Tp[:, cols] <= upper).all()), 'pnewton infeasible'
+        assert bool((Tp[~live] == 0).all()), 'dead entry moved'
+        gr = (A @ Tp.reshape(-1) - f).reshape(n, r)
+        at = Tp[:, cols] >= upper
+        gs = float(f.abs().max())
+        assert float(gr[:, cols][at].clamp_min(0).max()) <= 1e-7 * gs, 'pinned entry wants to go below'
+        free = torch.ones(n, r, dtype=torch.bool); free[:, cols] = ~at; free &= live
+        assert float(gr[free].abs().max()) <= 1e-7 * gs, 'free entry not stationary'
+        rel = (E(Tp) - E(Te)) / abs(E(Te))
+        assert abs(rel) <= 1e-9, rel
+        print(f'8. pnewton [{label}]: {ip["iterations"]} rounds (+1 free solve) vs exact {ie["iterations"]} solves; '
+              f'{ip["n_pinned"]} at the bound; energy rel diff to exact {rel:.1e}; '
+              f'max |Theta_pn - Theta_exact| / max {float((Tp - Te).abs().max() / Te.abs().max()):.1e}: OK')
+    check_pnewton(t, M, S, b, v, live, lam, upper, 'n=40, lam=1e-2')
+    check_pnewton(t2, M2, S2, b2, v2, live2, 1.0, -0.05 * torch.ones(400, 3), 'n=400, lam=1')
     print('ALL TESTS PASSED')
 
 

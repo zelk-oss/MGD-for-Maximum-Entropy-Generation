@@ -1237,6 +1237,58 @@ class SDE(torch.nn.Module):
         self.last_pinned_grad, self.last_pinned_scale = grad, scale
         return Theta
 
+    def _reg_energy_grad(self, t, M, Gf, bb, cc, lam, Xs, ridge=0.0, dtype=torch.float64,
+                         device='cpu', mode='legacy', dim=None, schedule='uniform'):
+        """
+        Energy E(X) = 1/2 X^T A X - f^T X and gradient A X - f of the UNPINNED system of
+        _solve_regularised_thomas (same blocks, same weights), for each X (n, r) in Xs, in one
+        pass over the nodes (2026-10-08, for the projected-Newton bound loop in
+        codes/theta_reg_bounds.py). Dead potentials are not special here: callers keep them at 0.
+        Returns ([E per X], [grad per X]). Called unbound like the solver.
+        """
+        t = np.asarray(t, dtype=np.float64)
+        n, r = len(t), self.num_potentials
+        a, w, l = reg_energy_weights(t, lam, mode=mode, dim=dim, schedule=schedule)
+        get = lambda X: X.to(device=device, dtype=dtype)
+        sym = lambda X: (X + X.T) / 2
+
+        def Mb(k):
+            m_ = sym(get(M[k]))
+            return m_ + ridge * torch.diag(torch.diagonal(m_)) if ridge else m_
+        if mode == 'legacy':
+            Gb = lambda k: sym(get(Gf[k]))
+            cb = lambda k: get(cc[k]).reshape(-1)
+        else:
+            Gb = lambda k: (sym(get(Gf[k])) + sym(get(Gf[k + 1]))) / 2
+            cb = lambda k: -(get(cc[k]).reshape(-1) + get(cc[k + 1]).reshape(-1)) / 2
+
+        Xs = [get(X).reshape(n, r) for X in Xs]
+        grads = [torch.empty((n, r), device=device, dtype=dtype) for _ in Xs]
+        E = [0.0 for _ in Xs]
+        G_prev = None                                      # Gb(k - 1), reused from the previous node
+        for k in range(n):
+            G_next = Gb(k) if k < n - 1 else None
+            D = a[k] * Mb(k)
+            if G_prev is not None:
+                D = D + w[k - 1] * G_prev
+            if G_next is not None:
+                D = D + w[k] * G_next
+            f = a[k] * get(bb[k]).reshape(-1)
+            if k < n - 1:
+                f = f + l[k] * cb(k)
+            if k > 0:
+                f = f - l[k - 1] * cb(k - 1)
+            for j, X in enumerate(Xs):
+                AX = D @ X[k]
+                if G_next is not None:
+                    AX = AX - w[k] * G_next @ X[k + 1]
+                if G_prev is not None:
+                    AX = AX - w[k - 1] * G_prev @ X[k - 1]
+                grads[j][k] = AX - f
+                E[j] += float(0.5 * X[k] @ AX - f @ X[k])
+            G_prev = G_next
+        return E, grads
+
 
     def iteration_step_projection(self, x_k, k):
         """

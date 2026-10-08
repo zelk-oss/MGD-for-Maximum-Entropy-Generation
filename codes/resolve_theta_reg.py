@@ -31,7 +31,11 @@ node is dropped: Theta_reg = Theta[1:], t_reg = t[1:]. CODE sign throughout
   the columns START..STOP-1 (e.g. 0:9 = L_6 when it is the first term), at every node with
   t >= --neg_t_min, by the active-set loop of codes/theta_reg_bounds.py (a few Thomas solves).
   eps_{k,i} = --neg_eps_nats / sd of phi_i on the walkers at node k (moment systems only).
-  Output name gets _neg<eps>[_from<t_min>]; the file also holds 'neg' (bounds info).
+  Output name gets _neg<eps>[_from<t_min>][_exact]; the file also holds 'neg' (bounds info).
+  --neg_method pnewton (default: projected Newton, feasible and monotone, see
+  codes/theta_reg_bounds.py) | exact (plain active set; oscillated on turbulence, job 781019) |
+  add_only. Non-default methods add _<method> to the name. A run that does not converge is written
+  as <name>_NOTCONVERGED.pt, never under the normal name.
 
 Output, one file per (system, lam):
     <outdir>/<config>/lam<lam>_ridge<ridge>[_moment[_guthsched]][_mask].pt
@@ -110,6 +114,8 @@ def parse_args():
                    help='with --neg_cols: bound only the nodes with t >= this (0 = every node)')
     p.add_argument('--neg_max_iter', type=int, default=30,
                    help='with --neg_cols: cap on active-set iterations (one Thomas solve each)')
+    p.add_argument('--neg_method', choices=['pnewton', 'exact', 'add_only'], default='pnewton',
+                   help='with --neg_cols: bound loop (codes/theta_reg_bounds.py)')
     p.add_argument('--overwrite', action='store_true',
                    help='Recompute (system, lam) pairs whose output already exists')
     p.add_argument('--threads', type=int,
@@ -130,7 +136,8 @@ def out_path(outdir, config, lam, ridge, mode='legacy', schedule='uniform', mask
 def neg_tag(args):
     if args.neg_cols is None:
         return ''
-    return f'_neg{args.neg_eps_nats:g}' + (f'_from{args.neg_t_min:g}' if args.neg_t_min > 0 else '')
+    return (f'_neg{args.neg_eps_nats:g}' + (f'_from{args.neg_t_min:g}' if args.neg_t_min > 0 else '')
+            + ('' if args.neg_method == 'pnewton' else f'_{args.neg_method}'))
 
 
 def fd_derivative(t, y):
@@ -332,11 +339,13 @@ def main():
                             solver_self, inp['t'], inp['M'], inp['C'], inp['b'], inp['v'], lam,
                             neg['cols'], upper, ridge=args.ridge, mode=mode, dim=inp['dim'],
                             schedule=args.schedule, live=inp['live'], max_iter=args.neg_max_iter,
-                            log=lambda m: print(m, file=sys.__stdout__, flush=True))
+                            method=args.neg_method, log=lambda m: print(m, file=sys.__stdout__, flush=True))
                     neg_info = {**neg, **info, 'upper_last': upper[-1].clone()}
                     print(f'[{config}] lam={lam:g}: bounds {"converged" if info["converged"] else "NOT CONVERGED"} '
-                          f'after {info["iterations"]} solves, {info["n_pinned"]} entries pinned, '
-                          f'max Theta on the bounded columns {info["max_theta_bounded"]:.3g}')
+                          f'after {info["iterations"]} solves, {info["n_pinned"]} entries pinned '
+                          f'({info["n_wants_out"]} of them would go below the bound if freed), '
+                          f'max Theta on the bounded columns {info["max_theta_bounded"]:.3g}, '
+                          f'max excess over the bound {info["max_excess"]:.3g}')
                 else:
                     with contextlib.redirect_stdout(io.StringIO()):
                         Theta = SDE._solve_regularised_thomas(
@@ -349,6 +358,8 @@ def main():
                 failed.append(lam)
                 continue
             dest = out_path(args.outdir, config, lam, args.ridge, mode, args.schedule, inp['mask'], extra)
+            if neg_info is not None and not neg_info['converged']:
+                dest = dest.with_name(dest.stem + '_NOTCONVERGED.pt')   # never under the normal name
             dest.parent.mkdir(parents=True, exist_ok=True)
             tmp = dest.with_name(dest.name + '.tmp')
             torch.save({'Theta_reg': Theta[1:].clone(), 't_reg': torch.as_tensor(inp['t'][1:]),
