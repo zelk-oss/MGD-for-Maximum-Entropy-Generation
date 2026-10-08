@@ -27,6 +27,11 @@ node is dropped: Theta_reg = Theta[1:], t_reg = t[1:]. CODE sign throughout
 --select: codes/lam_select_cv.py -- one file lam_path_<tag>.pt with Theta for every lam,
   the held-out moment-matching loss, the amplitude veto, the noise-model chi2 and the
   selected lam (instead of one file per lam).
+--neg_cols START:STOP (2026-10-08, theta_sign_constraint/): force Theta_{k,i} <= -eps_{k,i} for
+  the columns START..STOP-1 (e.g. 0:9 = L_6 when it is the first term), at every node with
+  t >= --neg_t_min, by the active-set loop of codes/theta_reg_bounds.py (a few Thomas solves).
+  eps_{k,i} = --neg_eps_nats / sd of phi_i on the walkers at node k (moment systems only).
+  Output name gets _neg<eps>[_from<t_min>]; the file also holds 'neg' (bounds info).
 
 Output, one file per (system, lam):
     <outdir>/<config>/lam<lam>_ridge<ridge>[_moment[_guthsched]][_mask].pt
@@ -97,6 +102,14 @@ def parse_args():
                    help='--select chi2: walkers per run, if not in the meta')
     p.add_argument('--sigma', type=float, default=None,
                    help='--select chi2: SDE sigma, if not in the meta')
+    p.add_argument('--neg_cols', type=str, default=None, metavar='START:STOP',
+                   help='force Theta <= -eps on these columns (e.g. 0:9 = L_6); see the docstring')
+    p.add_argument('--neg_eps_nats', type=float, default=1e-2,
+                   help='with --neg_cols: eps in nats per standard deviation of phi_i on the walkers')
+    p.add_argument('--neg_t_min', type=float, default=0.0,
+                   help='with --neg_cols: bound only the nodes with t >= this (0 = every node)')
+    p.add_argument('--neg_max_iter', type=int, default=30,
+                   help='with --neg_cols: cap on active-set iterations (one Thomas solve each)')
     p.add_argument('--overwrite', action='store_true',
                    help='Recompute (system, lam) pairs whose output already exists')
     p.add_argument('--threads', type=int,
@@ -110,8 +123,14 @@ def tag(mode, schedule, mask):
     return s + ('' if mask == 'none' else '_mask')
 
 
-def out_path(outdir, config, lam, ridge, mode='legacy', schedule='uniform', mask='none'):
-    return outdir / config / f'lam{lam:g}_ridge{ridge:g}{tag(mode, schedule, mask)}.pt'
+def out_path(outdir, config, lam, ridge, mode='legacy', schedule='uniform', mask='none', extra=''):
+    return outdir / config / f'lam{lam:g}_ridge{ridge:g}{tag(mode, schedule, mask)}{extra}.pt'
+
+
+def neg_tag(args):
+    if args.neg_cols is None:
+        return ''
+    return f'_neg{args.neg_eps_nats:g}' + (f'_from{args.neg_t_min:g}' if args.neg_t_min > 0 else '')
 
 
 def fd_derivative(t, y):
@@ -264,6 +283,21 @@ def main():
         common = {'ridge': args.ridge, 'mode': mode, 'schedule': args.schedule, 'mask': inp['mask'],
                   'inputs': inp['source'], 'config': config, 'meta': meta}
 
+        neg = None
+        if args.neg_cols is not None:
+            if args.select or mode != 'moment' or 'Sigma' not in system:
+                raise ValueError(f'[{config}] --neg_cols needs a moment-mode system and no --select')
+            from codes.theta_reg_bounds import eps_from_sigma
+            a_, b_ = (int(x) for x in args.neg_cols.split(':'))
+            cols = list(range(a_, b_))
+            upper = -eps_from_sigma(system['Sigma'], cols, args.neg_eps_nats)
+            upper[torch.as_tensor(inp['t']) < args.neg_t_min] = float('inf')
+            neg = dict(cols=cols, eps_nats=args.neg_eps_nats, t_min=args.neg_t_min)
+            print(f'[{config}] bounds Theta <= -eps on columns {a_}:{b_} at {int((inp["t"] >= args.neg_t_min).sum())} '
+                  f'nodes, eps_nats {args.neg_eps_nats:g} (eps at the last node: '
+                  f'{[f"{-float(u):.3g}" for u in upper[-1]]})')
+        extra = neg_tag(args)
+
         if args.select:
             from codes.lam_select_cv import lam_path
             dest = args.outdir / config / f'lam_path_ridge{args.ridge:g}{tag(mode, args.schedule, inp["mask"])}.pt'
@@ -281,7 +315,7 @@ def main():
 
         todo = [lam for lam in args.lams
                 if args.overwrite or not out_path(args.outdir, config, lam, args.ridge, mode,
-                                                  args.schedule, inp['mask']).exists()]
+                                                  args.schedule, inp['mask'], extra).exists()]
         if not todo:
             print(f'[{config}] all {len(args.lams)} lam values already solved, skipping')
             continue
@@ -290,20 +324,36 @@ def main():
         for lam in todo:
             t1 = time.time()
             try:
-                with contextlib.redirect_stdout(io.StringIO()):
-                    Theta = SDE._solve_regularised_thomas(
-                        solver_self, inp['t'], inp['M'], inp['C'], inp['b'], inp['v'], lam,
-                        ridge=args.ridge, mode=mode, dim=inp['dim'], schedule=args.schedule,
-                        live=inp['live'])
+                if neg is not None:
+                    from codes.theta_reg_bounds import solve_upper_bounded
+                    log_buf = io.StringIO()
+                    with contextlib.redirect_stdout(log_buf):
+                        Theta, info = solve_upper_bounded(
+                            solver_self, inp['t'], inp['M'], inp['C'], inp['b'], inp['v'], lam,
+                            neg['cols'], upper, ridge=args.ridge, mode=mode, dim=inp['dim'],
+                            schedule=args.schedule, live=inp['live'], max_iter=args.neg_max_iter,
+                            log=lambda m: print(m, file=sys.__stdout__, flush=True))
+                    neg_info = {**neg, **info, 'upper_last': upper[-1].clone()}
+                    print(f'[{config}] lam={lam:g}: bounds {"converged" if info["converged"] else "NOT CONVERGED"} '
+                          f'after {info["iterations"]} solves, {info["n_pinned"]} entries pinned, '
+                          f'max Theta on the bounded columns {info["max_theta_bounded"]:.3g}')
+                else:
+                    with contextlib.redirect_stdout(io.StringIO()):
+                        Theta = SDE._solve_regularised_thomas(
+                            solver_self, inp['t'], inp['M'], inp['C'], inp['b'], inp['v'], lam,
+                            ridge=args.ridge, mode=mode, dim=inp['dim'], schedule=args.schedule,
+                            live=inp['live'])
+                    neg_info = None
             except torch.linalg.LinAlgError as e:              # log, keep going with the next lam
                 print(f'[{config}] lam={lam:g}: FAILED after {time.time() - t1:.0f} s: {e}')
                 failed.append(lam)
                 continue
-            dest = out_path(args.outdir, config, lam, args.ridge, mode, args.schedule, inp['mask'])
+            dest = out_path(args.outdir, config, lam, args.ridge, mode, args.schedule, inp['mask'], extra)
             dest.parent.mkdir(parents=True, exist_ok=True)
             tmp = dest.with_name(dest.name + '.tmp')
             torch.save({'Theta_reg': Theta[1:].clone(), 't_reg': torch.as_tensor(inp['t'][1:]),
-                        'lam': lam, 'residual': solver_self.last_reg_residual, **common}, tmp)
+                        'lam': lam, 'residual': solver_self.last_reg_residual, 'neg': neg_info,
+                        **common}, tmp)
             tmp.replace(dest)
             print(f'[{config}] lam={lam:g}: residual {solver_self.last_reg_residual:.2e}, '
                   f'finite {bool(torch.isfinite(Theta).all())}, {time.time() - t1:.0f} s -> {dest}')

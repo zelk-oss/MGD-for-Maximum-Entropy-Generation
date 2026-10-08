@@ -988,7 +988,7 @@ class SDE(torch.nn.Module):
     
     def _solve_regularised_thomas(self, t, M, Gf, bb, cc, lam, eps_reg_theta=0.0,
                                   ridge=0.0, dtype=torch.float64, device='cpu',
-                                  mode='legacy', dim=None, schedule='uniform', live=None):
+                                  mode='legacy', dim=None, schedule='uniform', live=None, pin=None):
         """
         Same block-tridiagonal system as _solve_regularised, solved via block-Thomas
         elimination with block-Jacobi preconditioning instead of a dense (n*r, n*r)
@@ -1033,6 +1033,18 @@ class SDE(torch.nn.Module):
                and column of A are replaced by the identity and its right-hand side by
                0. Neighbouring nodes keep their time coupling to the pinned value 0.
 
+        pin : optional (mask, value), both (n, r): Theta_{k,i} = value[k,i] wherever mask
+              (added 2026-10-08 for the L_6 sign constraint, codes/theta_reg_bounds.py).
+              Solved as Theta = V + Theta', V = value on the mask and 0 elsewhere: Theta'
+              is pinned to 0 there exactly as a dead potential, with right-hand side
+              f - A V (A the unpinned system), so the free entries keep their exact
+              coupling to the pinned values. A pinned entry may not be dead. After the
+              solve, self.last_pinned_grad (n, r) holds (A Theta - f) of the UNPINNED
+              system at the pinned entries (0 elsewhere): the gradient of the energy, i.e.
+              minus the Lagrange multiplier of the pin; self.last_pinned_scale the matching
+              |A_ii Theta_i| + |f_i| for a relative test. pin=None (or an empty mask):
+              unchanged, bit-identical to before.
+
         (Called unbound by codes/resolve_theta_reg.py, codes/lam_select_cv.py and the
         bimodal port with a SimpleNamespace as self, so the body uses no other method
         of self.)
@@ -1070,6 +1082,15 @@ class SDE(torch.nn.Module):
             dead = ~torch.as_tensor(np.asarray(live), dtype=torch.bool).reshape(n, r).to(device)
             if not bool(dead.any()):
                 dead = None
+        pin_mask = pin_val = None
+        if pin is not None:
+            pm = torch.as_tensor(np.asarray(pin[0]), dtype=torch.bool).reshape(n, r).to(device)
+            if bool(pm.any()):
+                if dead is not None and bool((dead & pm).any()):
+                    raise ValueError('pin: a pinned entry is also dead (live False)')
+                pin_mask = pm
+                pin_val = torch.as_tensor(np.asarray(pin[1]), dtype=dtype).reshape(n, r).to(device) * pm
+                dead = pm if dead is None else (dead | pm)    # Theta' = Theta - V is pinned to 0 there
         dead_idx = lambda k: None if dead is None or not bool(dead[k].any()) else dead[k].nonzero().flatten()
 
         def Mb(k):
@@ -1089,12 +1110,16 @@ class SDE(torch.nn.Module):
             def cb(k):                                     # ct on cell k: -midpoint mdot
                 return -(get(cc[k]).reshape(-1) + get(cc[k + 1]).reshape(-1)) / 2
 
-        def Db(k):                                         # diagonal block A[k, k]
+        def Db_raw(k):                                     # diagonal block A[k, k], unpinned
             D = a[k] * Mb(k)
             if k > 0:
                 D = D + w[k - 1] * Gb(k - 1)
             if k < n - 1:
                 D = D + w[k] * Gb(k)
+            return D
+
+        def Db(k):
+            D = Db_raw(k)
             i = dead_idx(k)
             if i is not None:                              # pin Theta_{k,i} = 0
                 D = D.clone()
@@ -1103,12 +1128,36 @@ class SDE(torch.nn.Module):
                 D[i, i] = 1
             return D
 
-        def fb(k):                                         # second member f[k]
+        def fb_raw(k):                                     # second member f[k], unpinned
             f = a[k] * get(bb[k]).reshape(-1)
             if k < n - 1:
                 f = f + l[k] * cb(k)
             if k > 0:
                 f = f - l[k - 1] * cb(k - 1)
+            return f
+
+        def A_rows(k, X, rows=None):                       # (A X)[k] of the unpinned system, X (n, r)
+            sel = (lambda B: B) if rows is None else (lambda B: B[rows])
+            out = sel(Db_raw(k)) @ X[k]
+            if k < n - 1:
+                out = out - w[k] * sel(Gb(k)) @ X[k + 1]   # A[k, k+1] = -w_k C_k
+            if k > 0:
+                out = out - w[k - 1] * sel(Gb(k - 1)) @ X[k - 1]
+            return out
+
+        AV = None                                          # A V for the pinned values (pin)
+        if pin_val is not None:
+            AV = torch.zeros((n, r), device=device, dtype=dtype)
+            near = pin_mask.any(1).clone()
+            near[1:] |= pin_mask.any(1)[:-1]
+            near[:-1] |= pin_mask.any(1)[1:]
+            for k in near.nonzero().flatten().tolist():
+                AV[k] = A_rows(k, pin_val)
+
+        def fb(k):
+            f = fb_raw(k)
+            if AV is not None:
+                f = f - AV[k]
             i = dead_idx(k)
             if i is not None:
                 f = f.clone()
@@ -1175,7 +1224,18 @@ class SDE(torch.nn.Module):
         print(f"Thomas solve: n={n}, r={r}, relative scaled residual "
               f"{self.last_reg_residual:.2e}, finite={bool(torch.isfinite(Theta_scaled).all())}")
 
-        return Theta_scaled / S
+        if pin_val is None:
+            return Theta_scaled / S
+        Theta = Theta_scaled / S + pin_val                 # Theta' is exactly 0 on the mask
+        grad = torch.zeros((n, r), device=device, dtype=dtype)
+        scale = torch.zeros((n, r), device=device, dtype=dtype)
+        for k in pin_mask.any(1).nonzero().flatten().tolist():
+            i = pin_mask[k].nonzero().flatten()
+            f_i = fb_raw(k)[i]
+            grad[k, i] = A_rows(k, Theta, rows=i) - f_i
+            scale[k, i] = (torch.diagonal(Db_raw(k))[i] * Theta[k, i]).abs() + f_i.abs()
+        self.last_pinned_grad, self.last_pinned_scale = grad, scale
+        return Theta
 
 
     def iteration_step_projection(self, x_k, k):
