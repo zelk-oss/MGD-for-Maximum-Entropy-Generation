@@ -359,7 +359,9 @@ def main():
                 continue
             dest = out_path(args.outdir, config, lam, args.ridge, mode, args.schedule, inp['mask'], extra)
             if neg_info is not None and not neg_info['converged']:
-                dest = dest.with_name(dest.stem + '_NOTCONVERGED.pt')   # never under the normal name
+                # Timestamp the NOTCONVERGED name so a relaunch never clobbers the previous attempt
+                # (lets us keep both for comparison without moving them to a stash dir).
+                dest = dest.with_name(dest.stem + '_NOTCONVERGED_' + time.strftime('%Y%m%d_%H%M%S') + '.pt')
             dest.parent.mkdir(parents=True, exist_ok=True)
             tmp = dest.with_name(dest.name + '.tmp')
             torch.save({'Theta_reg': Theta[1:].clone(), 't_reg': torch.as_tensor(inp['t'][1:]),

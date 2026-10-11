@@ -118,8 +118,14 @@ def solve_pnewton(solver_self, t, M, C, b, v, lam, cols, upper, ridge=0.0, mode=
       take the first a in `alphas` with E(x(a)) < E(x) (all candidates scored in one pass).
     Every iterate is feasible and E decreases every round, so it cannot cycle (the plain active set
     of job 781019 did). Stops when the full step needs no clipping and the hold set is unchanged
-    (then the KKT conditions hold), or when no candidate lowers E (reported, converged=False).
-    Cost per round: one Thomas solve + one energy pass over the nodes.
+    (then the KKT conditions hold), or when neither Newton nor projected-gradient lowers E
+    (reported, converged=False). Cost per round: one Thomas solve + one energy pass over the nodes.
+
+    Projected-gradient fallback: when every alpha of the Newton step raises E (job 796804: near a
+    degenerate active set the Newton direction points into the bound and every candidate clips
+    back), take one step along -g with the components that push into a bound zeroed, scaled to
+    |d| so the backtracking schedule still bites. Keeps the loop monotone and lets Newton try
+    again next round.
     """
     t = np.asarray(t, dtype=np.float64)
     n, r = len(t), solver_self.num_potentials
@@ -154,9 +160,37 @@ def solve_pnewton(solver_self, t, M, C, b, v, lam, cols, upper, ridge=0.0, mode=
                    residual=float(solver_self.last_reg_residual))
         history.append(rec)
         if j is None:
-            log(f'  pnewton iter {it}: hold {rec["hold"]}, no step lowers E -> stop (E = {E:.10g})')
-            converged = clipped_full == 0 and hold_prev is not None and bool((hold == hold_prev).all())
-            break
+            # Newton stalled (job 796804: near a degenerate active set the full step points into
+            # the bound and every alpha gets clipped straight back). Fall back to one projected
+            # gradient step, direction -g_proj (components into a bound zeroed), with log-spaced
+            # alphas covering ~10 decades: for a quadratic the right alpha is ~1/lambda_max(A), and
+            # we don't know lambda_max on turbulence (job 803210 showed |d|-scaled alphas missed it).
+            # Keeps the loop monotone and lets Newton try again next round.
+            if float(d.abs().max()) == 0.0:    # xN = x: free solve = current, we are at the subspace optimum.
+                log(f'  pnewton iter {it}: hold {rec["hold"]}, Newton direction is zero -> KKT (E = {E:.10g})')
+                converged = True
+                break
+            gp = torch.where(at & (g < 0), torch.zeros_like(g), g)
+            gmax = float(gp.abs().max())
+            if gmax < tol:
+                log(f'  pnewton iter {it}: hold {rec["hold"]}, Newton stalls and |g_proj| at KKT -> stop (E = {E:.10g})')
+                converged = clipped_full == 0 and hold_prev is not None and bool((hold == hold_prev).all())
+                break
+            d_pg = -gp
+            alphas_pg = tuple(10.0 ** -k for k in range(0, 13))     # 1, 1e-1, ..., 1e-12
+            cands_pg = [clip(x + a * d_pg) for a in alphas_pg]
+            Es_pg, gs_pg = eg(cands_pg)
+            jj = next((i for i, Ec in enumerate(Es_pg) if Ec < E - 1e-14 * abs(E)), None)
+            if jj is None:
+                log(f'  pnewton iter {it}: hold {rec["hold"]}, Newton and projected gradient both fail -> stop (E = {E:.10g})')
+                converged = clipped_full == 0 and hold_prev is not None and bool((hold == hold_prev).all())
+                break
+            x, E, g = cands_pg[jj], Es_pg[jj], gs_pg[jj].cpu()
+            rec['alpha'], rec['E'], rec['pg'] = alphas_pg[jj], E, True
+            log(f'  pnewton iter {it}: hold {rec["hold"]} (at bound {rec["at_bound"]}), Newton stalls, '
+                f'projected-gradient step {alphas_pg[jj]:.2g}, E = {E:.10g}')
+            hold_prev = hold
+            continue
         x, E, g = cands[j], Es[j], gs[j].cpu()
         log(f'  pnewton iter {it}: hold {rec["hold"]} (at bound {rec["at_bound"]}), full step clips '
             f'{clipped_full}, step {alphas[j]:g}, E = {E:.10g}, residual {rec["residual"]:.2e}')
