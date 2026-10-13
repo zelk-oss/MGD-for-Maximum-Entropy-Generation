@@ -407,9 +407,19 @@ class SDE(torch.nn.Module):
         `time_limit_min` is None (the default — opt-in per run).
 
         The first `min_iters` iterations are warm-up (CUDA, allocator) and are
-        slower: they are timed separately and NOT used for the rate. The rate is
-        measured over the next `window` iterations, and the check runs from then on:
+        slower: they are timed separately and NOT used for the rate. From then on
+        each iteration's wall-clock time is recorded; the rate used for the
+        projection is the MEDIAN of the last `window` per-iter times:
             projected = (warm-up time) + rate * (total - min_iters).
+
+        The median (not mean) is used so a single transient spike -- GPU allocator
+        jitter, I/O, filesystem hiccup -- does not inflate the rate for the rest
+        of the run and trigger a false abort. A sustained slow node (every iter
+        at 1.3 s instead of 1.16) still shows up as a 1.3 s median and aborts.
+        (Changed 2026-10-13: job 1019780 aborted projecting 20.88 h because one
+        iter at 6.13 s shifted the cumulative mean from 1.16 to 1.37 s/it over
+        the 100-iter window; the median would have stayed at 1.16.)
+
         (Changed 2026-09-25: the rate used to include the warm-up and the check ran
         from iteration 30. On H100 at n1=8500 the first 30 steps ran at 1.10 s/it vs
         1.01 s/it steady, which aborted two 60k-step runs projected at 18.3-18.6 h that
@@ -422,21 +432,29 @@ class SDE(torch.nn.Module):
         if time_limit_min is None or n_done < min_iters:
             return
         now = time.time()
+        # end-of-warm-up marker; also reset per-iter history for a fresh loop
         if n_done == min_iters or getattr(self, '_budget_mark', (None,))[0] != loop_t0:
-            self._budget_mark = (loop_t0, n_done, now)        # end of warm-up for this loop
+            self._budget_mark = (loop_t0, n_done, now)
+            self._iter_times = []
+            self._iter_last = now
             return
         _, n_warm, t_warm = self._budget_mark
+        # record this iter's wall time (first entry = time from end-of-warm-up to iter n_warm+1)
+        self._iter_times.append(now - self._iter_last)
+        self._iter_last = now
+        if len(self._iter_times) > window:
+            self._iter_times = self._iter_times[-window:]
         if n_done < n_warm + window:
             return
-        rate = (now - t_warm) / (n_done - n_warm)
+        rate = float(np.median(self._iter_times))
         total_iters = len(self.t) - 1
         projected_s = (t_warm - loop_t0) + rate * (total_iters - n_warm)
         budget_s = loop_budget_s(time_limit_min)
         if projected_s > budget_s:
             raise RuntimeError(
                 f"Aborting SDE loop: projected to take {projected_s / 3600:.2f}h "
-                f"({rate:.2f}s/it x {total_iters} it, rate measured over iterations "
-                f"{n_warm}-{n_done} after a {n_warm}-iteration warm-up) which exceeds "
+                f"({rate:.2f}s/it x {total_iters} it, median of the last {window} iters' "
+                f"wall times after a {n_warm}-iteration warm-up) which exceeds "
                 f"the {budget_s / 3600:.2f}h loop budget of the {time_limit_min / 60:.1f}h job "
                 f"(--time_limit_min {time_limit_min}). Aborting now instead of letting "
                 f"SLURM kill the job at the wall-clock limit with nothing saved."
