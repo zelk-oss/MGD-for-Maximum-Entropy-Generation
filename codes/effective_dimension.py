@@ -117,17 +117,54 @@ def potential_indices(potentials):
     return np.cumsum([0] + sizes)
 
 
-def grad_phi_projected(potentials, x, vector):
+_NO_FLOAT64 = set()     # id() of potentials found to refuse float64 input
+
+
+def _call_maybe_f64(p, fn32, fn64, float64):
+    """fn64() (float64 x and coefficients) when float64 and p accepts it, else
+    fn32() (p's own float32 path) upcast to float64 if float64. As of 2026-10-13
+    the Scattering_Fourth_Order_Mod2_{Real,Imag}_Q1 potentials refuse float64
+    (float32 internal buffers: 'Index put requires the source and destination
+    dtypes match'); L_6, L_2_lowpass and the Scalar_*_gaussianK families accept
+    it. The refusal is remembered per potential instance."""
+    if float64 and id(p) not in _NO_FLOAT64:
+        try:
+            return fn64()
+        except RuntimeError:
+            _NO_FLOAT64.add(id(p))
+    out = fn32()
+    return out.double() if float64 else out
+
+
+def grad_phi_projected(potentials, x, vector, float64=False):
     """sum_i vector_i * grad phi_i(x), standalone -- mirrors
     SDE.compute_grad_potentials(x, vector=...) without needing a live SDE
     instance. `vector` has length r = sum of num_coefficients, sliced per
     potential via potential_indices.
+
+    float64=True contracts in double wherever a potential accepts float64 input
+    and always sums in double: with |theta| ~ 1e6+ on near-copy statistics the
+    float32 contraction loses the cancellation between them (exact-Gaussian test,
+    deff_diagnostics/gauss_oracle_deff.py: median error 1% -> 2.7% at 1e6, 5.5% at 1e8).
     """
     idx = potential_indices(potentials)
-    out = torch.zeros_like(x)
+    out = torch.zeros_like(x, dtype=torch.float64 if float64 else x.dtype)
     for i, p in enumerate(potentials.values()):
-        out = out + p.grad(x, v=vector[idx[i]:idx[i + 1]])
+        v = vector[idx[i]:idx[i + 1]]
+        out = out + _call_maybe_f64(p, lambda: p.grad(x, v=v.to(x.dtype)),
+                                    lambda: p.grad(x.double(), v=v.double()), float64)
     return out
+
+
+def phi_stack(x, potentials, float64=False):
+    """utils_entropy._phi (same order and concatenation), with the same
+    float64-where-accepted option as grad_phi_projected."""
+    feats = []
+    with torch.no_grad():
+        for p in potentials.values():
+            f = _call_maybe_f64(p, lambda: p.forward(x), lambda: p.forward(x.double()), float64)
+            feats.append(f.unsqueeze(1) if f.ndim == 1 else f)
+    return torch.cat(feats, dim=1)
 
 
 def load_fitted_potentials(potentials, potentials_dir, device='cpu'):
@@ -224,6 +261,30 @@ def h_bound_at(t_fine, dH_fine, t_query, d):
     return H_p0 + np.interp(t_query, t_grid, cum)
 
 
+def h_from_theta_reg(theta_reg, m_t_reg, d):
+    """Alternative to h_bound_at for energy_d_eff's H_bound_t_reg argument:
+    the same construction, H(p0) - int theta^T dm, but with Theta_reg inside the
+    integral instead of the per-step theta_k that dH_t_bound was built from.
+
+    Why: energy_d_eff uses log Z_t = H + Theta_reg^T m_t and needs only its
+    s-derivative (an x-independent shift of d_eff). With H = h_bound_at(...),
+    d/dt log Z = Theta_dot^T m + (Theta_reg - theta_k)^T mdot -- the second term
+    only mixes the two theta paths. With this H, d/dt log Z = Theta_dot^T m, exact
+    when p_Theta's moments equal m_t. Caveat: MGD's lower-bound proof uses the
+    theta_k that drives the walkers, not Theta_reg, so this is NOT covered by it
+    (open question, 2026-10-13); compare both (deff_diagnostics/).
+
+    Must be called on Theta_reg's own (dense) grid -- the integral is a
+    trapezoid over consecutive nodes -- and indexed afterwards.
+
+    Returns numpy.ndarray, shape (len(theta_reg),).
+    """
+    th = torch.as_tensor(theta_reg).double().cpu()
+    m = torch.as_tensor(m_t_reg).double().cpu()
+    inc = (0.5 * (th[1:] + th[:-1]) * (m[1:] - m[:-1])).sum(1).numpy()
+    return standard_gaussian_entropy(d) - np.concatenate([[0.0], np.cumsum(inc)])
+
+
 # ============================================================================
 # Rare / typical selection (ported verbatim from
 # turbulence/turb_theta_reg_rare_typical.ipynb's extract_rare_typical)
@@ -274,7 +335,7 @@ def extract_rare_typical(Data, criterion='percentile', std_threshold=40,
 # d_eff -- denoiser form
 # ============================================================================
 
-def denoiser_d_eff(x, theta_reg, t_reg, potentials, n_mc=64, generator=None):
+def denoiser_d_eff(x, theta_reg, t_reg, potentials, n_mc=64, generator=None, float64=True):
     """Guth's denoiser-form d_eff(x, tau(t)) at every node of t_reg, for a
     batch of points x (n_x, C, T), reusing this run's regularised theta
     trajectory Theta_reg (already fit on the run's own guided transport).
@@ -296,6 +357,10 @@ def denoiser_d_eff(x, theta_reg, t_reg, potentials, n_mc=64, generator=None):
     endpoint and xi as fresh noise, so this never evaluates phi/grad_phi
     outside the numerical range the fit itself already explores.
 
+    float64 (default True since 2026-10-13; False = the previous behaviour,
+    theta cast to x.dtype): theta^T grad phi in double where the potentials
+    accept it, see grad_phi_projected.
+
     Returns
     -------
     numpy.ndarray, shape (len(t_reg), n_x)
@@ -311,14 +376,14 @@ def denoiser_d_eff(x, theta_reg, t_reg, potentials, n_mc=64, generator=None):
         # potentials' grad() requires x's own dtype AND device -- theta_reg is
         # typically loaded with map_location='cpu' while x/potentials may live
         # on cuda (e.g. on Jean Zay), so both must be cast here, not just dtype.
-        theta_i = theta_reg[i].to(device=x.device, dtype=x.dtype)
+        theta_i = theta_reg[i].to(device=x.device, dtype=torch.float64 if float64 else x.dtype)
         xi = torch.randn((n_mc,) + sig_shape, generator=generator, dtype=x.dtype, device=x.device)
         y = x.unsqueeze(0) + np.sqrt(taui) * xi                       # (n_mc, n_x, C, T)
         sy = np.sin(ai) * y
         sy_flat = sy.reshape((n_mc * n_x,) + sig_shape[1:])
-        g_flat = grad_phi_projected(potentials, sy_flat, theta_i)
+        g_flat = grad_phi_projected(potentials, sy_flat, theta_i, float64=float64)
         score = np.sin(ai) * g_flat.reshape((n_mc, n_x) + sig_shape[1:])
-        term = xi + np.sqrt(taui) * score
+        term = (xi.double() if float64 else xi) + np.sqrt(taui) * score
         out[i] = term.reshape(n_mc, n_x, -1).pow(2).sum(-1).mean(0).detach().cpu().numpy()
     return out
 
@@ -417,7 +482,7 @@ def local_poly_derivative(s, U, half_window=5, degree=2):
 # ============================================================================
 
 def energy_d_eff(x, theta_reg, t_reg, potentials, m_t_reg, H_bound_t_reg, d,
-                  n_mc=64, generator=None, half_window=5):
+                  n_mc=64, generator=None, half_window=5, common_noise=True, float64=True):
     """Guth's energy-form d_eff(x, tau) = d - d/ds E_y[U(y,tau) | x],
     s = (1/2) log tau, evaluated by differentiating E_y[U] directly on the
     t_reg grid (rather than splitting analytic/MC pieces), via
@@ -433,18 +498,34 @@ def energy_d_eff(x, theta_reg, t_reg, potentials, m_t_reg, H_bound_t_reg, d,
              (code's (+) convention -- the sign on the phi term and on
              logZ_t both flip relative to a paper-convention derivation;
              see notes/effective_dimension_MGD.tex)
-    logZ_t ~= H_bound(t) + theta_t^T m_t
-             (MGD Eq. 8/30, generalised from its stated t=1 endpoint to any
-             t -- this is a LOWER BOUND on log Z_t, not log Z_t itself, so
-             the resulting energy-form d_eff inherits that bound's bias;
-             see the caveat in notes/effective_dimension_MGD.tex)
+    logZ_t ~= H(t) + theta_t^T m_t
+             (MGD Eq. 8/30 generalised to any t; H(t) from h_bound_at or
+             h_from_theta_reg). Only the s-dependence of logZ_t enters d_eff:
+             a constant offset cancels, an error delta logZ_t shifts every x by
+             -d(delta logZ_t)/ds. The two H(t) choices differ by <= 0.3 nats in
+             logZ_t on the final runs, which does not explain the energy-denoiser
+             gap. That gap is -2 tau E_xi[R], R the Hamilton-Jacobi
+             (heat-equation) residual of the moment-matched model energy -- a
+             model property, not a log Z bound bias (notes/effective_dimension_MGD.tex,
+             Eqs. A-gap and fpe-residual). Use denoiser_d_eff as the estimator.
 
     Parameters
     ----------
     m_t_reg : torch.Tensor, shape (len(t_reg), r)
     H_bound_t_reg : numpy.ndarray, shape (len(t_reg),)
+        h_bound_at(...) (MGD's bound, per-step theta_k inside the integral) or
+        h_from_theta_reg(...) (Theta_reg inside it) -- see the latter.
     d : int
         Ambient dimension (prod of x's per-sample shape).
+    common_noise : bool
+        Default True since 2026-10-13: ONE set of xi draws reused at every node,
+        so the d/ds step differences away the shared Monte-Carlo noise instead
+        of amplifying independent noise at each node (exact-Gaussian test:
+        error 5-30x lower at equal n_mc, and no longer worse on denser grids).
+        False = the previous behaviour (fresh xi per node).
+    float64 : bool
+        theta^T phi in double where the potentials accept it (phi_stack);
+        False = phi in x.dtype, then cast (previous behaviour).
 
     Returns
     -------
@@ -464,14 +545,17 @@ def energy_d_eff(x, theta_reg, t_reg, potentials, m_t_reg, H_bound_t_reg, d,
     logZ = H_bound_t_reg + torch.einsum('tr,tr->t', theta_reg, m_t_reg).detach().cpu().numpy()
 
     U = np.zeros((n_t, n_x))
+    if common_noise:
+        xi_shared = torch.randn((n_mc,) + sig_shape, generator=generator, dtype=x.dtype, device=x.device)
     for i in range(n_t):
         ai, taui = a[i], tau[i]
         theta_i = theta_reg[i]                       # kept double: theta^T phi is a large-cancellation sum
-        xi = torch.randn((n_mc,) + sig_shape, generator=generator, dtype=x.dtype, device=x.device)
+        xi = xi_shared if common_noise else torch.randn((n_mc,) + sig_shape, generator=generator,
+                                                        dtype=x.dtype, device=x.device)
         y = x.unsqueeze(0) + np.sqrt(taui) * xi
         sy = np.sin(ai) * y
         sy_flat = sy.reshape((n_mc * n_x,) + sig_shape[1:])
-        phi_sy = _phi(sy_flat, potentials).double().reshape(n_mc, n_x, -1)  # potentials run in x's dtype (float32)
+        phi_sy = phi_stack(sy_flat, potentials, float64=float64).double().reshape(n_mc, n_x, -1)
         mean_phi_term = (phi_sy @ theta_i).mean(0).detach().cpu().numpy()
         U[i] = -mean_phi_term + logZ[i] - d * np.log(np.sin(ai))
 

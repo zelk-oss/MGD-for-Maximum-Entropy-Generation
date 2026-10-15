@@ -18,8 +18,9 @@
 \emergencystretch=3em
 
 \title{Effective dimensionality $\deff(x,\tau)$ from MGD's fitted $\theta_t$}
-\author{Generated with Claude Code, from code-reading and debugging sessions,
-  2026-09-23 to 2026-09-24}
+\author{\normalsize Generated with Claude Code from code-reading/debugging sessions, 2026-09-23/24;\\
+  \normalsize revised 2026-10-14 (moment- vs.\ score-matching, Secs.~\ref{sec:fpe-residual}, \ref{sec:paper-choice});\\
+  \normalsize Part~I (Guth's $\deff$, MGD equations, implementation) added 2026-10-15}
 \date{}
 
 \begin{document}
@@ -34,9 +35,358 @@ derives $\deff$ directly in terms of MGD's own fitted quantities --
 $\theta_t$, $\varphi$, $\nabla\varphi$ -- so it can be computed as pure
 post-processing of an already-completed MGD run, with no new
 sampling/fitting. Implementation: \code{codes/effective\_dimension.py}.
-Notebook: \code{turbulence/effective\_dimension\_deff.ipynb}.
+Notebook (CSV loader for plots):
+\code{turbulence/effective\_dimension\_deff\_final.ipynb}; the per-seed CSVs
+it reads are produced on the cluster by
+\code{deff\_diagnostics/deff\_latest\_run\_check.py}.
+
+\paragraph{Headline conclusion (used in Section~\ref{sec:paper-choice}).}
+The \emph{denoiser form} (Eq.~\ref{eq:deff-denoiser}) is the right estimator
+to use in the paper. The \emph{energy form}
+(Eq.~\ref{eq:energy-def}) is strictly equivalent to it only when the model
+density $p_\theta(\cdot,\tau)$ satisfies the Fokker-Planck equation of the
+noising, which the moment-matched family produced by MGD does not. The
+measured energy--denoiser gap is a direct, quantitative read-out of this
+mismatch (Section~\ref{sec:fpe-residual}), small at the trivial ends
+($\tau\to0,\infty$) and largest where the physics is doing the most work.
+
+\paragraph{Reading order.} Part~I (Sections~\ref{sec:A}--\ref{sec:C},
+added 2026-10-15) is a self-contained reference: (A) what $\deff$ is in
+Guth et al., (B) the MGD equations needed to read the code, (C) what
+\code{codes/effective\_dimension.py} computes, line by line. Part~II
+(Sections~\ref{sec:recap} onwards) is the original derivation/debugging
+record, kept for provenance.
+
+\paragraph{Notation clash.} Guth et al.\ write $t$ for the \emph{noise
+variance}. MGD writes $t\in[0,1]$ for the \emph{interpolant time}. Here
+the noise variance is always $\tau$ and $t$ is always MGD time. Guth's
+equations are rewritten with $t\to\tau$.
+
+%=========================================================================
+\part*{Part I: reference}
+\addcontentsline{toc}{part}{Part I: reference}
+
+\section{A. Effective dimensionality in Guth, Kadkhodaie \& Simoncelli}
+\label{sec:A}
+
+Source: \emph{Learning normalized image densities via dual score
+matching}, arXiv:2506.05310 (copy in
+\code{turbulence/guth\_et\_al\_paper.pdf}), Sec.~3.3, App.~A.2, App.~B.3.
+
+\subsection*{A.1 Setting}
+Data $x\sim p\in\mathbb R^d$. Variance-exploding noising: $y=x+\sqrt\tau\,\xi$,
+$\xi\sim\mathcal N(0,I_d)$, $\tau\in(0,\infty)$. Noisy marginal and energy
+(their Eq.~1):
+\begin{equation}
+  q_\tau(y)=\int p(x)\,\mathcal N(y;x,\tau I_d)\,dx,\qquad
+  U(y,\tau)=-\log q_\tau(y).
+  \label{eq:A-energy}
+\end{equation}
+Space score via Miyasawa--Tweedie (their Eq.~2):
+\begin{equation}
+  \nabla_yU(y,\tau)=\E\!\left[\tfrac{y-x}{\tau}\,\middle|\,y\right]
+  \quad\Longleftrightarrow\quad
+  \E[x\mid y]=y-\tau\nabla_yU(y,\tau)=y+\tau\nabla_y\log q_\tau(y).
+  \label{eq:A-tweedie}
+\end{equation}
+Because $q_\tau=p*\mathcal N(0,\tau I)$, it solves the heat equation
+$\partial_\tau q_\tau=\tfrac12\Delta_y q_\tau$. Written for $U$, this is
+a Hamilton--Jacobi equation (their Eqs.~32--35):
+\begin{equation}
+  \partial_\tau U=\tfrac12\Delta_yU-\tfrac12\lVert\nabla_yU\rVert^2 .
+  \label{eq:A-HJ}
+\end{equation}
+
+\subsection*{A.2 Definition}
+Fix a clean point $x$ and a scale $\tau$. The two definitions are their
+Eq.~11 (denoiser form) and Eq.~12 (energy form):
+\begin{align}
+  \deff^{\mathrm{den}}(x,\tau)&=\frac1\tau\,\E_\xi\!\big[\lVert x-\E[x\mid y]\rVert^2\big],
+  \qquad y=x+\sqrt\tau\,\xi, \label{eq:A-den}\\
+  \deff^{\mathrm{en}}(x,\tau)&=d-\partial_{s}\,\E_\xi\big[U(x+\sqrt\tau\,\xi,\tau)\big],
+  \qquad s=\tfrac12\log\tau,\quad \partial_s=2\tau\partial_\tau .\label{eq:A-en}
+\end{align}
+$\E_\xi[\cdot]$ is over the noise only. $x$ stays fixed.
+
+\paragraph{Interpretation (their Sec.~3.3).} If, at scale $\tau$, the support of $p$
+near $x$ looks like a $k$-dimensional affine subspace, then the optimal
+denoiser projects $y$ onto it. The noise components along the subspace are
+kept, so the error is $\tau k$ and $\deff=k$. Equivalently, extra noise spreads
+mass only in the $d-k$ normal directions, so
+$\E[U\mid x]\simeq(d-k)\,\tfrac12\log\tau$ and Eq.~\ref{eq:A-en} returns $k$.
+Limits: $\deff\to0$ as $\tau\to\infty$ (compact support looks like a point);
+$\deff\to d$ as $\tau\to0$ for any density that is continuous and positive
+at $x$. Both definitions are dimensionless, not nats. $\deff\ge0$
+always. Averaged over $x\sim p$, $\E_x\deff\le d$, since the MMSE is at most $\tau d$.
+Pointwise it can exceed $d$: in the Gaussian example below, a coordinate with
+$x_i^2>2\sigma_i^2+\tau$ contributes more than $1$.
+
+\paragraph{Gaussian check.} For $p=\mathcal N(0,\mathrm{diag}\,\sigma_i^2)$:
+$\deff(x,\tau)=\sum_i(\tau x_i^2+\sigma_i^4)/(\sigma_i^2+\tau)^2$ (this note,
+Eq.~\ref{eq:gaussian-oracle}). Each coordinate contributes $\approx1$ if
+$\sigma_i^2\gg\tau$ and $\approx0$ if $\sigma_i^2\ll\tau$.
+
+\subsection*{A.3 Why the two forms agree, and when they do not}
+Two exact identities, taken from their App.~B.3 and written so that the
+hypotheses are explicit:
+\begin{enumerate}
+\item \emph{Tweedie + Stein (holds for any smooth $U$, with no assumption on where it comes from).}
+  Insert $\E[x|y]=y-\tau\nabla U$ and apply Stein's lemma
+  $\E_\xi[\xi\cdot g(x+\sqrt\tau\xi)]=\sqrt\tau\,\E_\xi[\nabla\!\cdot g]$:
+  \begin{equation}
+    \deff^{\mathrm{den}}=d+\tau\,\E_\xi\!\big[\lVert\nabla_yU\rVert^2-2\Delta_yU\big].
+    \label{eq:A-sure}
+  \end{equation}
+\item \emph{Energy derivative (uses Eq.~\ref{eq:A-HJ}).} Differentiate under
+  the Gaussian $\mathcal N(y;x,\tau I)$, which itself solves the heat equation,
+  and integrate by parts:
+  $\partial_\tau\E_\xi[U]=\E_\xi[\tfrac12\Delta U+\partial_\tau U]$.
+  Define the \emph{Hamilton--Jacobi residual} of whatever $U$ is used:
+  \begin{equation}
+    R(y,\tau):=\partial_\tau U-\tfrac12\Delta_yU+\tfrac12\lVert\nabla_yU\rVert^2 .
+    \label{eq:A-R}
+  \end{equation}
+  Then $\partial_\tau\E_\xi[U]=\E_\xi[\Delta U-\tfrac12\lVert\nabla U\rVert^2+R]$, and so
+  \begin{equation}
+    \boxed{\ \deff^{\mathrm{en}}-\deff^{\mathrm{den}}=-2\tau\,\E_\xi\big[R(x+\sqrt\tau\,\xi,\tau)\big].\ }
+    \label{eq:A-gap}
+  \end{equation}
+\end{enumerate}
+For the exact energy (Eq.~\ref{eq:A-energy}), $R\equiv0$ and the two forms coincide. That is Guth's
+theorem. For a learned $U_\theta$ they differ by exactly the averaged HJ
+residual. Guth et al.\ train $U_\theta$ with \emph{dual} score matching:
+denoising score matching on $\nabla_yU$ plus time-score matching on
+$\partial_\tau U$ (their Eqs.~3, 5, 8). The second term penalises $\partial_\tau U$
+mismatch, so it pushes $R$ toward $0$.
+
+\paragraph{Related quantities.} Integrating $d-\deff$ over $s$ gives the NLL
+(their Eq.~15):
+$-\log p(x)=\E_\xi[U(y,\tau_{\max})]-\int_0^{\tau_{\max}}\big(d-\deff(x,\tau)\big)\tfrac{d\tau}{2\tau}$.
+Averaged over $x$, $\deff$ equals the MMSE dimension of Wu \& Verd\'u. The $\tau\to0$ limit is the
+local intrinsic dimension of the LIDL family.
+
+%-------------------------------------------------------------------------
+\section{B. MGD equations needed}
+\label{sec:B}
+
+All signs are \emph{code} signs: $p_\theta\propto\exp(+\theta^\top\varphi)$, that is
+$\theta_{\mathrm{code}}=-\theta_{\mathrm{MGD\,paper}}$ (audit in
+\code{codes/utils\_entropy.py}).
+
+\subsection*{B.1 Ingredients}
+\begin{itemize}
+\item Statistics $\varphi=(\varphi_1,\dots,\varphi_r):\mathbb R^d\to\mathbb R^r$, with
+  analytic gradients $\nabla\varphi$. Code: the dict of potentials, each with \code{forward},
+  \code{grad(x, v)} $=\sum_iv_i\nabla\varphi_i(x)$, and \code{num\_coefficients}.
+  After \code{fit()} pruning, $r$ is the fitted count (e.g.\ $r{=}272$, not $329$).
+\item Cos interpolant, $\alpha_t=\pi t/2$:
+  $I_t=\cos\alpha_t\,x_0+\sin\alpha_t\,x_1$, with $x_0\sim\mathcal N(0,I_d)$ and $x_1\sim$ data.
+\item Moment path: $m_t=\E[\varphi(I_t)]$, and $\dot m_t=\tfrac{d}{dt}m_t$
+  (pathwise, \code{compute\_rhs\_dt\_phi\_I\_t}).
+\item Gram matrix on an ensemble $X$: $G(X)=\tfrac1N\sum_n\nabla\varphi(X_n)\nabla\varphi(X_n)^\top$
+  ($r\times r$, \code{compute\_G}).
+\end{itemize}
+
+\subsection*{B.2 The SDE step (\code{iteration\_step\_projection})}
+Step $k$, with $h=t_{k+1}-t_k$ and noise level $\sigma$:
+\begin{align}
+  \text{predictor:}\quad & G(x_k)\,\eta_k=\dot m_{t_k},\qquad
+     y_k=x_k+h\,\nabla\varphi(x_k)^\top\eta_k+\sqrt{2h}\,\sigma\,\xi_k, \label{eq:B-pred}\\
+  \text{corrector:}\quad & G(y_k)\,\theta_k^{\mathrm{raw}}=m_{t_{k+1}}-\bar\varphi(y_k),\qquad
+     x_{k+1}=y_k+\nabla\varphi(y_k)^\top\theta_k^{\mathrm{raw}},\qquad
+     \theta_k=\theta_k^{\mathrm{raw}}/(h\sigma^2). \label{eq:B-corr}
+\end{align}
+The solves are Jacobi-scaled, with ridge \code{regularization} and a live mask (dead statistics set to $0$).
+Noise plus corrector give $x_{k+1}=x_k+h\sigma^2\nabla\varphi^\top\theta_k+\sqrt{2h}\sigma\xi_k+(\text{transport})$.
+This is an Euler--Maruyama step of the Langevin dynamics
+$dX=\sigma^2\nabla\log p\,dt+\sqrt2\sigma\,dW$, and that dynamics leaves
+$p_{\theta_k}\propto e^{\theta_k^\top\varphi}$ invariant. The predictor drift
+moves the moments along $\dot m_t$.
+
+\subsection*{B.3 Modelling assumption used by $\deff$}
+MGD identifies the walker law at time $t$ with the maximum-entropy
+exponential family that matches the moments:
+\begin{equation}
+  p_t(z)\approx p_{\theta_t}(z)=\exp\!\big(\theta_t^\top\varphi(z)-\log Z_t\big),
+  \qquad \E_{p_{\theta_t}}[\varphi]=m_t,
+  \label{eq:B-family}
+\end{equation}
+\begin{equation}
+  \Rightarrow\quad \nabla_z\log p_t(z)=\theta_t^\top\nabla\varphi(z).
+  \label{eq:B-score}
+\end{equation}
+$z$ lives in interpolant coordinates ($z\sim I_t$, not in data units).
+Everything in Section~\ref{sec:C} is evaluated in this model. The \emph{true} law of $I_t$,
+$\mathcal L(I_t)=\mathcal L(\cos\alpha_t x_0+\sin\alpha_t x_1)$, is \emph{not} what
+is being measured.
+
+\subsection*{B.4 Entropy and normaliser}
+From Eq.~\ref{eq:B-family}, $H(p_{\theta_t})=\log Z_t-\theta_t^\top m_t$. If
+$\partial_t\log Z_t=\dot\theta_t^\top m_t$ (moments matched), then
+\begin{equation}
+  \tfrac{d}{dt}H=-\theta_t^\top\dot m_t,\qquad
+  \log Z_t=H(p_0)+\int_0^t\!(-\theta_u^\top\dot m_u)\,du+\theta_t^\top m_t,
+  \qquad H(p_0)=\tfrac d2\log(2\pi e).
+  \label{eq:B-logZ}
+\end{equation}
+Code: \code{dH\_k} $=-\theta_k^\top\dot m_{t_{k+1}}$ is saved per step as \code{dH\_t\_bound}.
+At $t=1$ the integral is MGD's entropy bound (a lower bound on $H$, see
+\code{entropy\_bound}), so Eq.~\ref{eq:B-logZ} with the per-step $\theta_k$
+is the pipeline's $\log Z_t$.
+
+\subsection*{B.5 Time-regularised $\Theta_{\mathrm{reg}}$ (what $\deff$ actually uses)}
+The per-step $\theta_k$ is noisy in $t$. \code{forward\_regularised} stores, per coarse
+node, $M_k=G(y_k)$, $b_k=(m_{t_{k+1}}-\bar\varphi(y_k))/(h\sigma^2)$,
+$\Sigma_k=\mathrm{Cov}(\varphi(x_{k+1}))$ and $\dot m_k$. It then minimises
+(\code{reg\_mode='moment'}, schedule \code{'uniform'}; \code{\_solve\_regularised\_thomas}):
+\begin{equation}
+  \mathcal E[\Theta]=\int_0^1\!\Big[\tfrac12\Theta^\top M_t\Theta-b_t^\top\Theta\Big]dt
+  +\lambda\!\int_0^1\!\Big[\tfrac12\dot\Theta^\top\Sigma_t\dot\Theta-\dot m_t^\top\dot\Theta\Big]dt .
+  \label{eq:B-reg}
+\end{equation}
+\begin{itemize}
+\item First term: its pointwise minimiser is the corrector $\theta_k$, i.e.\ the
+  score-matching normal equations $M\Theta=b$.
+\item Second term: time-score matching for the family of Eq.~\ref{eq:B-family}.
+  The model time score is $\partial_t\log p_\Theta=\dot\Theta^\top(\varphi-m)$ and the
+  normal equations are $\Sigma_t\dot\Theta=\dot m_t$. This is the MGD analogue of Guth's
+  $\ell_{\mathrm{TSM}}$, restricted to the span of $\varphi$.
+\item Discretised with trapezoid weights on $t_{\mathrm{reg}}$ (a block-tridiagonal
+  SPD system, solved in float64 by block-Thomas). Options: \code{reg\_ridge}
+  ($M_k\mathrel{+}=\text{ridge}\cdot\mathrm{diag}M_k$) and \code{pin} (the $L_6<0$ bound).
+  At $\lambda=0$, $\Theta_{\mathrm{reg}}=\theta_k$ (block-averaged).
+\item Output: \code{Theta\_reg} of shape $(n_{\mathrm{reg}},r)$ on grid $t_{\mathrm{reg}}$
+  (saved in the solution file for new runs; else rebuilt by \code{reconstruct\_t\_reg}).
+  $\lambda$ is chosen after the run (\code{resolve\_theta\_reg.py}).
+\end{itemize}
+
+%-------------------------------------------------------------------------
+\section{C. Our implementation (\code{codes/effective\_dimension.py})}
+\label{sec:C}
+
+\subsection*{C.1 Map from MGD time to Guth noise}
+Rescale the interpolant: $y_t:=I_t/\sin\alpha_t=x_1+\cot\alpha_t\,x_0$. Given
+$x_1=x$, $y_t\sim\mathcal N(x,\tau I_d)$ with
+\begin{equation}
+  \tau(t)=\cot^2\alpha_t,\qquad s(t)=\tfrac12\log\tau=\log\cos\alpha_t-\log\sin\alpha_t
+  \label{eq:C-tau}
+\end{equation}
+(\code{tau\_of\_t}, \code{s\_of\_t}). $\tau$ decreases from $\infty$ at $t=0$ to $0$ at $t=1$.
+So every $t_{\mathrm{reg}}$ node is one Guth scale. In particular $t=\tfrac12\Leftrightarrow\tau=1$, and the
+fine scales sit at $t\to1$, where $\tau\approx(\pi(1-t)/2)^2$.
+
+\subsection*{C.2 Model energy and score in Guth's coordinates}
+Change of variables $I_t=\sin\alpha_t\,y$, i.e.\ $q_\tau(y)=\sin^d\!\alpha_t\,p_t(\sin\alpha_t\,y)$.
+Write $z:=\sin\alpha_t\,y$. With Eq.~\ref{eq:B-family} and $\theta_t:=\Theta_{\mathrm{reg}}(t)$:
+\begin{align}
+  U_\theta(y,\tau)&=-\theta_t^\top\varphi(z)+\log Z_t-d\log\sin\alpha_t, \label{eq:C-U}\\
+  \nabla_y\log q_\tau(y)&=-\nabla_yU_\theta=\sin\alpha_t\;\theta_t^\top\nabla\varphi(z). \label{eq:C-score}
+\end{align}
+For $y=x+\sqrt\tau\,\xi$: $z=\sin\alpha_t\,x+\cos\alpha_t\,\xi$. This is exactly an interpolant
+sample with data endpoint $x$, so $\varphi,\nabla\varphi$ are evaluated in the range seen during the fit.
+
+\subsection*{C.3 Denoiser form: \code{denoiser\_d\_eff}}
+Insert Eq.~\ref{eq:C-score} into Eq.~\ref{eq:A-den}. Since
+$x-\E[x|y]=-\sqrt\tau\,\xi-\tau\nabla_y\log q_\tau$, the $1/\tau$ cancels:
+\begin{equation}
+  \deff^{\mathrm{den}}(x,\tau)=\E_\xi\Big\lVert\,\xi+\sqrt\tau\,\sin\alpha_t\,\theta_t^\top\nabla\varphi(\sin\alpha_t x+\cos\alpha_t\xi)\Big\rVert^2
+  =\E_\xi\big\lVert\xi+\cos\alpha_t\,\theta_t^\top\nabla\varphi(z)\big\rVert^2 ,
+  \label{eq:C-den}
+\end{equation}
+using $\sqrt\tau\sin\alpha_t=\cos\alpha_t$. Algorithm, for each node $i$ of the requested grid:
+\begin{enumerate}
+\item draw $\xi^{(1..n_{\mathrm{mc}})}\sim\mathcal N(0,I_d)$ (fresh per node), and form $y=x+\sqrt{\tau_i}\,\xi$, $z=\sin\alpha_i\,y$;
+\item $g=\sum_j\theta_{i,j}\nabla\varphi_j(z)$ via \code{grad\_phi\_projected} (float64 where the
+  potential accepts it, else float32 upcast, remembered in \code{\_NO\_FLOAT64});
+\item return $\tfrac1{n_{\mathrm{mc}}}\sum\lVert\xi+\sqrt{\tau_i}\sin\alpha_i\,g\rVert^2$, with shape $(n_t,n_x)$.
+\end{enumerate}
+Inputs: $\theta_t$, $\nabla\varphi$. Not used: $\log Z$, $m_t$, or any derivative in $\tau$.
+Unbiased for the model quantity at finite $n_{\mathrm{mc}}$.
+
+\subsection*{C.4 Energy form: \code{energy\_d\_eff}}
+\begin{enumerate}
+\item $\log Z_t=H(t)+\theta_t^\top m_t$ at each node, with $H(t)$ from either
+  \begin{itemize}
+  \item \code{h\_bound\_at}: trapezoid of the saved \code{dH\_t\_bound} (per-step $\theta_k$) on the fine grid, interpolated to the nodes (the pipeline default, Eq.~\ref{eq:B-logZ}); or
+  \item \code{h\_from\_theta\_reg}: $H(p_0)-\int\Theta_{\mathrm{reg}}^\top dm$ on the $t_{\mathrm{reg}}$ grid. This makes $\partial_t\log Z=\dot\Theta^\top m$ exact; it is not covered by MGD's bound proof.
+  \end{itemize}
+  $m_t$ comes from the saved \code{aux\_moments} (\code{barphi\_e}) or from \code{recompute\_m\_t} (data and schedule only).
+\item $\bar U_i(x)=\tfrac1{n_{\mathrm{mc}}}\sum_\xi U_\theta(x+\sqrt{\tau_i}\xi,\tau_i)$ from Eq.~\ref{eq:C-U}
+  (\code{phi\_stack}, float64). By default the same $\xi$ draws are used at every node
+  (\code{common\_noise=True}), so the MC noise is smooth in $s$.
+\item $\partial_s\bar U$ by a local weighted quadratic fit over $2h{+}1$ neighbouring nodes
+  (\code{local\_poly\_derivative}, default $h=5$; the window is shifted, not shrunk, at the ends).
+  Return $d-\partial_s\bar U$.
+\end{enumerate}
+Inputs: $\theta_t$, $\varphi$, $\log Z_t$ (hence $m_t$ and $H$). Only the
+$s$-dependence of $\log Z_t$ matters: a constant offset in $H$ cancels, while an
+error $\delta\log Z_t$ shifts every $x$ by $-\partial_s\delta\log Z_t$.
+
+\subsection*{C.5 What the gap measures}
+By Eq.~\ref{eq:A-gap} applied to $U_\theta$ of Eq.~\ref{eq:C-U}, at equal
+$\theta_t$, points and noise:
+\begin{equation}
+  \deff^{\mathrm{en}}-\deff^{\mathrm{den}}=-2\tau\,\E_\xi\big[R_\theta(y,\tau)\big]
+  \;+\;\text{(MC noise)}\;+\;\text{(error of }\partial_s\text{ on the grid)} ,
+  \label{eq:C-gap}
+\end{equation}
+where $R_\theta$ is the HJ residual (Eq.~\ref{eq:A-R}) of the MGD model energy, written out
+in terms of $\theta_t,\varphi$ in Eq.~\ref{eq:fpe-residual}. It is nonzero
+whenever the family $\{p_{\theta_t}\}$ with this $\log Z_t$ is not a heat flow in $y$.
+Three sources are folded into $R_\theta$: (a) the exponential family is
+moment-matched, not score-matched (Eq.~\ref{eq:B-family}); (b) $\Theta_{\mathrm{reg}}$
+imposes time-score consistency only through the $\lambda$-term of Eq.~\ref{eq:B-reg}, and only
+inside $\mathrm{span}\,\varphi$; (c) $\partial_t\log Z_t$ from \code{h\_bound\_at}
+contains $(\Theta_{\mathrm{reg}}-\theta_k)^\top\dot m$, the mismatch between the two
+$\theta$ paths. The denoiser form is free of (c) and of the $\partial_s$ numerics, and
+needs no heat-flow assumption. Hence it is the reported estimator
+(Section~\ref{sec:paper-choice}).
+
+\subsection*{C.6 How it is run (\code{deff\_diagnostics/deff\_latest\_run\_check.py})}
+\begin{itemize}
+\item Load the run's \code{fitted\_potentials/} (\code{load\_fitted\_potentials}). Without
+  them $r$ is wrong and every $\theta$ index is shifted.
+\item Load $\Theta_{\mathrm{reg}}$ and $t_{\mathrm{reg}}$ from the solution file. Check that $t_{\mathrm{reg}}\subset t[1{:}]$
+  (assert) and compare with \code{reconstruct\_t\_reg}. Take $m_t$ = \code{barphi\_e} at those exact nodes.
+\item Evaluation points $x$: rows of the run's own normalised training data $x_1$, split
+  into typical/rare by the 95th percentile of max $|$lag-1 increment$|$
+  (\code{extract\_rare\_typical}). Guth evaluate on held-out images; here the points
+  are in the fit set.
+\item Evaluation nodes: a subset of $t_{\mathrm{reg}}$ chosen uniformly in $s$. Denoiser at two
+  $n_{\mathrm{mc}}$ values (default 64, 256) in float64, plus float32 as a precision check;
+  energy at $\{\text{bound},\Theta_{\mathrm{reg}}\}\log Z\times\{\text{fresh},\text{common}\}$ noise.
+  Per-seed CSVs are written and then plotted in
+  \code{turbulence/effective\_dimension\_deff\_final.ipynb}.
+\end{itemize}
+
+\subsection*{C.7 Correspondence table}
+\begin{center}
+\small
+\begin{tabular}{@{}lll@{}}
+\toprule
+Guth et al. & MGD / this code & function \\
+\midrule
+noise variance $t$ (here $\tau$) & $\cot^2(\pi t/2)$ & \code{tau\_of\_t} \\
+$s=\tfrac12\log\tau$ & $\log\cot(\pi t/2)$ & \code{s\_of\_t} \\
+$y=x+\sqrt\tau\xi$ & $z=\sin\alpha_t x+\cos\alpha_t\xi=\sin\alpha_t\,y$ & (inline) \\
+$-\nabla_yU_\theta(y,\tau)$ & $\sin\alpha_t\,\Theta_{\mathrm{reg}}(t)^\top\nabla\varphi(z)$ & \code{grad\_phi\_projected} \\
+$U_\theta(y,\tau)$ & $-\Theta_{\mathrm{reg}}^\top\varphi(z)+\log Z_t-d\log\sin\alpha_t$ & \code{phi\_stack} \\
+$\log Z$ normalisation & $H(t)+\Theta_{\mathrm{reg}}^\top m_t$ & \code{h\_bound\_at}/\code{h\_from\_theta\_reg} \\
+learned energy network & exponential family on $\varphi$, $\theta$ from MGD & \code{Theta\_reg} \\
+DSM loss & $\tfrac12\Theta^\top M\Theta-b^\top\Theta$ (corrector) & \code{compute\_theta} \\
+TSM loss & $\lambda(\tfrac12\dot\Theta^\top\Sigma\dot\Theta-\dot m^\top\dot\Theta)$ & \code{\_solve\_regularised\_thomas} \\
+Eq.~11 & Eq.~\ref{eq:C-den} & \code{denoiser\_d\_eff} \\
+Eq.~12 & $d-\partial_s\E_\xi U_\theta$ & \code{energy\_d\_eff} \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+%=========================================================================
+\part*{Part II: derivation and debugging record}
+\addcontentsline{toc}{part}{Part II: derivation and debugging record}
 
 \section{Guth's $\deff$: recap}
+\label{sec:recap}
 
 Let $q_\tau$ be the law of $y = x + \sqrt\tau\,\xi$, $\xi\sim\mathcal N(0,I_d)$,
 $x$ drawn from the data. Two equivalent definitions:
@@ -136,7 +486,7 @@ $\nabla\varphi$. This is the primary estimator
 (\code{effective\_dimension.denoiser\_d\_eff}).
 
 \section{Energy form}
-\label{sec:energy-bound}
+\label{sec:energy-form}
 
 From $U(y,\tau) = -\log q_\tau(y)$,
 \begin{equation}
@@ -151,50 +501,145 @@ $t_{\mathrm{reg}}$ grid (converted to $s=\tfrac12\log\tau(t)$), rather than
 splitting analytic/Monte-Carlo pieces
 (\code{effective\_dimension.energy\_d\_eff}).
 
-\paragraph{$\log Z_t$: a bound, not an exact value.} MGD's Prop.~4.3/Eq.~30
-gives, in this code's convention,
+\paragraph{$\log Z_t$ in the pipeline.} Our pipeline supplies $\log Z_t$ via
+MGD's Prop.~4.3/Eq.~30 construction,
 \begin{equation}
-  \log Z_t \;\gtrsim\; H_{\mathrm{bound}}(t) + \theta_t^\top m_t, \qquad
+  \log Z_t \;=\; H_{\mathrm{bound}}(t) + \theta_t^\top m_t, \qquad
   H_{\mathrm{bound}}(t) = H(p_0) + \int_0^t dH_s\,ds,
   \label{eq:logZ-bound}
 \end{equation}
-generalised from MGD's stated $t=1$ endpoint to any $t$ (the integral is
-just truncated earlier). This is a \emph{lower} bound on $\log Z_t$, so
-\textbf{the energy-form $\deff$ inherits that bound's bias} -- it is a
-secondary cross-check on the denoiser form, not an independent estimate.
-$H_{\mathrm{bound}}(t)$ is built by trapezoid-integrating the already-saved
-$dH_t^{\mathrm{bound}}$ (\code{effective\_dimension.h\_bound\_at}); $m_t$ is
-either the saved \code{aux\_moments} (the run's own realised target moments)
-or, if not pulled from the cluster yet, recomputed directly from the data
-and schedule, $m_t = \E_{Z}[\varphi(\cos\alpha_t\,Z + \sin\alpha_t\,x_1)]$ --
-independent of any saved particle trajectory, so no SDE rerun either way
-(\code{effective\_dimension.recompute\_m\_t}).
+generalised from the paper's stated $t=1$ endpoint to any $t$ (the integral
+is just truncated earlier). $H_{\mathrm{bound}}(t)$ is built by
+trapezoid-integrating the already-saved $dH_t^{\mathrm{bound}}$
+(\code{effective\_dimension.h\_bound\_at}); $m_t$ is either the saved
+\code{aux\_moments} (the run's own realised target moments) or, if not
+pulled from the cluster yet, recomputed from the data and schedule,
+$m_t = \E_{Z}[\varphi(\cos\alpha_t\,Z + \sin\alpha_t\,x_1)]$ -- independent
+of any saved particle trajectory, so no SDE rerun either way
+(\code{effective\_dimension.recompute\_m\_t}). An alternative, $\theta_t$-only
+construction $\log Z_t = -H(p_0) - \int_0^t \theta_s^\top \dot m_s\,ds$ is also
+implemented (\code{effective\_dimension.h\_from\_theta\_reg}); the two choices
+differ by less than $0.3$~nats on the production runs we have measured
+(an $x$-independent shift $-d(\delta\log Z)/ds$ of the energy-form curve),
+so neither is the explanation for the much larger disagreement we discuss
+next.
 
-\paragraph{Empirical confirmation (2026-09-24, real 50-seed $d{=}256$
-sweep).} The bound-bias prediction above was checked against a real,
-full-resolution run (not a synthetic test): 50 seeds, real \code{aux\_moments}
-pulled from the cluster, the full $t_{\mathrm{reg}}$ grid ($197$ nodes), 128
-Monte-Carlo draws per node. Two signatures both hold, matching what a
-one-sided lower bound predicts (rather than the sign-inconsistent, chaotic
-pattern a residual implementation bug would produce):
+\section{The energy--denoiser gap: a direct read-out of model residual}
+\label{sec:fpe-residual}
+
+\paragraph{Why Eqs.~\ref{eq:energy-def} and~\ref{eq:denoiser-def} agree in
+Guth's setting.} Their equivalence is proved (their Appendix~B.3) by one
+integration-by-parts step that uses the Fokker--Planck equation of the
+noising:
+\begin{equation}
+  \partial_\tau\, q_\tau(y) \;=\; \tfrac12 \Delta_y\, q_\tau(y).
+  \label{eq:fpe}
+\end{equation}
+For a density $q_\tau$ obtained by heat-diffusing a single underlying $q_0$,
+Eq.~\ref{eq:fpe} holds exactly and the two definitions coincide
+analytically.
+
+\paragraph{Why they do \emph{not} agree for MGD.} Our pipeline does not
+produce a density that solves Eq.~\ref{eq:fpe} along $\tau$. At each $\tau$
+we solve a dual problem that fixes a few averages. In interpolant
+coordinates $z=\sin\alpha_t\,y$:
+\begin{equation}
+  p_{\theta_t}(z) \;\propto\; \exp\!\big(+\theta_t^\top \varphi(z)\big),
+  \qquad \E_{p_{\theta_t}}[\varphi] \;=\; m_t,
+  \qquad q_\tau(y)=\sin^d\!\alpha_t\;p_{\theta_t}(\sin\alpha_t\,y).
+  \label{eq:moment-match}
+\end{equation}
+That is, the family $\{p_{\theta_t}\}$ is \emph{moment-matched} to the
+true noisy data, not \emph{score-matched}. The two conditions are related
+but strictly inequivalent: moment matching constrains a finite number of
+integrals $\int \varphi_j \,p_\theta$; score matching asks that
+$\nabla_y \log p_\theta$ agree with $\nabla_y \log q_\tau$ pointwise in $y$,
+which is much stronger. A diffusion-model score network trained to
+convergence satisfies the second (modulo Fisher-divergence training loss);
+MGD only satisfies the first (modulo moment-residual).
+
+The residual is the Hamilton--Jacobi residual of Part~I,
+$R=\partial_\tau U-\tfrac12\Delta_yU+\tfrac12\lVert\nabla_yU\rVert^2$
+(Eq.~\ref{eq:A-R}). It enters the gap exactly as
+$\deff^{\mathrm{en}}-\deff^{\mathrm{den}}=-2\tau\,\E_\xi[R]$ (Eq.~\ref{eq:A-gap}).
+Take $U$ from Eq.~\ref{eq:energy}, i.e.\
+$U=-\theta_t^\top\varphi(z)+\log Z_t-d\log\sin\alpha_t$ with $z=\sin\alpha_t\,y$.
+Use $\partial_\tau|_y=(dt/d\tau)\,\partial_t|_y$, $dt/d\tau=-\sin^3\!\alpha_t/(2\dot\alpha\cos\alpha_t)$,
+$\dot\alpha=\pi/2$, $\nabla_y=\sin\alpha_t\nabla_z$ and $\partial_t z|_y=\dot\alpha\cot\alpha_t\,z$.
+Write $\dot\theta_t=d\theta_t/dt$ and
+$\delta_t:=\partial_t\log Z_t-\dot\theta_t^\top m_t$ ($\delta_t=0$ when $\log Z_t$ is
+consistent with the moments). Then
+\begin{equation}
+\begin{aligned}
+  R(y,\tau) \;=\;& \frac{\sin^3\alpha_t}{2\dot\alpha\cos\alpha_t}\Big[
+     \underbrace{\dot\theta_t^\top\big(\varphi(z)-m_t\big)}_{\text{(i) rate of change of }\theta}
+     \;-\;\underbrace{\delta_t}_{\text{(v) }\log Z\text{ drift}}\Big]\\
+  &+\tfrac12\sin^2\alpha_t\Big[
+     \underbrace{\theta_t^\top\Delta_z\varphi(z)}_{\text{(ii) basis curvature}}
+     +\underbrace{\big\lVert\theta_t^\top\nabla_z\varphi(z)\big\rVert^2}_{\text{(iii) score magnitude}}
+     +\underbrace{z\cdot\theta_t^\top\nabla_z\varphi(z)+d}_{\text{(iv) rescaling }I_t=\sin\alpha_t\,y}\Big].
+\end{aligned}
+  \label{eq:fpe-residual}
+\end{equation}
+Term (i) measures whether the Lagrange multiplier moves in step with the
+moments at the point~$z$. Term (ii) is the Laplacian of the basis functions
+weighted by their multipliers, a curvature that moment matching never
+constrains. Term (iii) is the squared score. Term (iv) comes from the
+$\sin\alpha_t$ rescaling between MGD's $I_t$ and Guth's $y$, through both the
+$y$-dependence of $z$ and the Jacobian $-d\log\sin\alpha_t$. Term (v) is
+nonzero when $\log Z_t$ is not built from the same $\theta$ path (e.g.\
+\code{h\_bound\_at} with per-step $\theta_k$ while $\theta_t=\Theta_{\mathrm{reg}}$;
+then $\delta_t=(\Theta_{\mathrm{reg}}-\theta_k)^\top\dot m_t$).
+\emph{Check.} Take $\varphi(z)=-\tfrac12\lVert z\rVert^2$,
+$\theta_t=1/v_t$ and $v_t=\cos^2\alpha_t+\sigma^2_{\mathrm{data}}\sin^2\alpha_t$ (the
+exact Gaussian case of Section~\ref{sec:gaussian-test}). Then the first
+bracket gives $\tfrac{\sin^4\alpha_t(\sigma^2_{\mathrm{data}}-1)}{2v_t^2}(\lVert z\rVert^2-dv_t)$
+and the second gives its negative, so $R\equiv0$. For a true heat-equation solution the
+terms always cancel. For the moment-matched family they generically do not.
+
+\paragraph{What is measured on the production runs.} The energy and
+denoiser forms (Eqs.~\ref{eq:energy-def} and~\ref{eq:denoiser-def}) use the
+\emph{same} $\theta_t$, \emph{same} $\varphi$ and \emph{same} evaluation
+grid; they can be compared point-for-point. On the final turbulence runs
+($d{=}256$, $\lambda{=}5\!\times\!10^{-4}$, $5$ seeds, with the $x$-dependent
+Monte-Carlo noise cancelled by common random numbers across $\tau$-nodes),
+the mean gap $\deff^{\mathrm{energy}}-\deff^{\mathrm{denoiser}}$ is
 \begin{itemize}
-  \item \textbf{Consistent sign.} The energy form comes out \emph{lower}
-        than the denoiser form in $74\%$ of all (seed, point, $\tau$)
-        comparisons overall, reaching $100\%$ at the coarsest end of the
-        grid.
-  \item \textbf{Growing magnitude.} The median gap grows from about $-15$
-        near $\tau\approx 50$ to about $-87$ near $\tau\approx 1.2\times
-        10^{-3}$, with its spread growing alongside (median
-        $\mathrm{std}$ across seeds rising from $\sim 5$ to $\sim 100$+ over
-        the same range) -- consistent with the bound's slack accumulating
-        as an (unlogged) Fisher-divergence-type residual along the
-        transport, which generically grows with $t$.
+  \item at most a few units at the extremes $\tau\to0$ and $\tau\to\infty$,
+        where both forms either saturate at $d$ or vanish;
+  \item of order $-50$ to $-70$ in the mid-$\tau$ range
+        $\tau\in[10^{-4},10^{-2}]$, with per-point standard deviation
+        $\sim 200$;
+  \item reproducible across arms (same signal with $\lambda{=}10^{-3}$
+        constrained $L_6{<}0$ \emph{and} $\lambda{=}5\!\times\!10^{-4}$
+        unconstrained),
 \end{itemize}
-Since the residual reflects how well the fitted score $\theta_t^\top
-\nabla\varphi$ matches the true score at each step, \textbf{a better-converged
-fit (finer $t$-grid, more potentials, better regularisation, \ldots) should
-directly tighten $H_{\mathrm{bound}}(t)$ and shrink this gap} -- it is a
-property of the fit's quality, not a fixed offset.
+exactly tracking the location of the physical burst scale in the data (the
+bump in $\deff^{\mathrm{denoiser}}$ sits at the same $\tau$). The two $\log Z_t$
+constructions differ by $\leq 0.3$~nats in $\log Z_t$ itself. They shift
+$\deff^{\mathrm{energy}}$ by $-\partial_s$ of that difference (term (v)
+above), which is negligible next to a gap of tens of units of $\deff$. The remainder
+is the integrated residual $-2\tau\,\E_\xi[R]$ of
+Eq.~\ref{eq:fpe-residual}, and it is \emph{structurally present} in any
+moment-matched family: it is the quantitative cost of substituting a dual
+on $\theta\cdot m$ for the stronger Fisher-divergence objective a score
+network would minimise.
+
+\paragraph{Physical reading.} The gap is largest exactly where our
+denoiser-form $\deff$ shows a distinct bump above its monotone trend --
+at the burst scale $\tau\sim 10^{-3}$, in the mid-$\tau$ window where the
+noising transport actively exchanges information with the data manifold.
+There, several moment constraints are active simultaneously (second-order
+moments, scattering coefficients across adjacent scales, the $L_6$
+intermittency term), the Lagrange multipliers change fastest, and
+Eq.~\ref{eq:fpe-residual}'s terms (i) and (iii) peak together. At both
+extremes the family trivialises: $p_\theta(\cdot,\tau)$ is nearly Gaussian
+in $y$-coordinates at large $\tau$ (one moment active) and nearly a delta
+at the data at small $\tau$, and in both limits the contributions in
+Eq.~\ref{eq:fpe-residual} cancel to within a few units. The gap is
+therefore not a numerical artefact; it is the finger-print of how
+moment-matched $p_\theta$ differs from the exact noisy marginal, with
+amplitude controlled by the physics of the transport.
 
 \section{Validation against a closed-form Gaussian test}
 \label{sec:gaussian-test}
@@ -277,6 +722,74 @@ fit, is well-conditioned there -- and should be read with that in mind;
 the denoiser form has no such issue, since it involves no differentiation
 step at all.
 
+\section{Which form to use in the paper}
+\label{sec:paper-choice}
+
+\paragraph{Recommendation.} Use the denoiser form
+(Eq.~\ref{eq:denoiser-def}, implemented in
+\code{denoiser\_d\_eff}) as the primary estimator. The energy form
+(Eq.~\ref{eq:energy-def}) belongs in an appendix or methods section as a
+diagnostic, not in a main figure. Three reasons:
+
+\begin{enumerate}
+  \item \emph{Unbiased for the quantity we care about.} What we want to
+        report is a well-defined property of our \emph{learned} model
+        $p_\theta$: how much of $x$ remains after one scale of noising,
+        averaged over noise draws. That is literally Eq.~\ref{eq:denoiser-def},
+        and it uses only the model's score $+\sin\alpha_t\,\theta_t^\top
+        \nabla\varphi$ via Tweedie's formula -- no assumption about
+        whether $p_\theta(\cdot,\tau)$ is the exact noisy marginal of
+        anything. The energy form (Eq.~\ref{eq:energy-def}) silently
+        assumes $p_\theta$ satisfies Eq.~\ref{eq:fpe}, which MGD's
+        moment-matched family does not (Section~\ref{sec:fpe-residual}).
+        Reporting the energy form means reporting a quantity biased by the
+        model's FPE residual, with a mandatory footnote explaining that
+        the bias is physical rather than numerical.
+  \item \emph{Closer to the MGD construction.} MGD is defined by moment
+        matching and generates samples by running an SDE whose drift is
+        the model score. The denoiser form reads that same score through
+        Tweedie's formula and measures how well it inpaints noisy inputs
+        -- i.e.\ it measures what the model is designed to do. The energy
+        form additionally requires the normaliser $\log Z_\tau$, a derived
+        quantity that MGD builds (Eq.~\ref{eq:logZ-bound}) but never
+        places constraints on, and whose definition is slightly
+        implementation-dependent (bound vs.\ $\theta_t$-only, see
+        Section~\ref{sec:energy-form}). The denoiser form has no $\log Z$
+        dependence at all.
+  \item \emph{Fewer numerics-side worries.} The energy form takes a
+        numerical derivative $\partial_s \E_y[U|x]$ across the
+        $t_{\mathrm{reg}}$ grid; this amplifies Monte-Carlo noise unless
+        common random numbers are used across $\tau$-nodes
+        (Section~\ref{sec:gaussian-test}'s controlled test showed this
+        was the dominant implementation hazard, and the mitigation
+        changed defaults). The denoiser form has no differentiation step
+        at all. Its one real downside -- larger seed-to-seed scatter at
+        $\tau\gg 1$, where $\deff$ itself is small -- is cured by seed
+        averaging; a $30$-seed production run brings the floor well below
+        the physical mean value at every $\tau$.
+\end{enumerate}
+
+\paragraph{Suggested paper phrasing.} ``\emph{For a sample $x$ and noise
+scale $\tau$, we report the local effective dimensionality
+\[
+  \deff(x,\tau) \;=\; \tfrac1\tau\, \E_\xi\!\left[\, \lVert x - \E[x\mid y]\rVert^2 \,\mid\, x \right],
+  \qquad y = x + \sqrt\tau\,\xi,
+\]
+with the posterior mean given by Tweedie's formula applied to the model's
+own score, $\nabla_y\log p_\theta(y,\tau) = +\sin\alpha_t\,\theta_t^\top
+\nabla\varphi(\sin\alpha_t\, y)$. This is Guth, Kadkhodaie \&
+Simoncelli's~[\emph{arXiv:2506.05310}] Eq.~11; the equivalent Eq.~12 (an
+energy-based definition requiring Fokker--Planck for $p_\theta$) differs
+from Eq.~11 by a residual quantifiable in the moment-matched setting and
+reported in Appendix~X as a diagnostic of model mismatch.}''
+
+The appendix cross-reference, built from Section~\ref{sec:fpe-residual},
+documents the gap as the integrated FPE residual
+$R(y,\tau)$ of Eq.~\ref{eq:fpe-residual} and is one short figure showing
+the gap curve and its concentration at the burst scale. That removes any
+ambiguity for a reader comparing MGD's $\deff$ to a diffusion-model
+baseline whose two forms would agree.
+
 \section{Dictionary}
 
 \begin{center}
@@ -322,33 +835,41 @@ per-$\tau$ fit & $\theta_t \equiv$ \code{Theta\_reg[i]}, grid $t_{\mathrm{reg}}$
 \section{Caveats}
 
 \begin{itemize}
-  \item \textbf{The energy form's remaining disagreement with the denoiser
-        form is, at this point, believed to be the expected bound bias}
-        (Section~\ref{sec:energy-bound}'s empirical confirmation), not a
-        residual implementation bug -- Section~\ref{sec:gaussian-test}'s
-        controlled test found and fixed a genuine differentiation bug, and
-        what is left afterward is sign-consistent and grows smoothly with
-        $t$, the signature the bound predicts rather than of noise/bugs.
-        This conclusion rests on one 50-seed sweep at one $(\sigma,\lambda)$
-        setting, not a systematic sweep -- treat it as the working
-        hypothesis, not a closed case.
-  \item $\theta_t$ becomes numerically extreme as $t\to1$ ($\tau\to0$): every
-        seed inspected so far has one dominant, near-null-direction
-        coefficient at the finest scale. This is harmless for the actual
-        energy/score (both stay smooth off-support -- checked directly),
-        but $\theta_t^\top\varphi$ and $\theta_t^\top\nabla\varphi$ must be
-        computed in double precision, not the float32 the values are stored
-        in. The Gaussian test only exercised $|\theta|$ up to $512$, well
-        below the real runs' $\sim10^{16}$ near $t\to1$ -- this specific
-        extreme-magnitude regime is \emph{not} covered by the validation in
-        Section~\ref{sec:gaussian-test} and remains a plausible contributor
-        to disagreement at the very smallest $\tau$, not yet isolated from
-        the bound bias there.
+  \item \textbf{The energy--denoiser gap is model residual, not an
+        implementation defect} (Section~\ref{sec:fpe-residual}). The
+        earlier working hypothesis -- that the gap was ``bound bias'' in
+        $\log Z_t$ -- was ruled out on 2026-10-13/14: a Gaussian oracle
+        test with exact inputs (Section~\ref{sec:gaussian-test})
+        reproduces the energy form to the Monte-Carlo noise floor, and on
+        the production runs the gap persists at $-50$ to $-70$ (units of
+        $\deff$, which is dimensionless) across
+        two independent regularisation arms ($\lambda{=}10^{-3}$
+        constrained $L_6{<}0$ and $\lambda{=}5\!\times\!10^{-4}$
+        unconstrained) while the two alternative $\log Z_t$ constructions
+        differ by $\leq 0.3$~nats in $\log Z_t$. The gap is the integrated residual
+        $-2\tau\,\E_\xi[R]$ of Eq.~\ref{eq:fpe-residual}, concentrated at the
+        burst scale $\tau\sim 10^{-3}$.
+  \item $\theta_t$ becomes numerically extreme as $t\to1$ ($\tau\to0$):
+        every seed inspected has one dominant, near-null-direction
+        coefficient at the finest scale, with $|\theta|$ up to $\sim 10^8$
+        on the final runs. This is harmless for the actual energy/score
+        (both stay smooth off-support -- checked directly), but
+        $\theta_t^\top\varphi$ and $\theta_t^\top\nabla\varphi$ must be
+        computed in double precision, not the float32 the values are
+        stored in. The current defaults
+        (\code{denoiser\_d\_eff(float64=True)},
+        \code{energy\_d\_eff(float64=True)}) do this automatically, with a
+        silent fall-back to float32 for the handful of potentials whose
+        internal buffers do not accept float64
+        (\code{Scattering\_Fourth\_Order\_Mod2\_*}, memoised per potential
+        in \code{\_NO\_FLOAT64}). Measured $|\mathrm{den32}-\mathrm{den64}|$
+        on the final runs stays at $\sim 10^{-4}$ while the Monte-Carlo
+        noise is $\sim 1$ -- precision is not currently a bottleneck.
   \item The finest available $\tau$ is set by how close to $t=1$ the run's
         schedule and \code{n\_subsample} block reach, not by an arbitrary
         choice -- see \code{codes/effective\_dimension.py}'s
-        \code{reconstruct\_t\_reg} for the exact grid actually available for
-        a given run.
+        \code{reconstruct\_t\_reg} for the exact grid actually available
+        for a given run.
 \end{itemize}
 
 \section*{Implementation changelog}
@@ -365,6 +886,40 @@ per-$\tau$ fit & $\theta_t \equiv$ \code{Theta\_reg[i]}, grid $t_{\mathrm{reg}}$
         Section~\ref{sec:gaussian-test} (\code{local\_poly\_derivative}
         replacing a raw \code{numpy.gradient} call in
         \code{energy\_d\_eff}).
+  \item \emph{2026-10-13:} \code{energy\_d\_eff} and
+        \code{denoiser\_d\_eff} default to \code{float64=True}; the energy
+        form additionally defaults to \code{common\_noise=True} (same
+        Gaussian noise draw $\xi$ at every $\tau$-node, so the pointwise
+        $\partial_s \E_y[U|x]$ differentiation does not amplify Monte-Carlo
+        noise). A helper \code{\_call\_maybe\_f64} inside
+        \code{effective\_dimension.py} remembers per-potential which basis
+        classes refuse float64 input (notably
+        \code{Scattering\_Fourth\_Order\_Mod2\_Real/Imag\_Q1}, whose
+        internal buffers are float32 only), and falls back to float32 for
+        those while keeping the rest in float64. New helpers
+        \code{phi\_stack} and \code{h\_from\_theta\_reg} added; the latter
+        is the $\theta_t$-only alternative $\log Z_t$ construction
+        discussed in Section~\ref{sec:energy-form}.
+  \item \emph{2026-10-14:} the earlier working hypothesis that the
+        energy--denoiser gap was ``bound bias'' in $\log Z_t$ (previous
+        version of Section~5) was ruled out and replaced with the
+        FPE-residual explanation of Section~\ref{sec:fpe-residual}: the
+        gap persists at the same $-50$ to $-70$ level (units of $\deff$) across two
+        independent regularisation arms with different $\lambda$ and
+        different $L_6$ sign-constraint choices, while the two possible
+        $\log Z_t$ constructions differ by $\leq 0.3$~nats in $\log Z_t$. The notes'
+        recommendation to use the denoiser form as the primary estimator
+        (Section~\ref{sec:paper-choice}) is a consequence of this.
+        Diagnostic script: \code{deff\_diagnostics/deff\_latest\_run\_check.py}
+        (per-seed CSVs); CSV-loader notebook:
+        \code{turbulence/effective\_dimension\_deff\_final.ipynb}.
+  \item \emph{2026-10-15:} Part~I added. Eq.~\ref{eq:fpe-residual} corrected. The
+        previous version had the sign of the score-magnitude term inconsistent with the other
+        two terms. It also wrote the family in $y$ instead of $z=\sin\alpha_t y$, so it lacked
+        the rescaling term (iv) and the $dt/d\tau$ factor. The new version is checked to
+        vanish identically in the Gaussian case. The gap is expressed in units of $\deff$
+        (dimensionless), not nats. The stale ``lower-bound bias'' wording in the
+        \code{energy\_d\_eff} docstring is replaced.
 \end{itemize}
 
 \end{document}
