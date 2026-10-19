@@ -31,7 +31,7 @@
 LAUNCH_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 EXP_NAME="turbulence_final"
-TERMS=(L_6 L_2_lowpass Scalar_psi_gaussianK Scalar_morlet_gaussianK
+TERMS=(L_6 Scalar_psi_gaussianK Scalar_morlet_gaussianK
        Scattering_Fourth_Order_Mod2_Real_Q1 Scattering_Fourth_Order_Mod2_Imag_Q1)
 SEED_LIST=(${SEEDS:-900})
 
