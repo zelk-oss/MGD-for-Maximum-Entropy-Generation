@@ -353,6 +353,7 @@ def run_experiment(args, M, config, x1, filters, t, logger, outdir, device,
 
     logger.info('Running experiment: %s', config)
     logger.info('terms: %s', args.terms)
+    make_result_dirs(Path(outdir) / 'saved_results')
 
     potentials = get_1d_potentials(
         args.terms, args.J, filters, args.Q, filters_Q=filters_Q, filters_Phi=filters_Phi,

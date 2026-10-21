@@ -87,6 +87,16 @@ def symmetrize_functional(x):
     bottom = torch.cat([torch.flip(x, dims=[2]), torch.flip(x, dims=[2, 3])], dim=3)
     return torch.cat([top, bottom], dim=2)
 
+RESULT_SUBDIRS = ('samples', 'lagrange_multipliers', 'entropy_bounds', 'sampling_times',
+                  'lagrange_multipliers_regularised', 'aux_moments')
+
+
+def make_result_dirs(base):
+    """Create the saved_results/ subfolders a run writes to (no-op if present)."""
+    for d in RESULT_SUBDIRS:
+        (Path(base) / d).mkdir(parents=True, exist_ok=True)
+
+
 def save_results(
     xt,
     theta_t,
@@ -96,6 +106,7 @@ def save_results(
     config,
 ):
     base = root / 'saved_results'
+    make_result_dirs(base)
 
     torch.save(xt.cpu(), base / 'samples' / f'{config}.pt')
     torch.save(theta_t.cpu(), base / 'lagrange_multipliers' / f'{config}.pt')
@@ -113,6 +124,7 @@ def save_results_theta_reg(
     t_reg=None,      # Theta_reg's own (non-uniform) coarse time grid, see SDE.forward_regularised
 ):
     base = root / 'saved_results'
+    make_result_dirs(base)
 
     # 1. Save the core variables first to secure them on disk
     torch.save(xt.cpu(), base / 'samples' / f'{config}.pt')
