@@ -18,7 +18,7 @@ from filters.filters_2d import *
 
 
 
-def return_Filters(M,J,Q=1,L=None,high_freq= 0.49,device='cpu',include_phi=False):
+def return_Filters(M,J,Q=1,L=None,high_freq= 0.49,device='cpu',include_phi=False,wav_type='morlet'):
     """Build a Morlet wavelet filter bank in Fourier space.
  
     With ``L is None`` (1D): a band-pass set ``psi`` (``J`` scales, ``Q`` per octave)
@@ -54,8 +54,9 @@ def return_Filters(M,J,Q=1,L=None,high_freq= 0.49,device='cpu',include_phi=False
     """
 
     wav_norm = 'l1'
-    wav_type='morlet'
     high_freq = 0.49
+    # 2D path (L is not None) still uses Morlet via FiltersSet; wav_type overrides
+    # only the 1D path, which is the one used by run_SDE.py / run_jet_SDE.py.
 
     if L==None:
         psi = torch.tensor(init_band_pass(wav_type, M, J, Q, high_freq, wav_norm))[None].to(device).to(torch.float32)
@@ -98,7 +99,11 @@ def deduplicate_filters(filters, tol=1e-12):
     norms = F.abs().pow(2).sum(-1).sqrt()
     keep = []
     for i in range(F.shape[0]):
-        dup = False
+        dup = norms[i] == 0        # zero-norm filters carry no information and
+                                   # make Scalar_* potentials QR-blowup on fit;
+                                   # happens e.g. with shannon at scales whose
+                                   # xi +- sigma falls below 1/N (bands below the
+                                   # Fourier resolution of the signal grid)
         for j in keep:
             if norms[i] > 0 and norms[j] > 0:
                 deficit = 1 - float((F[i].conj() * F[j]).sum().abs() / (norms[i] * norms[j]))

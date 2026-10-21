@@ -102,6 +102,12 @@ def parse_args():
     # Wavelet scattering
     p.add_argument('--J', type=int, default=7, help='Number of wavelet scales')
     p.add_argument('--Q', type=int, default=3, help='Wavelets per octave')
+    p.add_argument('--wav_type', type=str, default='morlet',
+                   choices=['morlet', 'shannon', 'meyer', 'battle_lemarie', 'bump_steerable'],
+                   help='Wavelet family for the bandpass bank used by all Scalar_*, L_*, '
+                        'Scattering_* potentials (default: morlet). shannon has disjoint Fourier '
+                        'support, so the per-channel coefficients are orthogonal in L^2 '
+                        '(no near-copies, Gram block-diagonal).')
     p.add_argument('--terms', nargs='+', type=str,
                     default=[
                         'L_2_lowpass',
@@ -402,9 +408,10 @@ def main():
         g = np.random.default_rng(0)
         series = g.choice(n_series, args.n1, replace=False)
         idx = torch.as_tensor(series * per_series + g.integers(0, per_series, args.n1), device=data_tensor.device)
-        x1 = normalize(data_tensor[idx]).to(device)
+        x1_raw = data_tensor[idx]
     else:
-        x1 = normalize(data_tensor[:args.n1]).to(device)
+        x1_raw = data_tensor[:args.n1]
+    x1 = normalize(x1_raw).to(device)
     B, channels, M = x1.shape
 
     config, exp_dir, fig_dir, potentials_dir, logger, loaded = resolve_or_setup_experiment_output(
@@ -420,8 +427,10 @@ def main():
     logger.info('x1 final shape: %s (coarse_grained=%s)', tuple(x1.shape), coarse_grained)
 
     with logged_run(logger):
-        filters, filters_Phi = return_Filters(M, args.J, 1, device=device, include_phi=True)
-        filters_Q = return_Filters(M, args.J, args.Q, device=device)  # used by L_6_psi / Scalar_psi_* (channel lists) and non-_Q1 Scattering_*
+        filters, filters_Phi = return_Filters(M, args.J, 1, device=device, include_phi=True,
+                                              wav_type=args.wav_type)
+        filters_Q = return_Filters(M, args.J, args.Q, device=device,
+                                   wav_type=args.wav_type)  # used by L_6_psi / Scalar_psi_* (channel lists) and non-_Q1 Scattering_*
 
         # --schedule power (default) is the legacy grid, cut at 1.0000 as before;
         # two_phase / adaptive: see codes/time_schedules.py

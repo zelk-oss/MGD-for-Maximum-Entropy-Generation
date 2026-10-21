@@ -111,21 +111,30 @@ def spec_plot(Data,synth, save=None):
     fig.tight_layout()
     plt.show()
 
-def hist_plot(Data, synth, psi=None, save=None):
+def hist_plot(Data, synth, psi=None, save=None, wav_type='morlet', Q=3, J=None,
+              close_after_save=True):
     """
     Plot per-band histograms of wavelet coefficients.
     If save is None:
         show one tall figure (one histogram below another).
     If save is provided:
         save the complete figure.
+
+    wav_type / Q / J control the analysis bank when `psi` is not provided:
+      - wav_type: 'morlet' (default), 'shannon', 'meyer', 'battle_lemarie', 'bump_steerable'
+      - Q: wavelets per octave (default 3)
+      - J: number of scales; defaults to log2(M) - 2 for backward compat
+    Pass the SAME bank the model constrained on to see whether the per-channel
+    marginals are actually matched (moments imposed on bank X do not fix the
+    marginals on a different bank Y unless the signal is Gaussian).
     """
     M = Data.shape[-1]
-    J = int(np.log2(M)) - 2
-    Q = 3
+    if J is None:
+        J = int(np.log2(M)) - 2
     if psi is None:
         psi = torch.tensor(
             init_band_pass(
-                'morlet',
+                wav_type,
                 M,
                 J=J,
                 Q=Q,
@@ -161,7 +170,9 @@ def hist_plot(Data, synth, psi=None, save=None):
         fig.suptitle(save["title"])
         fig.tight_layout(rect=[0, 0, 1, 0.98])
         fig.savefig(save["filename"], dpi=200, bbox_inches="tight")
-        plt.close(fig)
+        if close_after_save:
+            plt.close(fig)                # batch scripts: free memory
+        # else: leave the figure open so the notebook caller can plt.show() it
     else:
         fig.tight_layout()
         plt.show()
