@@ -76,6 +76,7 @@ from codes.sde_routines import *              # noqa: E402
 from codes.utils import *                     # noqa: E402
 from codes.utils_experiment import *          # noqa: E402
 from codes.check_moments import *             # noqa: E402
+from codes.time_schedules import add_schedule_args, build_time_grid  # noqa: E402
 from codes.ortho_wavelet.ReadyToUseWavelets import *  # noqa: E402
 from data.synthetic_data_generator import *   # noqa: E402
 from synthetic_data_generator import *        # noqa: E402
@@ -213,6 +214,11 @@ def parse_args():
     p.add_argument('--no_save_aux_moments', action='store_true',
                     help='Disable saving of barphi_e / barphi_p aux moments')
     p.add_argument('--seed', type=int, default=0, help='Random seed')
+    p.add_argument('--data_seed', type=int, default=None,
+                    help='Seed of the generated data x1 only; --seed then drives the SDE alone, '
+                         'so a seed sweep shares x1 (as turbulence). Default: x1 drawn under '
+                         '--seed (old behaviour). Adds dseed<N> to the name')
+    add_schedule_args(p)                             # --schedule power | two_phase | adaptive
 
     return p.parse_args()
 
@@ -380,10 +386,15 @@ def main():
     # ---- data ----
     # T = M + 1 time samples of the process -> M increments after .diff().
     # intermittency=0 reduces MRW to a pure fBm (see module docstring).
+    # --data_seed: reproducible x1 (batch i drawn under np.random.seed(data_seed + i)).
+    # Without it the generator reseeds from OS entropy: x1 differs on every call.
     raw = load_synthetic_data(
         'mrw', args.n1, args.M + 1,
-        lam=args.intermittency, H=args.hurst,
+        lam=args.intermittency, H=args.hurst, seed=args.data_seed,
     ).to(device)
+    # the generator reseeds the GLOBAL np.random: back to --seed for the SDE
+    torch.manual_seed(args.seed)
+    np.random.seed(args.seed)
     increments = raw.diff(dim=-1)  # (n1, 1, M)
 
     x1 = normalize(increments).to(device)
@@ -405,24 +416,27 @@ def main():
         filters, filters_Phi = return_Filters(M, args.J, 1, device=device, include_phi=True)
         filters_Q = return_Filters(M, args.J, args.Q, device=device)  # used by L_6_psi / Scalar_psi_* (channel lists) and non-_Q1 Scattering_*
 
-        t = 1 - (1 - torch.linspace(0, 1, args.nt + 1)) ** args.schedule_exponent
-
-        t_rounded = torch.round(t, decimals=4)
-        t_final = int((t_rounded == 1.0).nonzero(as_tuple=True)[0][0])
-        logger.info(f"t_final = {t_final}/{len(t)} (last t = {t[t_final-1].item():.6f}, "
-            f"dropping {len(t) - t_final} redundant trailing points at 1.0000)")
+        # --schedule power (default) is the legacy grid, cut at 1.0000 as before;
+        # two_phase / adaptive: see codes/time_schedules.py
+        t, adaptive = build_time_grid(args, logger)
 
         if loaded is not None:
             result = loaded
         else:
             result = run_experiment(args, M, config, x1, filters,
-                                    t[:t_final], logger, outdir, device,
+                                    t, logger, outdir, device,
                                     filters_Q=filters_Q, filters_Phi=filters_Phi,
                                     normalize_potentials=args.normalize_potentials,
                                     potentials_save_dir=potentials_dir,
+                                    adaptive=adaptive,
                                     )
 
-        save_diagnostics(x1, result, t, args, config, fig_dir, logger)
+        # figures only, after the results are saved: a plot that cannot handle this M
+        # (e.g. hist_plot's own J = log2(M) - 2 is 0 at M = 4) must not fail the run
+        try:
+            save_diagnostics(x1, result, t, args, config, fig_dir, logger)
+        except Exception as e:
+            logger.warning('Diagnostic figures failed (%s: %s); results are saved', type(e).__name__, e)
 
 
 if __name__ == '__main__':

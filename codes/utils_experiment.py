@@ -166,6 +166,9 @@ def _config_name_parts(args, M, include_seed=True):
     # different data selection (turbulence --n1_spread, opt-in): own name, so it never reloads a Data[:n1] run
     if getattr(args, 'n1_spread', False):
         parts.append('spread')
+    # data drawn under its own seed (gaussian --data_seed): never reloads a run whose x1 followed --seed
+    if getattr(args, 'data_seed', None) is not None:
+        parts.append(f'dseed{args.data_seed}')
     # Non-default regularised solver gets its own tag (dense runs keep their old
     # names). Needed because loading matches by name prefix: without it a thomas
     # run would silently reload a dense run with the same parameters.

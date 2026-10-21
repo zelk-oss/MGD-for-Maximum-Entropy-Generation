@@ -30,6 +30,7 @@ def load_synthetic_data(
     cache_path : Path | str | None = None,
     num_workers: int = 1,
     verbose    : bool = True,
+    seed       : int | None = None,
     **model_params
 ) -> torch.Tensor:
     """ Load log-prices from standard models e.g. fBm, Poisson, MRW, SMRW.
@@ -39,6 +40,8 @@ def load_synthetic_data(
     :param T: number of time samples
     :param cache_path: the directory used to store data
     :param num_workers: set num_workers > 1 for parallel generation
+    :param seed: batch i is drawn under np.random.seed(seed + i) (reproducible data); None
+        (default) = upstream behaviour, fresh OS entropy per batch, never reproducible
     :param model_params: model parameters (e.g. intermittency parameter for MRW)
     """
 
@@ -55,6 +58,7 @@ def load_synthetic_data(
     data_gen = generator[name](
         cache_path=cache_path, T=T, **model_params
     )
+    data_gen.seed = seed
     x = data_gen.load(R, num_workers, verbose)
 
     return torch.tensor(x).to(torch.float32)
@@ -263,8 +267,13 @@ class DataGeneratorBase:
         raise NotImplemented
 
     def worker(self, i: int):
-        """Generate a batch of time-series and save it if cache is used."""
-        np.random.seed(None)
+        """Generate a batch of time-series and save it if cache is used.
+
+        Batch i is drawn under np.random.seed(self.seed + i) when load_synthetic_data got a
+        seed (reproducible, also across workers); otherwise reseeded from OS entropy as
+        upstream, so the data then differs on every call whatever the global seed."""
+        seed = getattr(self, 'seed', None)
+        np.random.seed(None if seed is None else seed + i)
         try:
             x = self.generate_batch(i)
             if self.dpath is None or not self.dpath.is_dir():
@@ -296,10 +305,11 @@ class DataGeneratorBase:
         else:
             with mp.Pool(processes=num_workers) as pool:
                 with tqdm(total=nbatches, disable=not verbose) as pbar:
+                    done = []
                     for result in pool.imap_unordered(self.worker, list(range(nbatches))):
-                        _, x = result
-                        x_l.append(x)
+                        done.append(result)
                         pbar.update()
+                    x_l = [x for _, x in sorted(done, key=lambda r: r[0])]   # batch order, not finish order
         if verbose: print("Finished.")
 
         return x_l
