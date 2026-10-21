@@ -57,15 +57,15 @@ def stability(cfg, seed):
 
 ST = {c: {s: stability(c, s) for s in SEEDS} for c in CONFIGS}
 print('## 1. Stability (monitor; R_k in units of the finite-N floor r/(N d); 5 seeds)\n')
-print('| config | finished | R/floor median | p99 | max | spikes (>10x first-100 median) | slope log R, last 50% | '
+print('| config | finished | R/floor median | p99 | max | slope log R, last 50% | '
       'weak ratio median before / after t=0.9 | mu_min (f64 / f32) | j mean, j=0 | max|y| |')
-print('|---|---|---|---|---|---|---|---|---|---|---|')
+print('|---|---|---|---|---|---|---|---|---|---|')
 for c in CONFIGS:
     v = ST[c]
     f = lambda k: np.array([v[s][k] for s in SEEDS], dtype=float)
     fin = sum(v[s]['finished'] for s in SEEDS)
     print(f'| {c} | {fin}/5 | {np.median(f("R_med")):.3g} | {np.median(f("R_p99")):.3g} | {np.max(f("R_max")):.3g} | '
-          f'{int(f("spikes").sum())} | {np.nanmedian(f("slope")):.2e} | {np.nanmedian(f("weak_pre")):.3g} / '
+          f'{np.nanmedian(f("slope")):.2e} | {np.nanmedian(f("weak_pre")):.3g} / '
           f'{np.nanmedian(f("weak_post")):.3g} | {np.median(f("mu_min")):.2e} / {np.nanmedian(f("mu_min_f32")):.2e} | '
           f'{np.nanmedian(f("j_mean")):.2f}, {np.nanmedian(f("j0")):.0%} | {np.max(f("maxy")):.3g} |')
 
