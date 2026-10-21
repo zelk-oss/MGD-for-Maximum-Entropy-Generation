@@ -16,6 +16,13 @@
 # overrides: LAMS (default 1e-3), EPS (eps in nats per sd of phi, default 1e-2), COLS (default 0:9 =
 #   L_6 in the noSm30 runs, terms start with L_6, 9 filters), T_MIN (0 = every node), MAX_ITER (30),
 #   METHOD (pnewton | exact | add_only), SYSTEM_PATTERN, QOS, TIME, CPUS, OUTDIR
+#
+# Chained mode (DEPEND=<SDE array job id> SEEDS="900 901 ..."): the systems don't exist yet, so
+# nothing is globbed at submit time. Task k waits for task k of job DEPEND (aftercorr: same index
+# = same seed, both arrays list SEEDS in the same order), then globs
+# ${REG_SYSTEM_DIR}/*seed_<SEEDS[k]>_*${ARM}*.pt and needs exactly one match. If the SDE task
+# fails, the dependent task is cancelled (--kill-on-invalid-dep). Used by
+# turbulence/launch/turbulence_final_noScat4.sh.
 
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_DIR="$(cd "${HERE}/.." && pwd)"
@@ -25,6 +32,7 @@ if [ -z "${ARM}" ] || [ -z "${RIDGE}" ]; then
 fi
 REG_SYSTEM_DIR="${REG_SYSTEM_DIR:-${SCRATCH}/MGD-for-Maximum-Entropy-Generation/turbulence/reg_system}"
 SYSTEM_PATTERN="${SYSTEM_PATTERN:-*${ARM}*.pt}"
+DEPEND="${DEPEND-}"
 LAM_LIST=(${LAMS:-1e-3})
 EPS="${EPS:-1e-2}"
 COLS="${COLS:-0:9}"
@@ -36,6 +44,50 @@ LOGDIR="${HERE}/results"
 QOS="${QOS-}"
 TIME="${TIME:-20:00:00}"
 CPUS="${CPUS:-24}"
+
+if [ -n "${DEPEND}" ]; then
+    SEED_ARR=(${SEEDS-})
+    if [ ${#SEED_ARR[@]} -lt 1 ]; then echo "Error: DEPEND needs SEEDS"; exit 1; fi
+    echo "arm ${ARM}, ridge ${RIDGE}: chained after job ${DEPEND} (aftercorr), seeds ${SEED_ARR[*]}"
+    echo "  systems resolved at run time: ${REG_SYSTEM_DIR}/*seed_<seed>_*${ARM}*.pt"
+    echo "lams ${LAM_LIST[*]} | columns ${COLS} <= -${EPS} nats/sd from t >= ${T_MIN} | ${METHOD}, <= ${MAX_ITER} rounds | -> ${OUTDIR} | logs ${LOGDIR}"
+    echo "QoS ${QOS:-default}, ${CPUS} CPUs, ${TIME}"
+    if [ -n "${DRY}" ]; then echo "(dry run: nothing submitted)"; exit 0; fi
+    mkdir -p "${OUTDIR}" "${LOGDIR}"
+    JOB=$(sbatch --parsable --dependency=aftercorr:${DEPEND} --kill-on-invalid-dep=yes <<EOT
+#!/bin/bash
+#SBATCH --job-name=l6neg_${ARM}
+#SBATCH --array=0-$(( ${#SEED_ARR[@]} - 1 ))
+#SBATCH --time=${TIME}
+#SBATCH --output=${LOGDIR}/slurm_%x_%A_%a.log
+#SBATCH -A wbg@h100
+#SBATCH --partition=gpu_p6
+${QOS:+#SBATCH --qos=${QOS}}
+#SBATCH -C h100
+#SBATCH --gres=gpu:1
+#SBATCH --cpus-per-task=${CPUS}
+#SBATCH --hint=nomultithread
+module purge
+module load arch/h100
+module load pytorch-gpu/py3/2.8.0
+cd "${PROJECT_DIR}"
+SEED_ARR=( ${SEED_ARR[@]} )
+SEED=\${SEED_ARR[\${SLURM_ARRAY_TASK_ID}]}
+shopt -s nullglob
+FILES=( "${REG_SYSTEM_DIR}"/*seed_\${SEED}_*${ARM}*.pt )
+if [ \${#FILES[@]} -ne 1 ]; then
+    echo "Error: seed \${SEED}: expected 1 system file, found \${#FILES[@]}:"; printf '  %s\n' "\${FILES[@]}"; exit 1
+fi
+echo "seed \${SEED}: \${FILES[0]}"
+python -u codes/resolve_theta_reg.py "\${FILES[0]}" --lams ${LAM_LIST[@]} \
+    --ridge ${RIDGE} --schedule uniform --mask auto --diagnose 0 --outdir "${OUTDIR}" \
+    --neg_cols ${COLS} --neg_eps_nats ${EPS} --neg_t_min ${T_MIN} --neg_max_iter ${MAX_ITER} --neg_method ${METHOD}
+EOT
+)
+    if [ -z "${JOB}" ]; then echo "Error: sbatch returned no job id"; exit 1; fi
+    echo "Submitted ${JOB} (array of ${#SEED_ARR[@]}, after ${DEPEND})"
+    exit 0
+fi
 
 shopt -s nullglob
 FILES=( "${REG_SYSTEM_DIR}"/${SYSTEM_PATTERN} )
