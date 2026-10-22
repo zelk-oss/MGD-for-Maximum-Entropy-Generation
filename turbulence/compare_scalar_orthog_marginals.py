@@ -88,6 +88,9 @@ ARMS_Q13 = (ARMS_2BANK + ARMS_MASS_2BANK + ARMS_COARSE_FINAL + ARMS_NOSCAT4 + AR
             + ARMS_TAILFIX_NOSCAT4 + ARMS_TAILFIX_FINAL + ARMS_MASS_NOSCAT4)
 
 
+ARM_J_FOR_M = {128: 7, 256: 8}      # J of the turbulence runs at each signal length
+
+
 def find_sample(label, seed):
     glob = LABEL_GLOB[label].format(seed=seed)
     files = sorted((HERE / 'saved_results' / 'samples').glob(glob),
