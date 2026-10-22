@@ -1057,8 +1057,42 @@ class Scalar_GGD_KRegion():
                  cond_tol=1e-6,
                  prune_max_cols=20000,
                  kurt_thresholds=None,
+                 tail_quantile=None,
+                 tail_alpha_bounds=None,
+                 tail_mass=False,
+                 min_window=None,
                  verbose=True):
         self.filters = filters
+        # tail_mass: add one statistic per channel, <w_K(|z|)>, the probability mass of the
+        # outermost region (exponent 0 on the outer window). With a single statistic per
+        # region the multiplier theta_K has to set both the mass of that region and its
+        # decay; the MaxEnt then reproduces the fitted shape only by accident, and the
+        # outer alpha that gives the right quantiles is not the MLE one (the scale floor was
+        # compensating for that). With the mass statistic the two decouple, so the outer
+        # alpha is fitted by plain truncated-GGD MLE, without scale floor, in [0.05, 8].
+        # Offline held-out test, 12 block splits, 5 channels (turbulence/tail_form_holdout.py,
+        # 2026-10-21): q.9999 model/held-out 0.95-1.04 vs 0.40-0.66 for the production fit.
+        self.tail_mass = bool(tail_mass)
+        if self.tail_mass:
+            assert int(num_regions) >= 2, "tail_mass needs at least two regions"
+        # tail_quantile: if set, the outermost cut is forced to quantile(|z_j|,
+        # tail_quantile) on the fit data; inner cuts found by the boundary search above it
+        # are discarded. The likelihood search is bulk-dominated and places the last cut
+        # from a few tail points, yet the model tail beyond it is set by that region's
+        # single (theta, alpha) pair.
+        # tail_alpha_bounds: alpha bounds for the outermost region only, so its
+        # statistic |z|^alpha is neither blind to the tail (alpha -> 0.2) nor dominated
+        # by a handful of extremes (alpha -> 8).
+        self.tail_quantile = tail_quantile
+        self.tail_alpha_bounds = tail_alpha_bounds
+        # min_window: no inner window narrower than min_window * n_j, n_j = std of channel j
+        # for unit white noise in x, so min_window = c * sqrt(2 h_end) * sigma makes every
+        # window >= c times the noise the last SDE step adds to z_j. Narrower windows are
+        # merged with the one above (with the one below if that is the forced tail cut).
+        # MGD cannot hold walkers in a window narrower than one step's noise: on the finest
+        # channels those constraints stayed 10-36% off at t=1, all others < 1%
+        # (turbulence/window_vs_step_noise.py, mass_L6_2b, 2026-10-22).
+        self.min_window = min_window
         self.K = int(num_regions)
         assert self.K >= 1
         self.J = filters.shape[1]
@@ -1105,7 +1139,7 @@ class Scalar_GGD_KRegion():
         self.active = None
         self.active_flat = None
         self.stat_scale = None
-        self.num_coefficients = self.K * self.J
+        self.num_coefficients = self.n_slots * self.J
         self._filters_Kx = None
         # (channel, region) statistics removed after the fit (--drop_stats), e.g. a region
         # statistic that is a near-copy of one in another family (2026-10-01:
@@ -1134,6 +1168,11 @@ class Scalar_GGD_KRegion():
         return self
 
     @property
+    def n_slots(self):
+        """Statistic slots per channel: the K regions, plus the outer-region mass."""
+        return self.K + (1 if self.tail_mass else 0)
+
+    @property
     def is_fitted(self):
         return self.alpha is not None
 
@@ -1156,11 +1195,11 @@ class Scalar_GGD_KRegion():
 
     @classmethod
     def _fit_ggd_truncated(cls, h, lo, hi, alpha_bounds, maxiter=8000,
-                           xatol=1e-5, fatol=1e-5):
+                           xatol=1e-5, fatol=1e-5, floor_frac=0.02):
         h = np.asarray(h, dtype=float); ah = np.abs(h); n = ah.size
         if n < 5:
             return 1.0, float(np.std(h) + 1e-8)
-        scale_floor = cls._scale_floor(ah)
+        scale_floor = cls._scale_floor(ah, floor_frac=floor_frac)
 
         def neg_ll(lt):
             alpha = float(np.clip(np.exp(lt[0]), *alpha_bounds))
@@ -1293,6 +1332,27 @@ class Scalar_GGD_KRegion():
                   f"({self.model_criterion.upper()}: {table})")
         return K, cuts
 
+    @staticmethod
+    def _merge_narrow(cuts, min_width, keep_last):
+        """Remove cuts until every inner window [c_{i-1}, c_i] (c_{-1} = 0) is >= min_width.
+        A narrow window is merged with the one above; if its upper cut is the last one and
+        keep_last (forced tail cut), with the one below. A lone window [0, c] narrower than
+        min_width is kept: there is nothing left to merge it with."""
+        cuts = list(cuts)
+        i = 0
+        while i < len(cuts):
+            lo = cuts[i - 1] if i > 0 else 0.0
+            if cuts[i] - lo >= min_width:
+                i += 1
+            elif i == len(cuts) - 1 and keep_last:
+                if i == 0:
+                    break
+                del cuts[i - 1]
+                i -= 1
+            else:
+                del cuts[i]
+        return cuts
+
     def _embed_slots(self, cuts, ah):
         eps = max(float(np.quantile(ah, 1e-3)), 1e-12) * 1e-2
         n_missing = (self.K - 1) - len(cuts)
@@ -1316,6 +1376,10 @@ class Scalar_GGD_KRegion():
         PI = np.zeros((J, K)); KEFF = np.ones(J, dtype=int)
         ACT = np.zeros((J, K), dtype=bool)
         FLOOR = np.zeros(J)
+        if self.min_window is not None:
+            # z_j = Re(g_j * xi) with g_j = ifft(psi_hat_j) and xi real: Var = sum_s Re g_j(s)^2
+            g = torch.fft.ifft(filters.reshape(-1, filters.shape[-2], filters.shape[-1])[0]).real
+            unit_noise = torch.sqrt((g.double() ** 2).sum(-1)).cpu().numpy()
 
         for j in range(J):
             h = z[:, j, :].reshape(-1); h = h[np.isfinite(h)]; ah = np.abs(h); N = h.size
@@ -1331,6 +1395,19 @@ class Scalar_GGD_KRegion():
             else:
                 qs = np.linspace(0.5, 0.97, K - 1); Keff = K
                 cuts = list(np.quantile(ah, qs))
+
+            if self.tail_quantile is not None and K > 1:
+                q_tail = float(np.quantile(ah, self.tail_quantile))
+                # slots are later forced to grow by >= 1.5x: keep only inner cuts that
+                # leave q_tail where it is
+                inner = [c for c in sorted(cuts) if 1.5 * c <= q_tail][:K - 2]
+                cuts = inner + [q_tail]
+                Keff = len(cuts) + 1
+
+            if self.min_window is not None and len(cuts) > 0:
+                cuts = self._merge_narrow(sorted(cuts), self.min_window * float(unit_noise[j]),
+                                          keep_last=self.tail_quantile is not None)
+                Keff = len(cuts) + 1
 
             KEFF[j] = Keff
             if self.eps_quantile is not None:
@@ -1352,7 +1429,16 @@ class Scalar_GGD_KRegion():
                 if seg.size < 5:
                     A[j, k], S[j, k] = 1.0, max(self._scale_floor(ah), 1e-8)
                     continue
-                A[j, k], S[j, k] = self._fit_ggd_truncated(seg, lo, hi, self.alpha_bounds)
+                bounds = (self.tail_alpha_bounds
+                          if (k == K - 1 and self.tail_alpha_bounds is not None)
+                          else self.alpha_bounds)
+                floor_frac = 0.02
+                if k == K - 1 and self.tail_mass:
+                    floor_frac = 1e-12
+                    if self.tail_alpha_bounds is None:
+                        bounds = (0.05, 8.0)
+                A[j, k], S[j, k] = self._fit_ggd_truncated(seg, lo, hi, bounds,
+                                                           floor_frac=floor_frac)
             counts = np.asarray(counts, float)
             PI[j] = counts / max(counts.sum(), 1)
             ACT[j] = (PI[j] >= self.pi_active_min) & (counts >= self.min_region_samples)
@@ -1365,8 +1451,10 @@ class Scalar_GGD_KRegion():
                 a_str = " ".join(f"{a:.2f}" for a in A[j])
                 floor = (f"  |z| floor={FLOOR[j]:.2e}" if self.eps_quantile is not None
                          else f"  |z| floor={np.sqrt(self.eps_abs):.2e} (scalar eps_abs)")
+                mw = (f"  min window={self.min_window * float(unit_noise[j]):.2e}"
+                      if self.min_window is not None else "")
                 print(f"[GGD^{K}][ch {j}] Keff={Keff}  cuts=[{cut_str}]  "
-                      f"pi=[{pi_str}]  alpha=[{a_str}]  active={ACT[j].sum()}{floor}")
+                      f"pi=[{pi_str}]  alpha=[{a_str}]  active={ACT[j].sum()}{floor}{mw}")
 
         dtype = x.dtype if x.is_floating_point() else torch.float32
         dev = x.device
@@ -1374,14 +1462,16 @@ class Scalar_GGD_KRegion():
         self.alpha = mk(A); self.scale = mk(S); self.cuts = mk(CUT)
         self.sw = mk(SW); self.pi = mk(PI)
         self.Keff = torch.tensor(KEFF, device=dev)
+        if self.tail_mass:                      # mass slot is live iff the outer region is
+            ACT = np.concatenate([ACT, ACT[:, K - 1:K]], axis=1)
         self.active = torch.tensor(ACT, device=dev)
         self.eps_ch = mk(FLOOR ** 2) if self.eps_quantile is not None else None
 
-        flat = [k * J + j for k in range(K) for j in range(J) if ACT[j, k]]
+        flat = [k * J + j for k in range(self.n_slots) for j in range(J) if ACT[j, k]]
         self.active_flat = torch.tensor(sorted(flat), dtype=torch.long, device=dev)
         self.num_coefficients = int(self.active_flat.numel())
 
-        n_dead = J * K - int(ACT.sum())
+        n_dead = J * self.n_slots - int(ACT.sum())
         if self.verbose:
             print(f"[active] {self.num_coefficients} active statistics "
                   f"({n_dead} dead slots dropped before they can singularize the Gram)")
@@ -1455,6 +1545,8 @@ class Scalar_GGD_KRegion():
         ws = self._windows_from_sigmoids(g)
         alpha = self.alpha.to(x.device)
         phis = [(ws[k] * az ** alpha[:, k][None, :, None]).mean(-1) for k in range(self.K)]
+        if self.tail_mass:
+            phis.append(ws[self.K - 1].mean(-1))
         return torch.cat(phis, dim=1)
 
     def forward(self, x, *args):
@@ -1467,7 +1559,7 @@ class Scalar_GGD_KRegion():
 
     def _get_filters_Kx(self, device):
         if self._filters_Kx is None or self._filters_Kx.device != device:
-            self._filters_Kx = self.filters.repeat(1, self.K, 1).to(device)
+            self._filters_Kx = self.filters.repeat(1, self.n_slots, 1).to(device)
         return self._filters_Kx
 
     def _all_slot_grad(self, x):
@@ -1492,6 +1584,8 @@ class Scalar_GGD_KRegion():
         for k in range(K):
             a = alpha[:, k][None, :, None]
             D.append(dws[k] * az ** a + ws[k] * a * z * az ** (a - 2.0))
+        if self.tail_mass:
+            D.append(dws[K - 1])
         D_all = torch.cat(D, dim=1)
         fKx = self._get_filters_Kx(device)
         return torch.fft.ifft(torch.fft.fft(D_all) * fKx).real / x.shape[-1]
@@ -1620,7 +1714,7 @@ class Scalar_GGD_KRegion():
         new_flat = old_flat_arr[keep]
         dropped = len(old_flat_arr) - len(new_flat)
 
-        Jn, K = self.J, self.K
+        Jn, K = self.J, self.n_slots
         act = np.zeros((Jn, K), dtype=bool)
         for f in new_flat:
             act[int(f % Jn), int(f // Jn)] = True
@@ -1662,6 +1756,7 @@ class Scalar_GGD_KRegion():
             sw=self.sw.cpu(), pi=self.pi.cpu(), Keff=self.Keff.cpu(),
             active=self.active.cpu(), active_flat=self.active_flat.cpu(), stat_scale=self.stat_scale.cpu(),
             num_coefficients=self.num_coefficients, K=self.K, J=self.J,
+            tail_mass=self.tail_mass, min_window=self.min_window,
             trans_frac=self.trans_frac, eps_abs=self.eps_abs,
             eps_quantile=self.eps_quantile,
             eps_ch=None if self.eps_ch is None else self.eps_ch.cpu(),
@@ -1690,6 +1785,8 @@ class Scalar_GGD_KRegion():
                    model_criterion=d.get("model_criterion", "bic"),
                    pi_active_min=d.get("pi_active_min", 1e-3),
                    cond_tol=d.get("cond_tol", 1e-6),
+                   tail_mass=d.get("tail_mass", False),
+                   min_window=d.get("min_window"),
                    verbose=verbose)
         obj.alpha = d["alpha"]; obj.scale = d["scale"]; obj.cuts = d["cuts"]
         obj.sw = d["sw"]; obj.pi = d["pi"]; obj.Keff = d["Keff"]

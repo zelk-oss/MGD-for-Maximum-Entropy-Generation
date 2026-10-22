@@ -44,7 +44,7 @@ def get_scalar_potentials(terms):
 
 
 def get_1d_potentials(terms, J, filters, Q=1, filters_Q=None, filters_Phi=None,scalar_param=None, parallel=False,
-                      deduplicate_filters=False, dedup_tol=1e-12):
+                      deduplicate_filters=False, dedup_tol=1e-12, ggd_kwargs=None):
     """Build a dict of 1D potentials selected by ``terms``.
 
     Covers wavelet Lp-norm moments (``'L_2'..'L_10'`` and their ``'_phi'``
@@ -162,11 +162,12 @@ def get_1d_potentials(terms, J, filters, Q=1, filters_Q=None, filters_Phi=None,s
 
     # potential to fit wavelet coefficients histogram 
     # generalized gaussian k regions 
+    ggd_kwargs = ggd_kwargs or {}
     if 'Scalar_psi_gaussianK' in terms:
-        potentials['Scalar_psi_gaussianK'] = Scalar_GGD_KRegion(filters_Q_channels)
+        potentials['Scalar_psi_gaussianK'] = Scalar_GGD_KRegion(filters_Q_channels, **ggd_kwargs)
 
     if 'Scalar_morlet_gaussianK' in terms:
-        potentials['Scalar_morlet_gaussianK'] = Scalar_GGD_KRegion(filters)
+        potentials['Scalar_morlet_gaussianK'] = Scalar_GGD_KRegion(filters, **ggd_kwargs)
 
 
 

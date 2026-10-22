@@ -358,11 +358,26 @@ def run_experiment(args, M, config, x1, filters, t, logger, outdir, device,
     logger.info('terms: %s', args.terms)
     make_result_dirs(Path(outdir) / 'saved_results')
 
+    min_window = None
+    if getattr(args, 'ggd_min_window_noise', None) is not None:
+        if adaptive is not None:
+            raise ValueError('--ggd_min_window_noise needs the last step size: fixed grids only')
+        h_end = float(t[-1] - t[-2])
+        min_window = float(args.ggd_min_window_noise) * (2.0 * h_end) ** 0.5 * float(args.sigma)
+        logger.info('GGD min window: %g x step noise, h_end = %.3e -> %.3e per unit-noise channel',
+                    args.ggd_min_window_noise, h_end, min_window)
+
     potentials = get_1d_potentials(
         args.terms, args.J, filters, args.Q, filters_Q=filters_Q, filters_Phi=filters_Phi,
         scalar_param=None, parallel=False,
         deduplicate_filters=getattr(args, 'deduplicate_filters', False),
         dedup_tol=getattr(args, 'dedup_tol', 1e-12),
+        ggd_kwargs={k: v for k, v in dict(
+            tail_quantile=getattr(args, 'ggd_tail_quantile', None),
+            tail_alpha_bounds=getattr(args, 'ggd_tail_alpha_bounds', None),
+            tail_mass=getattr(args, 'ggd_tail_mass', False) or None,
+            min_window=min_window,
+        ).items() if v is not None},
     )
     for spec in getattr(args, 'drop_stats', None) or []:     # NAME:CHANNEL:REGION
         name, ch, reg = spec.split(':')

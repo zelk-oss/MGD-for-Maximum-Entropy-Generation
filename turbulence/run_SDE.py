@@ -167,6 +167,23 @@ def parse_args():
                          'by 20\'s 1.1e-4 component at bin 2 (1 - cos = 6e-9): their statistics are '
                          'near-duplicates (normalized-gradient cond 9.6e4 with both, 12 without). '
                          'Adds the tol to the name when not the default')
+    p.add_argument('--ggd_tail_quantile', type=float, default=None,
+                    help='Scalar_*_gaussianK: force the outermost region cut to this quantile '
+                         'of |z_j| (e.g. 0.99) instead of the likelihood/BIC search. '
+                         'Not in the config name: use --label')
+    p.add_argument('--ggd_tail_alpha_bounds', type=float, nargs=2, default=None,
+                    metavar=('LO', 'HI'),
+                    help='Scalar_*_gaussianK: alpha bounds for the outermost region only '
+                         '(e.g. 0.5 3). Not in the config name: use --label')
+    p.add_argument('--ggd_tail_mass', action='store_true',
+                    help='Scalar_*_gaussianK: add the outer-region mass <w_K> as one more '
+                         'statistic per channel, and fit the outer alpha without scale floor. '
+                         'Not in the config name: use --label')
+    p.add_argument('--ggd_min_window_noise', type=float, default=None, metavar='C',
+                    help='Scalar_*_gaussianK: merge inner windows narrower than C times the '
+                         'noise the last SDE step adds to each channel (C * sqrt(2 h_end) * '
+                         'sigma * per-channel white-noise std). Fixed grids only. Not in the '
+                         'config name: use --label')
     p.add_argument('--drop_stats', nargs='*', default=None, metavar='NAME:CHANNEL:REGION',
                     help='Region statistics removed after the fit, e.g. '
                          'Scalar_morlet_gaussianK:8:3 (= Scalar_morlet[30] of the zfloor fit, a '
