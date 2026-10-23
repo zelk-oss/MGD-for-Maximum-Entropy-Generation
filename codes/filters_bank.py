@@ -6,8 +6,9 @@ Build Morlet wavelet filter banks (1D and 2D) in Fourier space.
 
 
 
+import numpy as np
 import torch
- 
+
 from filters.filters_1d import *
 from filters.filters_2d import *
 
@@ -16,6 +17,16 @@ from filters.filters_2d import *
 
     ## ----------------------------------------------------- Filters related functions -----------------------------------------------------
 
+
+
+def _as_filter(f_hat, device):
+    """Fourier-domain filter -> float32 tensor, or complex64 if it has a phase (Daubechies).
+    Real-valued filters (Morlet, Shannon, Meyer's zero imaginary part) stay float32 as before;
+    the potentials' gradients apply conj(filter), which is a no-op on them."""
+    f_hat = np.asarray(f_hat)
+    if np.iscomplexobj(f_hat) and np.any(f_hat.imag != 0):
+        return torch.tensor(f_hat).to(device).to(torch.complex64)
+    return torch.tensor(f_hat.real if np.iscomplexobj(f_hat) else f_hat).to(device).to(torch.float32)
 
 
 def return_Filters(M,J,Q=1,L=None,high_freq= 0.49,device='cpu',include_phi=False,wav_type='morlet'):
@@ -59,11 +70,13 @@ def return_Filters(M,J,Q=1,L=None,high_freq= 0.49,device='cpu',include_phi=False
     # only the 1D path, which is the one used by run_SDE.py / run_jet_SDE.py.
 
     if L==None:
-        psi = torch.tensor(init_band_pass(wav_type, M, J, Q, high_freq, wav_norm))[None].to(device).to(torch.float32)
-        phi = torch.tensor(init_low_pass(wav_type, M, J, Q, high_freq))[None,None].to(device).to(torch.float32)      
+        psi = _as_filter(init_band_pass(wav_type, M, J, Q, high_freq, wav_norm), device)[None]
+        phi = _as_filter(init_low_pass(wav_type, M, J, Q, high_freq), device)[None,None]
+        if psi.is_complex() or phi.is_complex():
+            psi, phi = psi.to(torch.complex64), phi.to(torch.complex64)
         filters =  torch.cat([psi,phi],dim=1)
         if include_phi is True:
-            filters_phi = torch.stack([torch.tensor(init_low_pass(wav_type, M, j, Q, high_freq)).to(device).to(torch.float32) for j in range(1,J+1)])[None,:]
+            filters_phi = torch.stack([_as_filter(init_low_pass(wav_type, M, j, Q, high_freq), device) for j in range(1,J+1)])[None,:]
     else:
         filter_set = FiltersSet(M, M, J, L).generate_morlet(precision='single')
         filter_set_psi_real = torch.fft.fft2(torch.fft.ifft2(filter_set['psi']).real)

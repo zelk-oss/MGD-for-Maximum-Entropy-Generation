@@ -103,11 +103,13 @@ def parse_args():
     p.add_argument('--J', type=int, default=7, help='Number of wavelet scales')
     p.add_argument('--Q', type=int, default=3, help='Wavelets per octave')
     p.add_argument('--wav_type', type=str, default='morlet',
-                   choices=['morlet', 'shannon', 'meyer', 'battle_lemarie', 'bump_steerable'],
+                   choices=['morlet', 'shannon', 'meyer', 'battle_lemarie', 'bump_steerable',
+                            'db2', 'db3', 'db4', 'db6', 'db8', 'db10'],
                    help='Wavelet family for the bandpass bank used by all Scalar_*, L_*, '
                         'Scattering_* potentials (default: morlet). shannon has disjoint Fourier '
                         'support, so the per-channel coefficients are orthogonal in L^2 '
-                        '(no near-copies, Gram block-diagonal).')
+                        '(no near-copies, Gram block-diagonal). dbN: analytic undecimated '
+                        'Daubechies of order N, compact support in time; dyadic, needs --Q 1.')
     p.add_argument('--terms', nargs='+', type=str,
                     default=[
                         'L_2_lowpass',

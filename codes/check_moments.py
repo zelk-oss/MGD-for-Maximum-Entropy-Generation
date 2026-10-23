@@ -121,7 +121,8 @@ def hist_plot(Data, synth, psi=None, save=None, wav_type='morlet', Q=3, J=None,
         save the complete figure.
 
     wav_type / Q / J control the analysis bank when `psi` is not provided:
-      - wav_type: 'morlet' (default), 'shannon', 'meyer', 'battle_lemarie', 'bump_steerable'
+      - wav_type: 'morlet' (default), 'shannon', 'meyer', 'battle_lemarie', 'bump_steerable',
+        'db2'..'db10' (Daubechies, Q=1 only)
       - Q: wavelets per octave (default 3)
       - J: number of scales; defaults to log2(M) - 2 for backward compat
     Pass the SAME bank the model constrained on to see whether the per-channel

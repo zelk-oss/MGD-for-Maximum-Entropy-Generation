@@ -103,7 +103,7 @@ class Scattering_First_Order_1d(Potential):
         x_filtered_abs = abs_eps(x_filtered)
         x_filtered_over_abs = x_filtered/x_filtered_abs
 
-        output = torch.real(torch.fft.ifft(torch.fft.fft(x_filtered_over_abs)*filters))
+        output = torch.real(torch.fft.ifft(torch.fft.fft(x_filtered_over_abs)*filters.conj()))
         # EXPERIMENTAL: self.norm doesn't depend on x, so dividing the final
         # (raw) gradient by it here is equivalent to normalizing the
         # coefficient before forward()'s abs() -- see __init__ note.
@@ -145,7 +145,7 @@ class Scattering_Second_Order_1d(Potential):
     def grad(self, x, v=None,  means=None):
 
         filters = self.filters.to(x.device)
-        x_filtered_2 = torch.fft.ifft(torch.fft.fft(x)*filters**2)
+        x_filtered_2 = torch.fft.ifft(torch.fft.fft(x)*(filters*filters.conj()))   # |psi_hat|^2: adjoint of a complex (Daubechies) filter is its conj
 
         output = x_filtered_2.real.reshape(x_filtered_2.shape[:1]+(-1,x.shape[-1]))
         # EXPERIMENTAL: raw statistic is quadratic in the coefficient, so the
@@ -236,7 +236,7 @@ class Scattering_Second_Order_Bulk_1d(Potential):
         weighted = w_bulk * x_filtered
 
         output = torch.real(
-            torch.fft.ifft(torch.fft.fft(2 * weighted) * filters)
+            torch.fft.ifft(torch.fft.fft(2 * weighted) * filters.conj())
         )
 
         if v is None:
@@ -271,7 +271,8 @@ class Scattering_Third_Order_Real_1d(Potential):
         number_filters = filters.shape[1]
         
         x_fourier = torch.fft.fft(x)
-        x_filtered_2 = torch.fft.ifft(x_fourier*filters**2)
+        filters_abs2 = filters*filters.conj()
+        x_filtered_2 = torch.fft.ifft(x_fourier*filters_abs2)
         x_filtered = torch.fft.ifft(filters*x_fourier)
         x_filtered_abs = abs_eps(x_filtered)
         x_filtered_over_abs = x_filtered/x_filtered_abs
@@ -283,17 +284,17 @@ class Scattering_Third_Order_Real_1d(Potential):
             m[indices[0], indices[1]] = v
             
             result_conv_phase = x_filtered_over_abs[:,:-1]*torch.einsum('ij, aib -> ajb', m.T, torch.real(x_filtered_2))
-            result_conv_phase = torch.fft.ifft(filters[:,:-1]*torch.fft.fft(result_conv_phase))
-            
+            result_conv_phase = torch.fft.ifft(filters[:,:-1].conj()*torch.fft.fft(result_conv_phase))
+
             x_filtered_abs_weighted = torch.einsum('ij, aib -> ajb', m, x_filtered_abs[:,:-1])
-            result_conv_modulus = torch.fft.ifft(filters**2*torch.fft.fft(x_filtered_abs_weighted))
+            result_conv_modulus = torch.fft.ifft(filters_abs2*torch.fft.fft(x_filtered_abs_weighted))
             
             return (result_conv_phase.sum(1) + result_conv_modulus.sum(1)).real[:,None]/x.shape[-1]
         
         result_conv_phase = x_filtered_over_abs[:,:-1,None]*torch.real(x_filtered_2)[:,None]
-        result_conv_phase = torch.fft.ifft(filters[:,:-1,None]*torch.fft.fft(result_conv_phase))
+        result_conv_phase = torch.fft.ifft(filters[:,:-1,None].conj()*torch.fft.fft(result_conv_phase))
 
-        result_conv_modulus = torch.fft.ifft(filters[:,None]**2*torch.fft.fft(x_filtered_abs)[:,:-1,None])
+        result_conv_modulus = torch.fft.ifft(filters_abs2[:,None]*torch.fft.fft(x_filtered_abs)[:,:-1,None])
 
         output = (result_conv_phase + result_conv_modulus).real
 
@@ -374,20 +375,20 @@ class Scattering_Fourth_Order_Real_1d(Potential):
 
         
 
-        x_filtered_abs_no_LF_filtered_2 = torch.fft.ifft((torch.fft.fft(x_filtered_abs_no_LF)[:,:,None]*filters**2)) # (B,J*Q,J+1,M) #no 2*, x_filtered_abs_no_LF
-        
+        x_filtered_abs_no_LF_filtered_2 = torch.fft.ifft((torch.fft.fft(x_filtered_abs_no_LF)[:,:,None]*(filters*filters.conj()))) # (B,J*Q,J+1,M) #no 2*, x_filtered_abs_no_LF
+
         indices = self.indices
 
         if v != None:
             m = torch.zeros((number_filters_Q, number_filters_Q, number_filters)).to(x.device)
             m[indices[0], indices[1], indices[2]] = v / self.norm_indices.to(v.device).to(v.dtype)
-            m = m+torch.transpose(m,0,1) 
-    
+            m = m+torch.transpose(m,0,1)
+
             intermediate_output = x_filtered_over_abs_no_LF*torch.einsum('ijk, ajkb -> aib', m, torch.real(x_filtered_abs_no_LF_filtered_2))
-            return torch.fft.ifft(filters_Q*torch.fft.fft(intermediate_output)).real.sum(1)[:,None]/x.shape[-1]
-            
+            return torch.fft.ifft(filters_Q.conj()*torch.fft.fft(intermediate_output)).real.sum(1)[:,None]/x.shape[-1]
+
         intermediate_output = x_filtered_over_abs_no_LF[:,:,None,None]*torch.real(x_filtered_abs_no_LF_filtered_2)[:,None] #x_filtered_over_abs_no_LF
-        output = torch.fft.ifft(filters_Q[:,:,None,None]*torch.fft.fft(intermediate_output)).real
+        output = torch.fft.ifft(filters_Q[:,:,None,None].conj()*torch.fft.fft(intermediate_output)).real
 
         output = output + torch.transpose(output, 1,2)      
         output = output[:, indices[0], indices[1], indices[2]].reshape(x.shape[0], indices.shape[1], x.shape[-1])/x.shape[-1]
@@ -473,6 +474,10 @@ class Scattering_Fourth_Order_Imag_1d(Potential):
         filters_tilde = torch.fft.fft(torch.fft.ifft(filters).conj()).conj()
         filters_Q = self.filters_Q.to(x.device)
         filters_Q_tilde = torch.fft.fft(torch.fft.ifft(filters_Q).conj()).conj()
+        # psi_hat(-k): the conjugate-coefficient branch of the adjoint. For a real filter bank
+        # (Morlet) filters_Q_tilde is real up to FFT round-off and the original .conj() is kept,
+        # so Morlet runs stay bit-identical; a complex (Daubechies) bank needs it without conj.
+        filters_Q_tilde_adj = filters_Q_tilde if filters_Q.is_complex() else filters_Q_tilde.conj()
         number_filters = filters.shape[1]
         number_filters_Q = filters_Q.shape[1]
 
@@ -494,7 +499,7 @@ class Scattering_Fourth_Order_Imag_1d(Potential):
             intermediate_output = 0.5*x_filtered_over_abs_no_LF*torch.einsum('ijk, ajkb -> aib', m, x_filtered_abs_no_LF_filtered_2)
             intermediate_output_conj = 0.5*x_filtered_over_abs_no_LF.conj()*torch.einsum('ijk, ajkb -> aib', m, x_filtered_abs_no_LF_filtered_2)
 
-            intermediate_output = torch.fft.ifft(filters_Q*torch.fft.fft(intermediate_output)).sum(1)[:,None]/x.shape[-1]
+            intermediate_output = torch.fft.ifft(filters_Q.conj()*torch.fft.fft(intermediate_output)).sum(1)[:,None]/x.shape[-1]
             intermediate_output_conj = torch.fft.ifft(filters_Q_tilde*torch.fft.fft(intermediate_output_conj)).sum(1)[:,None]/x.shape[-1]
 
             output =intermediate_output + intermediate_output_conj
@@ -502,7 +507,7 @@ class Scattering_Fourth_Order_Imag_1d(Potential):
             intermediate_output = 0.5*x_filtered_over_abs_no_LF*torch.einsum('ijk, ajkb -> aib', m_transpose, x_filtered_abs_no_LF_filtered_2_tilde)
             intermediate_output_conj = 0.5*x_filtered_over_abs_no_LF.conj()*torch.einsum('ijk, ajkb -> aib', m_transpose, x_filtered_abs_no_LF_filtered_2_tilde)
 
-            intermediate_output = torch.fft.ifft(filters_Q*torch.fft.fft(intermediate_output)).sum(1)[:,None]/x.shape[-1]
+            intermediate_output = torch.fft.ifft(filters_Q.conj()*torch.fft.fft(intermediate_output)).sum(1)[:,None]/x.shape[-1]
             intermediate_output_conj = torch.fft.ifft(filters_Q_tilde*torch.fft.fft(intermediate_output_conj)).sum(1)[:,None]/x.shape[-1]
 
             output_transpose =intermediate_output + intermediate_output_conj
@@ -513,16 +518,16 @@ class Scattering_Fourth_Order_Imag_1d(Potential):
         intermediate_output = 0.5*x_filtered_over_abs_no_LF[:,:,None,None]*x_filtered_abs_no_LF_filtered_2[:,None] #x_filtered_over_abs_no_LF
         intermediate_output_conj = 0.5*x_filtered_over_abs_no_LF[:,:,None,None].conj()*x_filtered_abs_no_LF_filtered_2[:,None] #x_filtered_over_abs_no_LF
 
-        intermediate_output = torch.fft.ifft(filters_Q[:,:,None,None]*torch.fft.fft(intermediate_output))
-        intermediate_output_conj = torch.fft.ifft(filters_Q_tilde[:,:,None,None].conj()*torch.fft.fft(intermediate_output_conj))
+        intermediate_output = torch.fft.ifft(filters_Q[:,:,None,None].conj()*torch.fft.fft(intermediate_output))
+        intermediate_output_conj = torch.fft.ifft(filters_Q_tilde_adj[:,:,None,None]*torch.fft.fft(intermediate_output_conj))
         
         output =intermediate_output + intermediate_output_conj
 
         intermediate_output = 0.5*x_filtered_over_abs_no_LF[:,:,None,None]*x_filtered_abs_no_LF_filtered_2_tilde[:,None] #x_filtered_over_abs_no_LF
         intermediate_output_conj = 0.5*x_filtered_over_abs_no_LF[:,:,None,None].conj()*x_filtered_abs_no_LF_filtered_2_tilde[:,None] #x_filtered_over_abs_no_LF
 
-        intermediate_output = torch.fft.ifft(filters_Q[:,:,None,None]*torch.fft.fft(intermediate_output))
-        intermediate_output_conj = torch.fft.ifft(filters_Q_tilde[:,:,None,None].conj()*torch.fft.fft(intermediate_output_conj))
+        intermediate_output = torch.fft.ifft(filters_Q[:,:,None,None].conj()*torch.fft.fft(intermediate_output))
+        intermediate_output_conj = torch.fft.ifft(filters_Q_tilde_adj[:,:,None,None]*torch.fft.fft(intermediate_output_conj))
 
         output_transpose =intermediate_output + intermediate_output_conj
 
@@ -604,7 +609,7 @@ class Scattering_Fourth_Order_Mod2_Real_1d(Potential):
         
 
         x_filtered_abs2_no_LF_filtered_2 = torch.fft.ifft(
-            (torch.fft.fft(x_filtered_abs2_no_LF)[:,:,None] * filters**2)
+            (torch.fft.fft(x_filtered_abs2_no_LF)[:,:,None] * (filters*filters.conj()))
         )        
         indices = self.indices
 
@@ -614,10 +619,10 @@ class Scattering_Fourth_Order_Mod2_Real_1d(Potential):
             m = m+torch.transpose(m,0,1) 
     
             intermediate_output = x_filtered_grad*torch.einsum('ijk, ajkb -> aib', m, torch.real(x_filtered_abs2_no_LF_filtered_2))
-            return torch.fft.ifft(filters_Q*torch.fft.fft(intermediate_output)).real.sum(1)[:,None]/x.shape[-1]
+            return torch.fft.ifft(filters_Q.conj()*torch.fft.fft(intermediate_output)).real.sum(1)[:,None]/x.shape[-1]
             
         intermediate_output = x_filtered_grad[:,:,None,None]*torch.real(x_filtered_abs2_no_LF_filtered_2)[:,None] #x_filtered_over_abs_no_LF
-        output = torch.fft.ifft(filters_Q[:,:,None,None]*torch.fft.fft(intermediate_output)).real
+        output = torch.fft.ifft(filters_Q[:,:,None,None].conj()*torch.fft.fft(intermediate_output)).real
 
         output = output + torch.transpose(output, 1,2)      
         output = output[:, indices[0], indices[1], indices[2]].reshape(x.shape[0], indices.shape[1], x.shape[-1])/x.shape[-1]
@@ -698,6 +703,10 @@ class Scattering_Fourth_Order_Mod2_Imag_1d(Potential):
         filters_tilde = torch.fft.fft(torch.fft.ifft(filters).conj()).conj()
         filters_Q = self.filters_Q.to(x.device)
         filters_Q_tilde = torch.fft.fft(torch.fft.ifft(filters_Q).conj()).conj()
+        # psi_hat(-k): the conjugate-coefficient branch of the adjoint. For a real filter bank
+        # (Morlet) filters_Q_tilde is real up to FFT round-off and the original .conj() is kept,
+        # so Morlet runs stay bit-identical; a complex (Daubechies) bank needs it without conj.
+        filters_Q_tilde_adj = filters_Q_tilde if filters_Q.is_complex() else filters_Q_tilde.conj()
         number_filters = filters.shape[1]
         number_filters_Q = filters_Q.shape[1]
 
@@ -720,7 +729,7 @@ class Scattering_Fourth_Order_Mod2_Imag_1d(Potential):
             intermediate_output = 0.5*x_filtered_grad*torch.einsum('ijk, ajkb -> aib', m, x_filtered_abs2_no_LF_filtered_2)
             intermediate_output_conj = 0.5*x_filtered_grad.conj()*torch.einsum('ijk, ajkb -> aib', m, x_filtered_abs2_no_LF_filtered_2)
 
-            intermediate_output = torch.fft.ifft(filters_Q*torch.fft.fft(intermediate_output)).sum(1)[:,None]/x.shape[-1]
+            intermediate_output = torch.fft.ifft(filters_Q.conj()*torch.fft.fft(intermediate_output)).sum(1)[:,None]/x.shape[-1]
             intermediate_output_conj = torch.fft.ifft(filters_Q_tilde*torch.fft.fft(intermediate_output_conj)).sum(1)[:,None]/x.shape[-1]
 
             output = intermediate_output + intermediate_output_conj
@@ -728,7 +737,7 @@ class Scattering_Fourth_Order_Mod2_Imag_1d(Potential):
             intermediate_output = 0.5*x_filtered_grad*torch.einsum('ijk, ajkb -> aib', m_transpose, x_filtered_abs2_no_LF_filtered_2_tilde)
             intermediate_output_conj = 0.5*x_filtered_grad.conj()*torch.einsum('ijk, ajkb -> aib', m_transpose, x_filtered_abs2_no_LF_filtered_2_tilde)
 
-            intermediate_output = torch.fft.ifft(filters_Q*torch.fft.fft(intermediate_output)).sum(1)[:,None]/x.shape[-1]
+            intermediate_output = torch.fft.ifft(filters_Q.conj()*torch.fft.fft(intermediate_output)).sum(1)[:,None]/x.shape[-1]
             intermediate_output_conj = torch.fft.ifft(filters_Q_tilde*torch.fft.fft(intermediate_output_conj)).sum(1)[:,None]/x.shape[-1]
 
             output_transpose = intermediate_output + intermediate_output_conj
@@ -739,16 +748,16 @@ class Scattering_Fourth_Order_Mod2_Imag_1d(Potential):
         intermediate_output = 0.5*x_filtered_grad[:,:,None,None]*x_filtered_abs2_no_LF_filtered_2[:,None]
         intermediate_output_conj = 0.5*x_filtered_grad[:,:,None,None].conj()*x_filtered_abs2_no_LF_filtered_2[:,None]
 
-        intermediate_output = torch.fft.ifft(filters_Q[:,:,None,None]*torch.fft.fft(intermediate_output))
-        intermediate_output_conj = torch.fft.ifft(filters_Q_tilde[:,:,None,None].conj()*torch.fft.fft(intermediate_output_conj))
+        intermediate_output = torch.fft.ifft(filters_Q[:,:,None,None].conj()*torch.fft.fft(intermediate_output))
+        intermediate_output_conj = torch.fft.ifft(filters_Q_tilde_adj[:,:,None,None]*torch.fft.fft(intermediate_output_conj))
 
         output = intermediate_output + intermediate_output_conj
 
         intermediate_output = 0.5*x_filtered_grad[:,:,None,None]*x_filtered_abs2_no_LF_filtered_2_tilde[:,None]
         intermediate_output_conj = 0.5*x_filtered_grad[:,:,None,None].conj()*x_filtered_abs2_no_LF_filtered_2_tilde[:,None]
 
-        intermediate_output = torch.fft.ifft(filters_Q[:,:,None,None]*torch.fft.fft(intermediate_output))
-        intermediate_output_conj = torch.fft.ifft(filters_Q_tilde[:,:,None,None].conj()*torch.fft.fft(intermediate_output_conj))
+        intermediate_output = torch.fft.ifft(filters_Q[:,:,None,None].conj()*torch.fft.fft(intermediate_output))
+        intermediate_output_conj = torch.fft.ifft(filters_Q_tilde_adj[:,:,None,None]*torch.fft.fft(intermediate_output_conj))
 
         output_transpose = intermediate_output + intermediate_output_conj
 
@@ -888,7 +897,7 @@ class Scalar(Potential):
         x_filtered_abs = abs_eps(x_filtered)
         x_filtered_over_abs = x_filtered/x_filtered_abs
 
-        x_L1 = torch.real(torch.fft.ifft(torch.fft.fft(x_filtered_over_abs)*filters)) #(B,J*Q,T)
+        x_L1 = torch.real(torch.fft.ifft(torch.fft.fft(x_filtered_over_abs)*filters.conj())) #(B,J*Q,T)
 
        
         
@@ -949,7 +958,7 @@ class L2p_norm(Potential):
         x_filtered = torch.fft.ifft(filters*torch.fft.fft(x))
             
         output = (x_filtered *(2* self.p) * (torch.abs(x_filtered)**(2*self.p-2)))
-        output = torch.fft.ifft(filters*torch.fft.fft(output)).real
+        output = torch.fft.ifft(filters.conj()*torch.fft.fft(output)).real
 
         output = output / self.norm
         
@@ -987,7 +996,7 @@ class L2p1_norm(Potential):
         x_filtered = torch.fft.ifft(self.filters*torch.fft.fft(x))
             
         output =  x_filtered * (2*self.p+1) * (torch.abs(x_filtered)**(2*self.p-1))
-        output = torch.fft.ifft(filters*torch.fft.fft(output)).real
+        output = torch.fft.ifft(filters.conj()*torch.fft.fft(output)).real
 
         output = output / self.norm
         
@@ -1588,7 +1597,7 @@ class Scalar_GGD_KRegion():
             D.append(dws[K - 1])
         D_all = torch.cat(D, dim=1)
         fKx = self._get_filters_Kx(device)
-        return torch.fft.ifft(torch.fft.fft(D_all) * fKx).real / x.shape[-1]
+        return torch.fft.ifft(torch.fft.fft(D_all) * fKx.conj()).real / x.shape[-1]
 
     def grad(self, x, v=None, means=None):
         self._check_fitted()

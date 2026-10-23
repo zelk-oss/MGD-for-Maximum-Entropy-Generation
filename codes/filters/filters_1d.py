@@ -604,6 +604,91 @@ def meyer_mother_phi(w):
 
 
 ###############################################
+# Daubechies wavelets
+# ##############################################
+
+# Low-pass filter h of DbN, sum(h) = sqrt(2) (pywt rec_lo, float64).
+DAUBECHIES_H = {
+    2: [0.48296291314453416, 0.8365163037378079, 0.2241438680420134, -0.12940952255126037],
+    3: [0.33267055295008263, 0.8068915093110925, 0.45987750211849154, -0.13501102001025458,
+        -0.08544127388202666, 0.03522629188570953],
+    4: [0.2303778133088965, 0.7148465705529157, 0.6308807679298589, -0.027983769416859854,
+        -0.18703481171909309, 0.030841381835560764, 0.0328830116668852, -0.010597401785069032],
+    6: [0.11154074335010947, 0.49462389039845306, 0.7511339080210954, 0.31525035170919763,
+        -0.22626469396543983, -0.12976686756726194, 0.09750160558732304, 0.027522865530305727,
+        -0.03158203931748603, 0.0005538422011614961, 0.004777257510945511, -0.0010773010853084796],
+    8: [0.05441584224310401, 0.31287159091429995, 0.6756307362972898, 0.5853546836542067,
+        -0.015829105256349306, -0.2840155429615469, 0.0004724845739132828, 0.12874742662047847,
+        -0.017369301001807547, -0.044088253930794755, 0.013981027917398282, 0.008746094047405777,
+        -0.004870352993451574, -0.00039174037337694705, 0.0006754494064505693, -0.00011747678412476953],
+    10: [0.026670057900555554, 0.1881768000776915, 0.5272011889317256, 0.6884590394536035,
+         0.2811723436605775, -0.24984642432731538, -0.19594627437737705, 0.12736934033579325,
+         0.09305736460357235, -0.07139414716639708, -0.029457536821875813, 0.033212674059341,
+         0.0036065535669561697, -0.010733175483330575, 0.001395351747052901, 0.001992405295185056,
+         -0.0006858566949597116, -0.00011646685512928545, 9.358867032006959e-05, -1.3264202894521244e-05],
+}
+
+
+def is_daubechies(wav_type):
+    return wav_type.startswith('db') and wav_type[2:].isdigit()
+
+
+def daubechies_order(wav_type):
+    order = int(wav_type[2:])
+    if order not in DAUBECHIES_H:
+        raise ValueError(f"{wav_type}: Daubechies orders available: {sorted(DAUBECHIES_H)}")
+    return order
+
+
+def daubechies_cascade(N, order, level, band_pass):
+    """ Filter of the undecimated (stationary) Daubechies transform at `level` (1 = finest),
+    on the N-point DFT grid, real in time:
+        band-pass  G(2^(l-1) w) prod_{m < l-1} H(2^m w) / 2^(l/2)
+        low-pass   prod_{m < l} H(2^m w) / 2^(l/2)
+    with g[n] = (-1)^n h[L-1-n]. Since |H|^2 + |G|^2 = 2, sum_{l <= J} |psi_l|^2 + |phi_J|^2 = 1
+    at every frequency. The filter is shifted to its centre of energy (the causal filter has
+    support [0, (L-1)(2^l - 1)]), so that all scales are aligned in time like Morlet's.
+    Convention: built from rec_lo/rec_hi, so x * filter = pywt.swt(x[::-1]) (norm=False) / 2^(l/2),
+    reversed and circularly shifted, i.e. the time-mirrored wavelet; every |psi_hat| statistic is unaffected. """
+    h = np.asarray(DAUBECHIES_H[order])
+    g = (-1) ** np.arange(h.size) * h[::-1]
+    n = np.arange(h.size)
+    k = np.arange(N)
+    factors = [(h, m) for m in range(level - 1 if band_pass else level)]
+    if band_pass:
+        factors.append((g, level - 1))
+    F = np.ones(N, dtype=complex)
+    t = np.ones(1)                                      # same filter in time, not periodized
+    for f, m in factors:
+        F *= np.exp(-2j * np.pi * np.outer((k * 2 ** m) % N, n) / N) @ f / np.sqrt(2)
+        f_up = np.zeros((f.size - 1) * 2 ** m + 1)
+        f_up[::2 ** m] = f
+        t = np.convolve(t, f_up) / np.sqrt(2)
+    tau = int(round(np.sum(np.arange(t.size) * t ** 2) / np.sum(t ** 2)))
+    return F * np.exp(2j * np.pi * k * tau / N)
+
+
+def daubechies_psi(N, J, order):
+    """ Analytic Daubechies band-pass filters, levels 1..J: the positive frequencies of the
+    real filter, and half its value at Nyquist, so that Re(x * psi_l) is exactly half the
+    undecimated Daubechies coefficient of x (psi_hat(0) = 0 for a wavelet). """
+    assert N % 2 == 0, "Daubechies filters need an even signal length"
+    psi = []
+    for level in range(1, J + 1):
+        F = daubechies_cascade(N, order, level, band_pass=True)
+        A = np.zeros(N, dtype=complex)
+        A[1:N // 2] = F[1:N // 2]
+        A[N // 2] = F[N // 2] / 2
+        psi.append(A)
+    return psi
+
+
+def daubechies_phi(N, J, order):
+    """ Daubechies low-pass at level J, real in time (both sides of the spectrum), like Morlet's. """
+    return daubechies_cascade(N, order, J, band_pass=False)
+
+
+###############################################
 # initialize wavelets
 # ##############################################
 
@@ -632,6 +717,11 @@ def init_wavelet_param(wav_type, J, Q, high_freq):
 
 def init_band_pass(wav_type, T, J, Q, high_freq, wav_norm):
     """ Compute the band-pass Fourier transforms. """
+    if is_daubechies(wav_type):
+        # dyadic by construction: high_freq and wav_norm do not apply
+        if Q != 1:
+            raise NotImplementedError(f"{wav_type}: Daubechies wavelets are dyadic, only Q=1 (got Q={Q})")
+        return np.stack(daubechies_psi(T, J, daubechies_order(wav_type)), axis=0)
     xis, sigmas = init_wavelet_param(wav_type, J, Q, high_freq)
 
     if wav_type == "morlet":
@@ -657,6 +747,10 @@ def init_band_pass(wav_type, T, J, Q, high_freq, wav_norm):
 def init_low_pass(wav_type, T, J, Q, high_freq):
     """ Compute the low-pass Fourier transforms assuming it has the same variance
     as the lowest-frequency wavelet. """
+    if is_daubechies(wav_type):
+        if Q != 1:
+            raise NotImplementedError(f"{wav_type}: Daubechies wavelets are dyadic, only Q=1 (got Q={Q})")
+        return daubechies_phi(T, J, daubechies_order(wav_type))
     xis, sigmas = init_wavelet_param(wav_type, J, Q, high_freq)
     xis = np.append(xis, 0.0)
 

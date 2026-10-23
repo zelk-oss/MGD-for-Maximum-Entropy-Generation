@@ -194,6 +194,10 @@ def _config_name_parts(args, M, include_seed=True):
     if getattr(args, 'deduplicate_filters', False):
         tol = getattr(args, 'dedup_tol', 1e-12)
         parts.append('dedupfilt' if tol == 1e-12 else f'dedupfilt{tol:g}')
+    # Daubechies bank (--wav_type dbN): own name; morlet/shannon runs keep theirs (told apart by label)
+    wav_type = getattr(args, 'wav_type', 'morlet')
+    if wav_type.startswith('db'):
+        parts.append(wav_type)
     if include_seed:
         parts.append(f'seed_{args.seed}')
     parts.append(f'terms{terms_hash}')
