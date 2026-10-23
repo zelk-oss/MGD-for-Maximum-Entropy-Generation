@@ -204,6 +204,11 @@ PAIRS_Q3 = [
     ('mass at M=256 Q=3 (noScat4 vs mass_noScat4)', 'noScat4', 'mass_noScat4', 3),
     ('mass at M=256 vs Scat4 (final vs mass_noScat4)', 'final', 'mass_noScat4', 1),
     ('mass at M=256 vs Scat4 Q=3 (final vs mass_noScat4)', 'final', 'mass_noScat4', 3),
+    # ── full configuration with the fix (M=256, Scat4, mass)
+    ('mass + Scat4 at M=256 (final vs mass_final)', 'final', 'mass_final', 1),
+    ('mass + Scat4 at M=256 Q=3 (final vs mass_final)', 'final', 'mass_final', 3),
+    ('Scat4 on top of mass, M=256 (mass_noScat4 vs mass_final)', 'mass_noScat4', 'mass_final', 1),
+    ('Scat4 on top of mass, M=256 Q=3 (mass_noScat4 vs mass_final)', 'mass_noScat4', 'mass_final', 3),
 ]
 
 FINE_CH = {1: (0, 1, 2),          # Q=1: finest 3 bands

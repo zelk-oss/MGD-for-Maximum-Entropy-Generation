@@ -72,7 +72,7 @@ ARMS_TAILFIX_FINAL = ('tailfix_final',)                       # final-equivalent
 ARMS_MASS_2BANK = ('mass_noL6_2b', 'mass_L6_2b', 'tailq_noL6_2b', 'tailq_L6_2b', 'mass_L6_2b_drop', 'mass_L6_2b_merge',
                    'mass_L6_2b_scat4')  # turbulence_ggd_mass_2bank.sh, M=128 Q=1+3
 ARMS_MASS_1BANK = ('mass_L6_1b',)                            # same launcher, M=128 Q=1 only
-ARMS_MASS_NOSCAT4 = ('mass_noScat4',)                        # turbulence_ggd_mass_noScat4.sh, M=256 Q=1+3
+ARMS_MASS_NOSCAT4 = ('mass_noScat4', 'mass_final')                        # turbulence_ggd_mass_noScat4.sh, M=256 Q=1+3
 for a in (ARMS_TAILFIX + ARMS_TAILFIX_FULL + ARMS_TAILFIX_NOSCAT4 + ARMS_TAILFIX_FINAL
           + ARMS_MASS_2BANK + ARMS_MASS_1BANK + ARMS_MASS_NOSCAT4):
     WAV_FOR_ARM[a] = 'morlet'

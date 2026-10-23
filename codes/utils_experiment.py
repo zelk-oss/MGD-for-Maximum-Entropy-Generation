@@ -198,6 +198,9 @@ def _config_name_parts(args, M, include_seed=True):
     wav_type = getattr(args, 'wav_type', 'morlet')
     if wav_type.startswith('db'):
         parts.append(wav_type)
+    # critically decimated orthonormal DWT (--dwt_order, Scalar_dwt_gaussianK)
+    if getattr(args, 'dwt_order', None):
+        parts.append(f'dwt{args.dwt_order}')
     if include_seed:
         parts.append(f'seed_{args.seed}')
     parts.append(f'terms{terms_hash}')
@@ -344,7 +347,7 @@ def resolve_reg_mode(args):
 
 def run_experiment(args, M, config, x1, filters, t, logger, outdir, device,
                    filters_Q=None, filters_Phi=None, normalize_potentials=False,
-                   potentials_save_dir=None, adaptive=None,
+                   potentials_save_dir=None, adaptive=None, dwt=None,
                    ):
     """adaptive: AdaptiveStepController from codes/time_schedules.build_time_grid, or
     None for a fixed grid `t`. With it, the SDE builds its own grid and the one
@@ -375,7 +378,7 @@ def run_experiment(args, M, config, x1, filters, t, logger, outdir, device,
         args.terms, args.J, filters, args.Q, filters_Q=filters_Q, filters_Phi=filters_Phi,
         scalar_param=None, parallel=False,
         deduplicate_filters=getattr(args, 'deduplicate_filters', False),
-        dedup_tol=getattr(args, 'dedup_tol', 1e-12),
+        dedup_tol=getattr(args, 'dedup_tol', 1e-12), dwt=dwt,
         ggd_kwargs={k: v for k, v in dict(
             tail_quantile=getattr(args, 'ggd_tail_quantile', None),
             tail_alpha_bounds=getattr(args, 'ggd_tail_alpha_bounds', None),
@@ -389,6 +392,15 @@ def run_experiment(args, M, config, x1, filters, t, logger, outdir, device,
             raise ValueError(f'--drop_stats {spec}: {name} is not a region potential of this run')
         potentials[name].drop_slots = tuple(potentials[name].drop_slots) + ((int(ch), int(reg)),)
         logger.info('Dropping %s channel %s region %s after the fit', name, ch, reg)
+
+    if getattr(args, 'gram_preflight', None) is not None:
+        from codes.gram_preflight import run_gram_preflight
+        if potentials_save_dir is None:
+            raise ValueError('--gram_preflight needs potentials_save_dir (the fitted states are re-saved there)')
+        run_gram_preflight(potentials, x1, args.gram_preflight, logger, potentials_save_dir)
+        if getattr(args, 'preflight_only', False):
+            logger.info('--preflight_only: stopping before the SDE (report in gram_preflight.json)')
+            raise SystemExit(0)
 
     if normalize_potentials:
         for pot in potentials.values():          # <-- add this

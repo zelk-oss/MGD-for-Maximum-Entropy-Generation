@@ -44,13 +44,15 @@ def get_scalar_potentials(terms):
 
 
 def get_1d_potentials(terms, J, filters, Q=1, filters_Q=None, filters_Phi=None,scalar_param=None, parallel=False,
-                      deduplicate_filters=False, dedup_tol=1e-12, ggd_kwargs=None):
+                      deduplicate_filters=False, dedup_tol=1e-12, ggd_kwargs=None, dwt=None):
     """Build a dict of 1D potentials selected by ``terms``.
 
     Covers wavelet Lp-norm moments (``'L_2'..'L_10'`` and their ``'_phi'``
     low-pass variants, via ``L2p_norm`` / ``L2p1_norm``), quantile-confined scalar
     potentials, and scattering moments up to fourth order. Third/fourth-order
     imaginary terms are stubbed out (``pass``).
+
+    ``dwt``: a ``PeriodicDWT`` (codes/ortho_wavelet/periodic_dwt.py), used by ``'Scalar_dwt_gaussianK'`` only.
 
     NOTE: as written, ``'L_9'`` and ``'L_10'`` both assign to key ``'L_8'`` (so they
     overwrite ``L_8`` rather than adding new entries). The ``parallel`` branch also
@@ -168,6 +170,12 @@ def get_1d_potentials(terms, J, filters, Q=1, filters_Q=None, filters_Phi=None,s
 
     if 'Scalar_morlet_gaussianK' in terms:
         potentials['Scalar_morlet_gaussianK'] = Scalar_GGD_KRegion(filters, **ggd_kwargs)
+
+    # same potential on the critically decimated orthonormal DWT coefficients (details + approximation)
+    if 'Scalar_dwt_gaussianK' in terms:
+        if dwt is None:
+            raise ValueError("'Scalar_dwt_gaussianK' needs a PeriodicDWT: run with --dwt_order")
+        potentials['Scalar_dwt_gaussianK'] = Scalar_GGD_KRegion(None, dwt=dwt, **ggd_kwargs)
 
 
 

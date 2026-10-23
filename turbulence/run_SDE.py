@@ -69,6 +69,7 @@ from codes.utils import *             # noqa: E402
 from codes.utils_experiment import * 
 from codes.check_moments import *     # noqa: E402
 from codes.ortho_wavelet.ReadyToUseWavelets import *
+from codes.ortho_wavelet.periodic_dwt import PeriodicDWT
 from codes.time_schedules import add_schedule_args, build_time_grid  # noqa: E402
 from data.data_loader import *        # noqa: E402
 from data_loader import *             # noqa: E402
@@ -110,6 +111,10 @@ def parse_args():
                         'support, so the per-channel coefficients are orthogonal in L^2 '
                         '(no near-copies, Gram block-diagonal). dbN: analytic undecimated '
                         'Daubechies of order N, compact support in time; dyadic, needs --Q 1.')
+    p.add_argument('--dwt_order', type=int, default=None, choices=[2, 3, 4, 6, 8, 10],
+                   help='Order N of the critically decimated, periodic, orthonormal Daubechies DWT '
+                        '(codes/ortho_wavelet/periodic_dwt.py) used by Scalar_dwt_gaussianK: --J detail '
+                        'levels + the approximation, d coefficients in total. Needs d divisible by 2^J.')
     p.add_argument('--terms', nargs='+', type=str,
                     default=[
                         'L_2_lowpass',
@@ -191,6 +196,13 @@ def parse_args():
                          'Scalar_morlet_gaussianK:8:3 (= Scalar_morlet[30] of the zfloor fit, a '
                          'near-copy of Scalar_psi ch 21 region 3). Fails if the slot is not active. '
                          'Not in the config name: use --label')
+    p.add_argument('--gram_preflight', type=float, default=None, metavar='TOL',
+                    help='Before the SDE, fit the potentials and drop every statistic whose gradient is '
+                         'explained to within TOL (residual fraction) by the statistics before it, in the '
+                         'order L_6, Scalar_morlet, Scalar_psi, ... across families '
+                         '(codes/gram_preflight.py). E.g. 1e-6. Not in the config name: use --label')
+    p.add_argument('--preflight_only', action='store_true',
+                    help='With --gram_preflight: write gram_preflight.json and stop before the SDE')
     # Early-stopped Krylov per-step solves (codes/sde_krylov.py, krylov_stopping/), opt-in 2026-10-07.
     # Unset --theta_solver = the plain SDE class, exactly as before.
     p.add_argument('--theta_solver', type=str, default=None, choices=['ridge', 'jac_minres', 'ito_cg'],
@@ -458,8 +470,9 @@ def main():
         if loaded is not None:
             result = loaded
         else:
+            dwt = PeriodicDWT(args.dwt_order, args.J, M, device=device) if args.dwt_order else None
             result = run_experiment(args, M, config, x1, filters,
-                                    t, logger, outdir, device,
+                                    t, logger, outdir, device, dwt=dwt,
                                     filters_Q=filters_Q, filters_Phi=filters_Phi,
                                     potentials_save_dir=potentials_dir,
                                     adaptive=adaptive,

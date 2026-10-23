@@ -169,6 +169,9 @@ def main(label, seed, lam, ridge, eps, use_theta_t, percentiles, unconstrained=F
 
     inc = (x1[..., 1:] - x1[..., :-1]).abs().amax(dim=(1, 2)).cpu().numpy()
     fams = list(C)
+    npz = HERE / 'figures' / 'data' / f'logp_C_{label}_lam{lam:g}{"_unc" if unconstrained else ""}.npz'
+    np.savez(npz, increment=inc, theta_desc=desc, **C)           # read by plot_logp_summary.py
+    print(f'saved family contributions: {npz}')
     for P in percentiles:
         rare = inc > np.percentile(inc, P)
         print(f'\n=== rare = max |lag-1 increment| above the {P}th percentile: '

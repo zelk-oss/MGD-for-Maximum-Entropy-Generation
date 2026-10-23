@@ -1070,8 +1070,13 @@ class Scalar_GGD_KRegion():
                  tail_alpha_bounds=None,
                  tail_mass=False,
                  min_window=None,
+                 dwt=None,
                  verbose=True):
         self.filters = filters
+        # dwt: a PeriodicDWT (codes/ortho_wavelet/periodic_dwt.py). The channels are then the
+        # critically decimated coefficients (channel j has dwt.sizes[j] of them, the last one
+        # is the approximation) instead of the undecimated bank `filters` (pass None).
+        self.dwt = dwt
         # tail_mass: add one statistic per channel, <w_K(|z|)>, the probability mass of the
         # outermost region (exponent 0 on the outer window). With a single statistic per
         # region the multiplier theta_K has to set both the mass of that region and its
@@ -1104,7 +1109,7 @@ class Scalar_GGD_KRegion():
         self.min_window = min_window
         self.K = int(num_regions)
         assert self.K >= 1
-        self.J = filters.shape[1]
+        self.J = filters.shape[1] if dwt is None else dwt.n_channels
         self.trans_frac = trans_frac
         self.alpha_bounds = alpha_bounds
         self.min_region_samples = min_region_samples
@@ -1159,7 +1164,10 @@ class Scalar_GGD_KRegion():
         return self.forward(x, *args)
 
     def to(self, device):
-        self.filters = self.filters.to(device)
+        if self.filters is not None:
+            self.filters = self.filters.to(device)
+        if self.dwt is not None:
+            self.dwt.to(device)
         if self._filters_Kx is not None:
             self._filters_Kx = self._filters_Kx.to(device)
         if self.is_fitted:
@@ -1175,6 +1183,39 @@ class Scalar_GGD_KRegion():
             if self.eps_ch is not None:
                 self.eps_ch = self.eps_ch.to(device)
         return self
+
+    # ---- where the coefficients come from: undecimated bank (FFT) or decimated DWT ----
+    def _coeffs(self, x):
+        """Coefficients (B, J, T). DWT: channel j zero-padded beyond dwt.sizes[j]."""
+        if self.dwt is not None:
+            return self.dwt.analysis(x)
+        filters = self.filters.to(x.device)
+        return torch.fft.ifft(filters * torch.fft.fft(x)).real
+
+    def _channel_values(self, z, j):
+        """Coefficients of channel j (B, n_j), without the DWT padding."""
+        return z[:, j, :] if self.dwt is None else z[:, j, :self.dwt.sizes[j]]
+
+    def _position_mean(self, v):
+        """Mean over the positions of each channel: (B, J, T) -> (B, J)."""
+        if self.dwt is None:
+            return v.mean(-1)
+        mask = self.dwt.mask.to(device=v.device)
+        return (v * mask).sum(-1) / self.dwt.counts.to(device=v.device, dtype=v.dtype)
+
+    def _adjoint(self, D_all, x):
+        """Pull d phi / d z (B, n_slots*J, T) back to x: the adjoint of _coeffs, with the
+        1/T (1/n_j) of the position mean. For the orthonormal DWT the adjoint is the inverse."""
+        if self.dwt is None:
+            fKx = self._get_filters_Kx(x.device)
+            return torch.fft.ifft(torch.fft.fft(D_all) * fKx.conj()).real / x.shape[-1]
+        B, J = D_all.shape[0], self.J
+        D = D_all.reshape(B, self.n_slots, J, -1)
+        out = D_all.new_zeros(B, self.n_slots, J, self.dwt.d)
+        for j, n in enumerate(self.dwt.sizes):
+            cj = D[:, :, j, :n].reshape(-1, n) / n
+            out[:, :, j] = self.dwt.synthesis_channel(cj, j).reshape(B, self.n_slots, -1)
+        return out.reshape(B, self.n_slots * J, -1)
 
     @property
     def n_slots(self):
@@ -1376,8 +1417,7 @@ class Scalar_GGD_KRegion():
         if boundary_method is None:
             boundary_method = self.boundary_method
         self._filters_Kx = None
-        filters = self.filters.to(x.device)
-        z = torch.fft.ifft(filters * torch.fft.fft(x)).real.detach().cpu().numpy()
+        z = self._coeffs(x).detach().cpu().numpy()
 
         J, K = z.shape[1], self.K
         A = np.ones((J, K)); S = np.ones((J, K))
@@ -1385,13 +1425,16 @@ class Scalar_GGD_KRegion():
         PI = np.zeros((J, K)); KEFF = np.ones(J, dtype=int)
         ACT = np.zeros((J, K), dtype=bool)
         FLOOR = np.zeros(J)
-        if self.min_window is not None:
+        if self.min_window is not None and self.dwt is not None:
+            unit_noise = np.ones(J)             # orthonormal transform: unit variance for unit white noise
+        elif self.min_window is not None:
             # z_j = Re(g_j * xi) with g_j = ifft(psi_hat_j) and xi real: Var = sum_s Re g_j(s)^2
+            filters = self.filters.to(x.device)
             g = torch.fft.ifft(filters.reshape(-1, filters.shape[-2], filters.shape[-1])[0]).real
             unit_noise = torch.sqrt((g.double() ** 2).sum(-1)).cpu().numpy()
 
         for j in range(J):
-            h = z[:, j, :].reshape(-1); h = h[np.isfinite(h)]; ah = np.abs(h); N = h.size
+            h = self._channel_values(z, j).reshape(-1); h = h[np.isfinite(h)]; ah = np.abs(h); N = h.size
 
             if boundary_method == "auto":
                 Keff, cuts = self._select_model_order(h, seed=0)
@@ -1517,6 +1560,33 @@ class Scalar_GGD_KRegion():
         print(f"[drop_slots] removed (channel, region) {sorted(tuple(map(int, s)) for s in self.drop_slots)}; "
               f"{self.num_coefficients} statistics remain")
 
+    def drop_columns(self, local_idx):
+        """Remove active statistics by their POSITION in the active set (column i of forward/grad
+        is slot active_flat[i]), after the fit. Used for the cross-family near-copies found by
+        codes/gram_preflight.py; same bookkeeping as _apply_drop_slots, but the remaining
+        stat_scale entries are kept (a column's scale does not depend on the others)."""
+        drop = sorted({int(i) for i in local_idx})
+        if not drop:
+            return
+        n = int(self.active_flat.numel())
+        if drop[0] < 0 or drop[-1] >= n:
+            raise ValueError(f"drop_columns {drop}: only {n} active statistics")
+        J = self.J
+        flat = self.active_flat.cpu()
+        keep = torch.tensor([i for i in range(n) if i not in set(drop)], dtype=torch.long)
+        gone = [int(f) for f in flat[drop]]
+        act = self.active.clone()
+        for f in gone:
+            act[f % J, f // J] = False
+        dev = self.active_flat.device
+        self.active = act
+        self.active_flat = flat[keep].to(dev)
+        self.stat_scale = self.stat_scale[keep.to(self.stat_scale.device)]
+        self.num_coefficients = int(self.active_flat.numel())
+        self.drop_slots = tuple(self.drop_slots) + tuple((f % J, f // J) for f in gone)
+        print(f"[drop_columns] removed (channel, region) {[(f % J, f // J) for f in gone]}; "
+              f"{self.num_coefficients} statistics remain")
+
     def _compute_stat_scale(self, x, max_cols=None):
         self.stat_scale = torch.ones(self.num_coefficients, dtype=x.dtype
                                      if x.is_floating_point() else torch.float32,
@@ -1546,16 +1616,15 @@ class Scalar_GGD_KRegion():
         return torch.sqrt(z ** 2 + self.eps_ch.to(device=z.device, dtype=z.dtype)[None, :, None])
 
     def _all_slot_forward(self, x):
-        filters = self.filters.to(x.device)
-        z = torch.fft.ifft(filters * torch.fft.fft(x)).real
+        z = self._coeffs(x)
         az = self._magnitude(z)
         c = self.cuts.to(x.device); s = self.sw.to(x.device)
         g = torch.sigmoid(-(az.unsqueeze(-1) - c[None, :, None, :]) / s[None, :, None, :])
         ws = self._windows_from_sigmoids(g)
         alpha = self.alpha.to(x.device)
-        phis = [(ws[k] * az ** alpha[:, k][None, :, None]).mean(-1) for k in range(self.K)]
+        phis = [self._position_mean(ws[k] * az ** alpha[:, k][None, :, None]) for k in range(self.K)]
         if self.tail_mass:
-            phis.append(ws[self.K - 1].mean(-1))
+            phis.append(self._position_mean(ws[self.K - 1]))
         return torch.cat(phis, dim=1)
 
     def forward(self, x, *args):
@@ -1573,8 +1642,7 @@ class Scalar_GGD_KRegion():
 
     def _all_slot_grad(self, x):
         device = x.device
-        filters = self.filters.to(device)
-        z = torch.fft.ifft(filters * torch.fft.fft(x)).real
+        z = self._coeffs(x)
         az = self._magnitude(z)
         sz = z / az
         c = self.cuts.to(device); s = self.sw.to(device); alpha = self.alpha.to(device)
@@ -1596,8 +1664,7 @@ class Scalar_GGD_KRegion():
         if self.tail_mass:
             D.append(dws[K - 1])
         D_all = torch.cat(D, dim=1)
-        fKx = self._get_filters_Kx(device)
-        return torch.fft.ifft(torch.fft.fft(D_all) * fKx.conj()).real / x.shape[-1]
+        return self._adjoint(D_all, x)
 
     def grad(self, x, v=None, means=None):
         self._check_fitted()
@@ -1774,12 +1841,17 @@ class Scalar_GGD_KRegion():
             alpha_bounds=self.alpha_bounds, min_region_samples=self.min_region_samples,
             boundary_method=self.boundary_method, model_criterion=self.model_criterion,
             pi_active_min=self.pi_active_min, cond_tol=self.cond_tol,
-            filters_shape=tuple(self.filters.shape)), filename)
+            filters_shape=None if self.filters is None else tuple(self.filters.shape),
+            dwt=None if self.dwt is None else (self.dwt.order, self.dwt.levels, self.dwt.d)), filename)
 
     @classmethod
     def load_fixed_parameters(cls, filename, filters, map_location=None, verbose=False):
         d = torch.load(filename, map_location=map_location)
-        if tuple(filters.shape) != tuple(d["filters_shape"]):
+        dwt = None
+        if d.get("dwt") is not None:            # decimated-DWT fit: rebuilt from its saved spec, no filter bank
+            from ortho_wavelet.periodic_dwt import PeriodicDWT
+            dwt, filters = PeriodicDWT(*d["dwt"]), None
+        elif tuple(filters.shape) != tuple(d["filters_shape"]):
             raise ValueError(
                 f"filters shape {tuple(filters.shape)} does not match the shape "
                 f"the potential was fit with {tuple(d['filters_shape'])}; "
@@ -1796,6 +1868,7 @@ class Scalar_GGD_KRegion():
                    cond_tol=d.get("cond_tol", 1e-6),
                    tail_mass=d.get("tail_mass", False),
                    min_window=d.get("min_window"),
+                   dwt=dwt,
                    verbose=verbose)
         obj.alpha = d["alpha"]; obj.scale = d["scale"]; obj.cuts = d["cuts"]
         obj.sw = d["sw"]; obj.pi = d["pi"]; obj.Keff = d["Keff"]
@@ -1854,12 +1927,11 @@ class Scalar_GGD_KRegion():
         if fit_if_needed and not self.is_fitted:
             self.fit_reference(x)
         self._check_fitted()
-        filters = self.filters.to(x.device)
-        wt = torch.fft.ifft(torch.fft.fft(x) * filters).real
+        wt = self._coeffs(x)
         J = self.alpha.shape[0]
         channels = range(J) if j is None else [j]
         for jj in channels:
-            h = wt[:, jj, :].detach().cpu().flatten().numpy()
+            h = self._channel_values(wt, jj).detach().cpu().flatten().numpy()
             h = h[np.isfinite(h)]
             if h.size == 0:
                 continue
@@ -1907,11 +1979,10 @@ class Scalar_GGD_KRegion():
         self._check_fitted()
         wt = None
         if x is not None:
-            wt = torch.fft.ifft(self.filters.to(x.device) * torch.fft.fft(x)).real
-            wt = wt.detach().cpu().numpy()
+            wt = self._coeffs(x).detach().cpu().numpy()
         def zmax_of(jj):
             if wt is not None:
-                h = wt[:, jj, :].reshape(-1); h = h[np.isfinite(h)]
+                h = self._channel_values(wt, jj).reshape(-1); h = h[np.isfinite(h)]
                 return float(np.abs(h).max()) * 1.02 if h.size else 1.0
             regs = self.analytical_regions(jj, pi_floor)
             fin = [r["hi"] for r in regs if np.isfinite(r["hi"])]
@@ -1958,8 +2029,8 @@ class Scalar_GGD_KRegion():
         caller-built subplot grid) instead of creating a new figure.
         """
         self._check_fitted()
-        wt = torch.fft.ifft(self.filters.to(x.device) * torch.fft.fft(x)).real
-        h = wt[:, j, :].detach().cpu().reshape(-1).numpy(); h = h[np.isfinite(h)]
+        wt = self._coeffs(x)
+        h = self._channel_values(wt, j).detach().cpu().reshape(-1).numpy(); h = h[np.isfinite(h)]
         n_samples = h.size if n_samples is None else n_samples
         g = self.sample_channel(n_samples, j, pi_floor, seed)
         xmax = float(np.abs(h).max()) * 1.02
