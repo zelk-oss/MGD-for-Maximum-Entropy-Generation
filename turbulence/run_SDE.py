@@ -28,6 +28,7 @@ import contextlib
 import hashlib
 import json
 import logging
+import shutil
 import sys
 import time as timer
 from pathlib import Path
@@ -186,6 +187,16 @@ def parse_args():
                     help='Scalar_*_gaussianK: add the outer-region mass <w_K> as one more '
                          'statistic per channel, and fit the outer alpha without scale floor. '
                          'Not in the config name: use --label')
+    p.add_argument('--ggd_all_masses', action='store_true',
+                    help='Scalar_*_gaussianK, with --ggd_tail_mass: also the mass <w_k> of every inner '
+                         'window except the first active one of each channel. Not in the config name: '
+                         'use --label')
+    p.add_argument('--ggd_bic_min_window', type=float, default=None, metavar='C',
+                    help='Scalar_*_gaussianK: constrained BIC, no window narrower than C times the noise '
+                         'one SDE step adds to the channel at 1 - t = --ggd_noise_ref_gap (fixed grids only). '
+                         'Not in the config name: use --label')
+    p.add_argument('--ggd_noise_ref_gap', type=float, default=1e-2,
+                    help='1 - t of the step whose noise sets --ggd_bic_min_window')
     p.add_argument('--ggd_min_window_noise', type=float, default=None, metavar='C',
                     help='Scalar_*_gaussianK: merge inner windows narrower than C times the '
                          'noise the last SDE step adds to each channel (C * sqrt(2 h_end) * '
@@ -203,6 +214,19 @@ def parse_args():
                          '(codes/gram_preflight.py). E.g. 1e-6. Not in the config name: use --label')
     p.add_argument('--preflight_only', action='store_true',
                     help='With --gram_preflight: write gram_preflight.json and stop before the SDE')
+    p.add_argument('--extra_corrector_max', type=int, default=0, metavar='N',
+                    help='Tail steps: extra corrector passes (same Gram) until every live statistic is '
+                         'within --extra_corrector_tau standard errors of its target, at most N. 0 = off '
+                         '(single pass, as before). Not in the config name: use --label')
+    p.add_argument('--extra_corrector_tau', type=float, default=1.0,
+                    help='Tolerance of the extra corrector, in standard errors of each target moment')
+    p.add_argument('--extra_corrector_tail', type=float, default=0.1,
+                    help='Extra corrector only where 1 - t < this')
+    p.add_argument('--potentials_from', type=str, default=None, metavar='DIR',
+                    help='Copy the fitted states (*.pt) of another run (its fitted_potentials/ dir) into '
+                         'this run\'s fitted_potentials/ before the SDE: the SDE loads them instead of '
+                         'refitting on this x1 (same statistics at a different n1). Not in the config '
+                         'name: use --label')
     # Early-stopped Krylov per-step solves (codes/sde_krylov.py, krylov_stopping/), opt-in 2026-10-07.
     # Unset --theta_solver = the plain SDE class, exactly as before.
     p.add_argument('--theta_solver', type=str, default=None, choices=['ridge', 'jac_minres', 'ito_cg'],
@@ -471,6 +495,14 @@ def main():
             result = loaded
         else:
             dwt = PeriodicDWT(args.dwt_order, args.J, M, device=device) if args.dwt_order else None
+            if args.potentials_from:
+                src = Path(args.potentials_from)
+                states = sorted(src.glob('*.pt'))
+                if not states:
+                    raise FileNotFoundError(f'--potentials_from {src}: no *.pt fitted states')
+                for f in states:
+                    shutil.copy2(f, potentials_dir / f.name)
+                logger.info('Fitted states copied from %s: %s', src, [f.name for f in states])
             result = run_experiment(args, M, config, x1, filters,
                                     t, logger, outdir, device, dwt=dwt,
                                     filters_Q=filters_Q, filters_Phi=filters_Phi,

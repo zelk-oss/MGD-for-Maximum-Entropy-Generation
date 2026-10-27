@@ -44,7 +44,21 @@ CONFIGS = {
     'prod':  {},                                         # production fit
     'tailq': dict(tail_quantile=0.99),                   # last cut forced to q.99
     'mass':  dict(tail_quantile=0.99, tail_mass=True),   # + outer-region mass statistic
+    'allmass': dict(tail_quantile=0.99, tail_mass=True, all_masses=True),   # + every window's mass
+    # constrained BIC (min_window_bic = 'auto': C x step noise of the run's grid, see --bic_C)
+    'bicw': dict(tail_quantile=0.99, tail_mass=True, min_window_bic='auto'),
+    'bicw_allmass': dict(tail_quantile=0.99, tail_mass=True, all_masses=True, min_window_bic='auto'),
 }
+
+
+def bic_min_window(C, gap_ref, sigma, nt, n_bulk, t_switch, gap_end):
+    """C x the noise one SDE step adds at 1 - t = gap_ref, per unit-noise channel, on the
+    two_phase grid of the run (same rule as run_experiment for --ggd_bic_min_window)."""
+    from time_schedules import two_phase_schedule
+    t, _ = two_phase_schedule(nt, n_bulk, t_switch, gap_end)
+    t = np.asarray(t, dtype=np.float64)
+    i = int(np.argmin(np.abs((1.0 - t[1:]) - gap_ref)))
+    return float(C) * (2.0 * (t[i + 1] - t[i])) ** 0.5 * float(sigma)
 
 
 def build_data(subseries_len, target_len, n1, n_heldout):
@@ -68,9 +82,7 @@ def channel_stats_on_grid(pot, j, g):
     K = pot.K
     ws = [sig[:, 0]] + [sig[:, k] - sig[:, k - 1] for k in range(1, K - 1)] + [1.0 - sig[:, K - 2]]
     al = pot.alpha[j].double().numpy()
-    vals = [ws[k] * az ** al[k] for k in range(K)]
-    if pot.tail_mass:
-        vals.append(ws[K - 1])
+    vals = [ws[k] * az ** al[k] for k in range(K)] + [ws[m] for m in pot.mass_windows]
     slots = [int(f) // pot.J for f in pot.active_flat.tolist() if int(f) % pot.J == j]
     return slots, np.array([vals[k] for k in slots])
 
@@ -106,16 +118,19 @@ def check_potential(name, pot, x1, xh, with_l6=False):
     return rows
 
 
-def main(configs, M, J, Q, n1, n_heldout, terms, with_l6):
+def main(configs, M, J, Q, n1, n_heldout, terms, with_l6, bic_C=1.0, noise_ref_gap=1e-2):
     print(f'config: M={M} J={J} Q={Q} n1={n1} morlet dedup 1e-8; held-out {n_heldout} windows; '
           f'L_6 in the 1-D solve of Scalar_morlet: {with_l6}')
     x1, xh = build_data(512, M, n1, n_heldout)
     filters, filters_phi = return_Filters(M, J, 1, include_phi=True, wav_type='morlet')
     filters_Q = return_Filters(M, J, Q, wav_type='morlet')
+    # grid of the coarse two-bank runs (turbulence_ggd_mass_2bank.sh)
+    mwb = bic_min_window(bic_C, noise_ref_gap, sigma=3.5, nt=15000, n_bulk=1000, t_switch=0.9, gap_end=5e-5)
     for cfg in configs:
+        kw = {k: (mwb if v == 'auto' else v) for k, v in CONFIGS[cfg].items()}
         pots = get_1d_potentials(terms, J, filters, Q, filters_Q=filters_Q, filters_Phi=filters_phi,
-                                 deduplicate_filters=True, dedup_tol=1e-8, ggd_kwargs=CONFIGS[cfg])
-        print(f'\n################ {cfg}: {CONFIGS[cfg] or "production defaults"}')
+                                 deduplicate_filters=True, dedup_tol=1e-8, ggd_kwargs=kw)
+        print(f'\n################ {cfg}: {kw or "production defaults"}')
         for name, pot in pots.items():
             pot.verbose = False
             t0 = time.time()
@@ -148,7 +163,10 @@ if __name__ == '__main__':
                     choices=['Scalar_morlet_gaussianK', 'Scalar_psi_gaussianK'])
     ap.add_argument('--with_l6', action='store_true',
                     help='add <|z|^6> (L_6) to the 1-D solve of Scalar_morlet channels')
+    ap.add_argument('--bic_C', type=float, default=1.0,
+                    help="bicw configs: windows >= C x the step noise at 1 - t = --noise_ref_gap")
+    ap.add_argument('--noise_ref_gap', type=float, default=1e-2)
     a = ap.parse_args()
     import matplotlib
     matplotlib.use('Agg')
-    main(a.configs, a.M, a.J, a.Q, a.n1, a.n_heldout, a.terms, a.with_l6)
+    main(a.configs, a.M, a.J, a.Q, a.n1, a.n_heldout, a.terms, a.with_l6, a.bic_C, a.noise_ref_gap)

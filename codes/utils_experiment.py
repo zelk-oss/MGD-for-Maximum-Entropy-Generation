@@ -140,9 +140,12 @@ def _config_name_parts(args, M, include_seed=True):
     between a run's actual --terms and a notebook's copy of it)."""
     terms_hash = hashlib.md5('|'.join(sorted(args.terms)).encode()).hexdigest()[:8]
 
+    # jets: `dataset` (run_jet_SDE --dataset, Modane since 2026-10-27); `Re_number` only
+    # rebuilds names of older jet runs (helium data before 177dedd, Modane mislabelled after)
     re_number = getattr(args, 'Re_number', None)
+    dataset = getattr(args, 'dataset', None)
     hurst = getattr(args, 'hurst', None)
-    if re_number is not None:
+    if re_number is not None or dataset is not None:
         prefix = 'jetsynth'
     elif hurst is not None:
         prefix = 'gaussiansynth'
@@ -152,6 +155,8 @@ def _config_name_parts(args, M, include_seed=True):
     parts = [prefix]
     if re_number is not None:
         parts.append(f'Re_number{re_number}')
+    elif dataset is not None:
+        parts.append(dataset)
     if hurst is not None:
         parts.append(f'H{hurst}_intermittency{getattr(args, "intermittency", 0.0)}')
     parts += [
@@ -373,6 +378,19 @@ def run_experiment(args, M, config, x1, filters, t, logger, outdir, device,
         min_window = float(args.ggd_min_window_noise) * (2.0 * h_end) ** 0.5 * float(args.sigma)
         logger.info('GGD min window: %g x step noise, h_end = %.3e -> %.3e per unit-noise channel',
                     args.ggd_min_window_noise, h_end, min_window)
+    min_window_bic = None
+    if getattr(args, 'ggd_bic_min_window', None) is not None:
+        # constrained BIC: no window narrower than C x the noise of the SDE step at 1 - t = gap_ref
+        if adaptive is not None:
+            raise ValueError('--ggd_bic_min_window needs the step sizes: fixed grids only')
+        tt = np.asarray(t, dtype=np.float64)
+        gap_ref = float(getattr(args, 'ggd_noise_ref_gap', 1e-2))
+        i_ref = int(np.argmin(np.abs((1.0 - tt[1:]) - gap_ref)))
+        h_ref = float(tt[i_ref + 1] - tt[i_ref])
+        min_window_bic = float(args.ggd_bic_min_window) * (2.0 * h_ref) ** 0.5 * float(args.sigma)
+        logger.info('GGD constrained BIC: windows >= %g x step noise at 1-t = %.3g (h = %.3e) -> %.3e '
+                    'per unit-noise channel', args.ggd_bic_min_window, 1.0 - tt[i_ref + 1], h_ref,
+                    min_window_bic)
 
     potentials = get_1d_potentials(
         args.terms, args.J, filters, args.Q, filters_Q=filters_Q, filters_Phi=filters_Phi,
@@ -383,7 +401,9 @@ def run_experiment(args, M, config, x1, filters, t, logger, outdir, device,
             tail_quantile=getattr(args, 'ggd_tail_quantile', None),
             tail_alpha_bounds=getattr(args, 'ggd_tail_alpha_bounds', None),
             tail_mass=getattr(args, 'ggd_tail_mass', False) or None,
+            all_masses=getattr(args, 'ggd_all_masses', False) or None,
             min_window=min_window,
+            min_window_bic=min_window_bic,
         ).items() if v is not None},
     )
     for spec in getattr(args, 'drop_stats', None) or []:     # NAME:CHANNEL:REGION
@@ -450,6 +470,15 @@ def run_experiment(args, M, config, x1, filters, t, logger, outdir, device,
         Solver.cond_path.parent.mkdir(parents=True, exist_ok=True)
         logger.info('Partial conditioning log every %d logged steps -> %s',
                     Solver.cond_flush_rows, Solver.cond_path)
+    Solver.extra_corrector_max = int(getattr(args, 'extra_corrector_max', 0) or 0)
+    if Solver.extra_corrector_max:
+        if getattr(args, 'theta_solver', None):
+            raise ValueError('--extra_corrector_max needs the plain SDE corrector (not --theta_solver)')
+        Solver.extra_corrector_tau = float(args.extra_corrector_tau)
+        Solver.extra_corrector_tail = float(args.extra_corrector_tail)
+        logger.info('Extra corrector passes for 1-t < %g: until |phi_bar(I) - phi_bar(x)| <= %g SE '
+                    'on every live statistic, at most %d', Solver.extra_corrector_tail,
+                    Solver.extra_corrector_tau, Solver.extra_corrector_max)
     xt, barphi_e, barphi_p, eta_t, theta_t, dH_t_bound, Theta_reg, t_reg = Solver.forward_regularised(
         lam=args.lam, n_subsample=args.n_subsample,
         time_limit_min=getattr(args, 'time_limit_min', None),
@@ -465,6 +494,16 @@ def run_experiment(args, M, config, x1, filters, t, logger, outdir, device,
     logger.info('Theta_reg energy: %s (schedule %s)', resolve_reg_mode(args),
                 getattr(args, 'reg_schedule', 'uniform'))
     logger.info('SDE integration finished in %.1f s', timer.time() - t0)
+    if Solver.extra_corrector_max:
+        logger.info(Solver.extra_corrector_summary())
+        if Solver.extra_corrector_log:
+            xc_path = outdir / 'saved_results' / 'aux_moments' / f'{config}_extra_corrector.pt'
+            xc_path.parent.mkdir(parents=True, exist_ok=True)
+            torch.save({'columns': ['k', 'passes', 'max_z_before', 'max_z_after'],
+                        'log': torch.tensor(Solver.extra_corrector_log, dtype=torch.float64),
+                        'tau': Solver.extra_corrector_tau, 'max': Solver.extra_corrector_max,
+                        'tail': Solver.extra_corrector_tail}, xc_path)
+            logger.info('Saved the extra-corrector log to %s', xc_path)
     if adaptive is not None:
         t = Solver.t
         logger.info('%s; grid ends at 1 - t = %.2e', adaptive.summary(), 1 - float(t[-1]))

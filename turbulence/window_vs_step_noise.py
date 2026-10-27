@@ -72,7 +72,8 @@ def main(label, seed, show):
     filters_Q = return_Filters(M, J, Q, wav_type=a.get('wav_type', 'morlet'))
     ggd = {k: v for k, v in dict(tail_quantile=a.get('ggd_tail_quantile'),
                                  tail_alpha_bounds=a.get('ggd_tail_alpha_bounds'),
-                                 tail_mass=a.get('ggd_tail_mass', False)).items() if v}
+                                 tail_mass=a.get('ggd_tail_mass', False),
+                                 all_masses=a.get('ggd_all_masses', False)).items() if v}
     pots = get_1d_potentials(terms, J, filters, Q, filters_Q=filters_Q, filters_Phi=filters_phi,
                              deduplicate_filters=bool(a.get('deduplicate_filters', False)),
                              dedup_tol=float(a.get('dedup_tol', 1e-12)), ggd_kwargs=ggd)
@@ -102,8 +103,7 @@ def main(label, seed, show):
         unit = zw.std(axis=(0, 2))                 # z_j std for unit white noise in x
         for i, fl in enumerate(pot.active_flat.tolist()):
             j, k = fl % nch, fl // nch
-            mass = k == K                          # tail_mass slot: same window as the outer one
-            kk = K - 1 if mass else k
+            kk, mass = pot.slot_window(k)          # mass slots: same window as a power slot
             c = pot.cuts[j].double().numpy()
             edges = np.concatenate([[0.0], c, [np.inf]])
             lo, hi = edges[kk], edges[kk + 1]

@@ -70,9 +70,14 @@ ARMS_TAILFIX_FULL = ('tailfix_noL6_full', 'tailfix_L6_full')  # turbulence_ggd_t
 ARMS_TAILFIX_NOSCAT4 = ('tailfix_noScat4',)                   # noScat4-equivalent + tail fix
 ARMS_TAILFIX_FINAL = ('tailfix_final',)                       # final-equivalent (with Scat4) + tail fix
 ARMS_MASS_2BANK = ('mass_noL6_2b', 'mass_L6_2b', 'tailq_noL6_2b', 'tailq_L6_2b', 'mass_L6_2b_drop', 'mass_L6_2b_merge',
-                   'mass_L6_2b_scat4')  # turbulence_ggd_mass_2bank.sh, M=128 Q=1+3
+                   'mass_L6_2b_scat4', 'mass_L6_2b_xc', 'allmass_L6_2b_xc')  # turbulence_ggd_mass_2bank.sh, M=128 Q=1+3
 ARMS_MASS_1BANK = ('mass_L6_1b',)                            # same launcher, M=128 Q=1 only
 ARMS_MASS_NOSCAT4 = ('mass_noScat4', 'mass_final')                        # turbulence_ggd_mass_noScat4.sh, M=256 Q=1+3
+# nested M3 (turbulence_nested_M3.sh) and its constrained-BIC arms (turbulence_nested_M3_bicw.sh), M=256 Q=1+3
+ARMS_NESTED_M3 = ('nested_M3', 'nested_M3_bicw', 'nested_M3_bicw_allmass')
+for a in ARMS_NESTED_M3:
+    WAV_FOR_ARM[a] = 'morlet'
+    LABEL_GLOB[a] = f'*_seed_{{seed}}_*turbulence_{a}_2*.pt'   # '_2' = timestamp: M3 does not match bicw
 for a in (ARMS_TAILFIX + ARMS_TAILFIX_FULL + ARMS_TAILFIX_NOSCAT4 + ARMS_TAILFIX_FINAL
           + ARMS_MASS_2BANK + ARMS_MASS_1BANK + ARMS_MASS_NOSCAT4):
     WAV_FOR_ARM[a] = 'morlet'
@@ -83,9 +88,9 @@ WAV_FOR_ARM['coarse_noL2_scat4'] = 'morlet'
 LABEL_GLOB['coarse_noL2_scat4'] = '*_seed_{seed}_*turbulence_final_coarse_noL2_scat4_2*.pt'
 # M=256 (J=8) arms; the rest are M=128 (J=7)
 ARMS_M256 = (ARMS_FULL + ARMS_NOSCAT4 + ARMS_FINAL + ARMS_TAILFIX_FULL + ARMS_TAILFIX_NOSCAT4
-             + ARMS_TAILFIX_FINAL + ARMS_MASS_NOSCAT4)
+             + ARMS_TAILFIX_FINAL + ARMS_MASS_NOSCAT4 + ARMS_NESTED_M3)
 ARMS_Q13 = (ARMS_2BANK + ARMS_MASS_2BANK + ARMS_COARSE_FINAL + ARMS_NOSCAT4 + ARMS_FINAL
-            + ARMS_TAILFIX_NOSCAT4 + ARMS_TAILFIX_FINAL + ARMS_MASS_NOSCAT4)
+            + ARMS_TAILFIX_NOSCAT4 + ARMS_TAILFIX_FINAL + ARMS_MASS_NOSCAT4 + ARMS_NESTED_M3)
 
 
 ARM_J_FOR_M = {128: 7, 256: 8}      # J of the turbulence runs at each signal length

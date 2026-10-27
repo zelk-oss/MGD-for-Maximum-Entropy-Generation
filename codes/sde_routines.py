@@ -320,6 +320,13 @@ class SDE(torch.nn.Module):
         # run_experiment overwrites it with the complete log. Set by run_experiment.
         self.cond_path = None
         self.cond_flush_rows = 200
+        # Iterated corrector in the tail (2026-10-27, see _extra_corrector). 0 = off: the step
+        # is the single predictor-corrector pass, bit-identical to before. Set by run_experiment.
+        self.extra_corrector_max = 0
+        self.extra_corrector_tau = 1.0
+        self.extra_corrector_tail = 0.1
+        self.extra_corrector_log = []          # rows [k, passes, max z before, max z after]
+        self._mom_x1 = None
         self.potential_labels = [f'{name}[{i}]' for name, p in self.potentials.items()
                                  for i in range(p.num_coefficients)]
 
@@ -759,7 +766,10 @@ class SDE(torch.nn.Module):
             # phi(x_{k+1}) (walkers after the corrector): the moment mode's covariance
             # and barphi_p; computed once per step when either needs it
             store_step = (k + 1) % param_storage_frequency == 0
-            mom_x1 = self.compute_moments(self.x_k) if (store_step or not legacy) else None
+            mom_x1 = self._mom_x1                  # cached by _extra_corrector (same x), else None
+            self._mom_x1 = None
+            if mom_x1 is None and (store_step or not legacy):
+                mom_x1 = self.compute_moments(self.x_k)
 
             if sin_k > eps and cos_k > eps:                # skip t = 0 (sin = 0), t = 1 (cos = 0)
                 # raw Gram at y_k. CHANGED 2026-09-25: was self.compute_G(Xt), an exact
@@ -1363,6 +1373,10 @@ class SDE(torch.nn.Module):
         theta_k_raw, bk       = self.compute_theta(y_k, k)
         corrector      = self.compute_grad_phi_projected(y_k, theta_k_raw)
         x_k_plus_one   = y_k + corrector
+        if self.extra_corrector_max:
+            x_k_plus_one, theta_extra = self._extra_corrector(x_k_plus_one, k)
+            if theta_extra is not None:
+                theta_k_raw = theta_k_raw + theta_extra.to(theta_k_raw.dtype)
 
         # Normalise theta
         if self.sigma > 0:
@@ -1560,6 +1574,87 @@ class SDE(torch.nn.Module):
         theta_k = torch.zeros(G_k.shape[0], dtype=G_k.dtype, device=G_k.device)
         theta_k[live] = _solve(G_k[live][:, live], rhs_constraint_correction[live])
         return theta_k, rhs_constraint_correction
+
+    def _extra_corrector(self, x, k):
+        """
+        Extra corrector passes after the step's corrector, in the tail (1 - t_{k+1} <
+        extra_corrector_tail), until every live statistic is within extra_corrector_tau
+        standard errors of its target, at most extra_corrector_max passes:
+
+            r      = phi_bar(I_{k+1}) - phi_bar(x)
+            stop if |r_n| <= tau * SE_n for all live n,  SE_n = std_i phi_n(I_{k+1}^i) / sqrt(B)
+            theta' = solve  G(y_k) theta' = r     (same Gram, Jacobi scaling and ridge as compute_theta)
+            x      = x + (grad phi(x))^T theta'
+
+        Why (2026-10-27, turbulence/moment_error_variance.py): the single corrector pass is one
+        Gauss-Newton step; on window statistics narrower than one step's noise it leaves a
+        residual that does not shrink with n1 (15/128 statistics 10-36% off at t=1 in
+        mass_L6_2b), while 3 extra passes take the one-step error to ~1e-7 (TEST A, 2026-10-07).
+        G(y_k) is reused (chord iteration): no new Gram per pass.
+
+        Returns (x, sum of the extra theta's in raw units) or (x, None) outside the tail. The
+        moments of the returned x are cached in self._mom_x1 for forward_regularised.
+        """
+        self._mom_x1 = None
+        if (1.0 - float(self.t[k + 1])) >= self.extra_corrector_tail:
+            return x, None
+        mom_I = self._mom_I
+        target = mom_I.mean(0)
+        se = mom_I.double().std(0) / mom_I.shape[0] ** 0.5
+        live = self._live_theta
+        G_live = self._G_theta[live][:, live]
+        if self.solve_float64:
+            G_live = G_live.double()
+        D12 = torch.diag(G_live).sqrt()
+        Gs = G_live / (D12[:, None] * D12[None, :])
+        Gs = (Gs + Gs.T) / 2 + self.regularization * torch.eye(Gs.shape[-1], dtype=Gs.dtype, device=Gs.device)
+
+        def zscores(mom):
+            r = target - mom.mean(0)
+            # a statistic with zero spread on the target is matched only if r is exactly 0
+            return r, (r.double().abs() / se.clamp_min(1e-300))[live]
+
+        total = torch.zeros_like(target)
+        mom = self.compute_moments(x)
+        r, z = zscores(mom)
+        z0 = z.max().item()
+        passes = 0
+        # A pass is kept only if it lowers the rms z over the live statistics (step halved
+        # at most twice, else stop): with the Gram of y_k and residuals near the noise level
+        # an unguarded chord pass can move the walkers more than the step's own noise and
+        # blow up (local smoke n1=40, 2026-10-27).
+        while z.max().item() > self.extra_corrector_tau and passes < self.extra_corrector_max:
+            th = torch.zeros_like(target)
+            th[live] = (torch.linalg.solve(Gs, r[live].to(Gs.dtype) / D12) / D12).to(th.dtype)
+            dx = self.compute_grad_phi_projected(x, th)
+            rms = z.pow(2).mean().sqrt()
+            for alpha in (1.0, 0.5, 0.25):
+                x_try = x + alpha * dx
+                mom_try = self.compute_moments(x_try)
+                r_try, z_try = zscores(mom_try)
+                if z_try.pow(2).mean().sqrt() < rms:
+                    break
+            else:
+                break                            # no decrease: keep x as it is
+            x, mom, r, z = x_try, mom_try, r_try, z_try
+            total = total + alpha * th
+            passes += 1
+        self._mom_x1 = mom                       # moments of the returned x
+        self.extra_corrector_log.append([k, passes, z0, z.max().item()])
+        return x, total
+
+    def extra_corrector_summary(self):
+        """One-line summary of the extra corrector passes (tail steps only)."""
+        if not self.extra_corrector_log:
+            return 'extra corrector: no tail steps'
+        L = np.asarray(self.extra_corrector_log, dtype=float)
+        n, passes = len(L), L[:, 1]
+        return (f'extra corrector (tau {self.extra_corrector_tau:g} SE, max {self.extra_corrector_max}, '
+                f'1-t < {self.extra_corrector_tail:g}): {n} tail steps, passes mean {passes.mean():.2f}, '
+                f'steps with >0 passes {np.mean(passes > 0):.0%}, at the cap and still > tau '
+                f'{np.mean((passes >= self.extra_corrector_max) & (L[:, 3] > self.extra_corrector_tau)):.1%}; '
+                f'max z before median {np.median(L[:, 2]):.2f}, after median {np.median(L[:, 3]):.2f} '
+                f'max {L[:, 3].max():.2f}')
 
     def _log_cond(self, name, k, Gs, D12, live, rhs_s, noise=None):
         """

@@ -23,7 +23,9 @@
 #   SCHEDULE_ARGS (extra time-grid flags passed verbatim, e.g.
 #   "--schedule two_phase --n_bulk 10000" -- see codes/time_schedules.py; empty =
 #   legacy power schedule), REG_MODE (legacy|moment; empty = run_SDE default, moment
-#   with thomas), COND_EVERY (log the per-step Gram conditioning every N steps), PROFILE (true: run under cProfile with CUDA_LAUNCH_BLOCKING=1 so GPU time is
+#   with thomas), COND_EVERY (log the per-step Gram conditioning every N steps),
+#   POTENTIALS_FROM (fitted_potentials/ dir of another run: reuse its fit, --potentials_from),
+#   QOS (e.g. qos_gpu_h100-dev: starts at once, max 2 h, max 10 jobs incl. array tasks), PROFILE (true: run under cProfile with CUDA_LAUNCH_BLOCKING=1 so GPU time is
 #   charged to the Python call that launched it; stats written next to the SLURM log
 #   as profile_<exp>_<jobid>_<task>.prof -- timings are for attribution, not speed)
 
@@ -80,14 +82,19 @@ EXTRA_FLAGS=""
 [ "${DEDUPLICATE_FILTERS}" = "true" ] && [ -n "${DEDUP_TOL}" ] && EXTRA_FLAGS+=" --dedup_tol ${DEDUP_TOL}"
 [ -n "${SCHEDULE_ARGS}" ] && EXTRA_FLAGS+=" ${SCHEDULE_ARGS}"
 [ -n "${WAV_TYPE}" ]    && EXTRA_FLAGS+=" --wav_type ${WAV_TYPE}"
+[ -n "${DWT_ORDER}" ]   && EXTRA_FLAGS+=" --dwt_order ${DWT_ORDER}"
 [ -n "${REG_MODE}" ]    && EXTRA_FLAGS+=" --reg_mode ${REG_MODE}"
 [ -n "${COND_EVERY}" ]  && EXTRA_FLAGS+=" --cond_every ${COND_EVERY}"
 [ -n "${DROP_STATS}" ]  && EXTRA_FLAGS+=" --drop_stats ${DROP_STATS}"
 [ -n "${GRAM_PREFLIGHT}" ] && EXTRA_FLAGS+=" --gram_preflight ${GRAM_PREFLIGHT}"
 [ "${PREFLIGHT_ONLY}" = "true" ] && EXTRA_FLAGS+=" --preflight_only"
+[ -n "${POTENTIALS_FROM}" ] && EXTRA_FLAGS+=" --potentials_from ${POTENTIALS_FROM}"
+[ -n "${EXTRA_CORRECTOR_MAX}" ] && EXTRA_FLAGS+=" --extra_corrector_max ${EXTRA_CORRECTOR_MAX} --extra_corrector_tau ${EXTRA_CORRECTOR_TAU:-1.0} --extra_corrector_tail ${EXTRA_CORRECTOR_TAIL:-0.1}"
 [ -n "${GGD_TAIL_QUANTILE}" ]     && EXTRA_FLAGS+=" --ggd_tail_quantile ${GGD_TAIL_QUANTILE}"
 [ -n "${GGD_TAIL_ALPHA_BOUNDS}" ] && EXTRA_FLAGS+=" --ggd_tail_alpha_bounds ${GGD_TAIL_ALPHA_BOUNDS}"
 [ "${GGD_TAIL_MASS}" = "true" ]   && EXTRA_FLAGS+=" --ggd_tail_mass"
+[ "${GGD_ALL_MASSES}" = "true" ]  && EXTRA_FLAGS+=" --ggd_all_masses"
+[ -n "${GGD_BIC_MIN_WINDOW}" ]    && EXTRA_FLAGS+=" --ggd_bic_min_window ${GGD_BIC_MIN_WINDOW} --ggd_noise_ref_gap ${GGD_NOISE_REF_GAP:-1e-2}"
 [ -n "${GGD_MIN_WINDOW_NOISE}" ]  && EXTRA_FLAGS+=" --ggd_min_window_noise ${GGD_MIN_WINDOW_NOISE}"
 if [ "${SAVE_REG_SYSTEM}" = "true" ]; then
     EXTRA_FLAGS+=" --save_reg_system"
@@ -116,7 +123,7 @@ echo "  time ${TIME} (time_limit_min ${TIME_LIMIT_MIN}), ${PARTITION}/${CONSTRAI
 echo "  flags:${EXTRA_FLAGS}"
 
 # ── submit ───────────────────────────────────────────
-JOBID=$(sbatch --parsable <<EOT
+JOBID=$(sbatch --parsable ${QOS:+--qos=${QOS}} <<EOT
 #!/bin/bash
 #SBATCH --job-name=${EXP_NAME}
 #SBATCH -A ${ACCOUNT}

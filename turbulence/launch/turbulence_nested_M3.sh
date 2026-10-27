@@ -21,11 +21,12 @@
 #   PREFLIGHT_ONLY=true bash turbulence/launch/turbulence_nested_M3.sh   # fit + Gram check, no SDE (minutes)
 #   bash turbulence/launch/turbulence_nested_M3.sh                       # 5 seeds, 900-904
 #   SEEDS="900" bash ...                                                 # one seed
+#   PREFLIGHT_ONLY=true SEEDS=900 LABEL_SUFFIX=_pfcheck bash ...         # refit + Gram check in a new folder
 
 LAUNCH_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
-EXP_NAME="turbulence_nested_M3"
-LABEL="${EXP_NAME}"
+EXP_NAME="turbulence_nested_M3${LABEL_SUFFIX}"   # LABEL_SUFFIX: new run folder (else an identical
+LABEL="${EXP_NAME}"                              # config reuses the finished run and skips the fit)
 TERMS=(L_6 Scalar_psi_gaussianK Scalar_morlet_gaussianK)
 SEED_LIST=(${SEEDS:-900 901 902 903 904})
 

@@ -40,13 +40,13 @@ for p in (ROOT, ROOT / 'codes', ROOT / 'data', ROOT / 'codes/filters'):
 from compare_scalar_orthog_marginals import (          # noqa: E402
     ARMS_COARSE, ARMS_FULL, ARMS_2BANK, ARMS_NOSCAT4, ARMS_FINAL,
     ARMS_TAILFIX, ARMS_TAILFIX_FULL, ARMS_TAILFIX_NOSCAT4, ARMS_TAILFIX_FINAL, ARMS_MASS_2BANK,
-    ARMS_MASS_1BANK, ARMS_MASS_NOSCAT4, ARMS_COARSE_FINAL,
+    ARMS_MASS_1BANK, ARMS_MASS_NOSCAT4, ARMS_COARSE_FINAL, ARMS_NESTED_M3,
     WAV_FOR_ARM, find_sample, rebuild_data_x1, wavelet_coeffs,
 )
 ARMS_2BANK = ARMS_2BANK + ARMS_MASS_2BANK + ARMS_COARSE_FINAL   # same M=128, J=7, Q=1+3 setup
 ARMS_COARSE = ARMS_COARSE + ARMS_TAILFIX + ARMS_MASS_1BANK   # same M=128, J=7, Q=1 setup
 ARMS_FULL = ARMS_FULL + ARMS_TAILFIX_FULL       # same M=256, J=8, Q=1 setup
-ARMS_NOSCAT4 = ARMS_NOSCAT4 + ARMS_TAILFIX_NOSCAT4 + ARMS_MASS_NOSCAT4  # same M=256, J=8, Q=1+3 setup
+ARMS_NOSCAT4 = ARMS_NOSCAT4 + ARMS_TAILFIX_NOSCAT4 + ARMS_MASS_NOSCAT4 + ARMS_NESTED_M3  # same M=256, J=8, Q=1+3 setup
 ARMS_FINAL = ARMS_FINAL + ARMS_TAILFIX_FINAL        # same M=256, J=8, Q=1+3, with Scat4
 
 # ────────────────────────────────────────────────────────────────────────────
@@ -199,7 +199,19 @@ PAIRS_Q3 = [
     ('Scat4 + mass vs Scat4 alone (coarse 2b)',  'coarse_noL2_scat4', 'mass_L6_2b_scat4', 1),
     ('Scat4 + mass vs Scat4 alone Q=3 (coarse 2b)', 'coarse_noL2_scat4', 'mass_L6_2b_scat4', 3),
     ('Scat4 on top of mass (coarse 2b)',  'mass_L6_2b', 'mass_L6_2b_scat4', 1),
+    ('iterated corrector (2b, L6)', 'mass_L6_2b', 'mass_L6_2b_xc', 1),
+    ('all window masses (2b, L6, xc)', 'mass_L6_2b_xc', 'allmass_L6_2b_xc', 1),
+    ('all masses vs Scat4 (2b)', 'mass_L6_2b_scat4', 'allmass_L6_2b_xc', 1),
     ('Scat4 on top of mass Q=3 (coarse 2b)', 'mass_L6_2b', 'mass_L6_2b_scat4', 3),
+    ('iterated corrector Q=3 (2b, L6)', 'mass_L6_2b', 'mass_L6_2b_xc', 3),
+    ('all window masses Q=3 (2b, L6, xc)', 'mass_L6_2b_xc', 'allmass_L6_2b_xc', 3),
+    ('all masses vs Scat4 Q=3 (2b)', 'mass_L6_2b_scat4', 'allmass_L6_2b_xc', 3),
+    ('constrained windows (M3, 256)', 'nested_M3', 'nested_M3_bicw', 1),
+    ('all window masses (M3, 256)', 'nested_M3_bicw', 'nested_M3_bicw_allmass', 1),
+    ('constrained + masses vs M3 (M3, 256)', 'nested_M3', 'nested_M3_bicw_allmass', 1),
+    ('constrained windows Q=3 (M3, 256)', 'nested_M3', 'nested_M3_bicw', 3),
+    ('all window masses Q=3 (M3, 256)', 'nested_M3_bicw', 'nested_M3_bicw_allmass', 3),
+    ('constrained + masses vs M3 Q=3 (M3, 256)', 'nested_M3', 'nested_M3_bicw_allmass', 3),
     ('mass at M=256 (noScat4 vs mass_noScat4)', 'noScat4', 'mass_noScat4', 1),
     ('mass at M=256 Q=3 (noScat4 vs mass_noScat4)', 'noScat4', 'mass_noScat4', 3),
     ('mass at M=256 vs Scat4 (final vs mass_noScat4)', 'final', 'mass_noScat4', 1),

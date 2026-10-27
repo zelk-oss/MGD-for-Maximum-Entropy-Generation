@@ -19,6 +19,9 @@
 #   ONLY='tailq_noL6_2b' bash turbulence/launch/turbulence_ggd_mass_2bank.sh
 #   ONLY='tailq_L6_2b'   bash turbulence/launch/turbulence_ggd_mass_2bank.sh
 #   ONLY='mass_L6_1b'    bash turbulence/launch/turbulence_ggd_mass_2bank.sh
+#   ONLY='mass_L6_2b_n1' GPU=h100 bash turbulence/launch/turbulence_ggd_mass_2bank.sh   # n1 1000/3000/10000, frozen fit (N1_LIST to change)
+#   ONLY='mass_L6_2b_xc' GPU=h100 bash turbulence/launch/turbulence_ggd_mass_2bank.sh   # iterated corrector in the tail (XC_MAX, XC_TAU, XC_TAIL)
+#   ONLY='allmass_L6_2b_xc' GPU=h100 bash turbulence/launch/turbulence_ggd_mass_2bank.sh   # + mass of every window (--ggd_all_masses)
 #   GPU=h100 ONLY=...    bash ...      # default GPU is v100 (gpu_p13)
 #
 # mass_L6_1b: ONE bank (Q=1, no dedup, as turbulence_scalar_orthog.sh arm morletQ1_L6, its
@@ -104,6 +107,48 @@ for arm in ${ONLY}; do
             DROP_STATS+="$(printf 'Scalar_morlet_gaussianK:%s ' 0:0 0:1 1:0)"
             Q=3; DEDUPLICATE_FILTERS=true;  GGD_TAIL_MASS=true;  submit mass_L6_2b_drop L_6 Scalar_morlet_gaussianK Scalar_psi_gaussianK
             DROP_STATS="" ;;
+        mass_L6_2b_n1)
+            # Is the t=1 moment misfit of mass_L6_2b sampling variance? n1 sweep with the
+            # statistics FROZEN: the seed-900 mass_L6_2b fit (n1=3000) is copied into every run
+            # (--potentials_from), so only the number of walkers / data signals changes.
+            # misfit ~ n1^-1/2 -> variance; flat in n1 -> not caused by n1 (2026-10-23).
+            SRC=$(ls -dt turbulence/experiments/*_turbulence_ggd_mass_L6_2b/*_seed_900_*_turbulence_ggd_mass_L6_2b_2*/fitted_potentials 2>/dev/null | head -1)
+            [ -n "${SRC}" ] && [ -f "${SRC}/Scalar_psi_gaussianK.pt" ] || { echo "no mass_L6_2b seed-900 fitted_potentials (run from the repo root)"; exit 1; }
+            POTENTIALS_FROM="$(cd "${SRC}" && pwd)"
+            echo "frozen fit: ${POTENTIALS_FROM}"
+            TIME0="${TIME}"; N10="${N1}"
+            for n in ${N1_LIST:-1000 3000 10000}; do
+                N1=${n}
+                if [ "${n}" -gt 3000 ]; then [ "${GPU}" = "h100" ] && TIME="01:30:00" || TIME="04:00:00"; fi
+                Q=3; DEDUPLICATE_FILTERS=true; GGD_TAIL_MASS=true
+                submit mass_L6_2b_n1_${n} L_6 Scalar_morlet_gaussianK Scalar_psi_gaussianK
+                TIME="${TIME0}"
+            done
+            N1="${N10}"; POTENTIALS_FROM="" ;;
+        mass_L6_2b_xc)
+            # mass_L6_2b with the iterated corrector in the tail (2026-10-27): extra passes on
+            # 1-t < 0.1 until every statistic is within XC_TAU standard errors of its target, at
+            # most XC_MAX passes. Same frozen seed-900 fit as mass_L6_2b_n1, n1=3000, so the
+            # control is mass_L6_2b itself (15/128 statistics 10-36% off at t=1).
+            SRC=$(ls -dt turbulence/experiments/*_turbulence_ggd_mass_L6_2b/*_seed_900_*_turbulence_ggd_mass_L6_2b_2*/fitted_potentials 2>/dev/null | head -1)
+            [ -n "${SRC}" ] && [ -f "${SRC}/Scalar_psi_gaussianK.pt" ] || { echo "no mass_L6_2b seed-900 fitted_potentials (run from the repo root)"; exit 1; }
+            POTENTIALS_FROM="$(cd "${SRC}" && pwd)"
+            EXTRA_CORRECTOR_MAX="${XC_MAX:-5}"; EXTRA_CORRECTOR_TAU="${XC_TAU:-1.0}"; EXTRA_CORRECTOR_TAIL="${XC_TAIL:-0.1}"
+            TIME0="${TIME}"; [ "${GPU}" = "h100" ] && TIME="01:00:00" || TIME="03:00:00"
+            Q=3; DEDUPLICATE_FILTERS=true; GGD_TAIL_MASS=true
+            submit mass_L6_2b_xc L_6 Scalar_morlet_gaussianK Scalar_psi_gaussianK
+            TIME="${TIME0}"; POTENTIALS_FROM=""; EXTRA_CORRECTOR_MAX="" ;;
+        allmass_L6_2b_xc)
+            # Test of "more marginal statistics instead of Scat4" (2026-10-27): mass_L6_2b_xc plus the
+            # mass <w_k> of every inner window (--ggd_all_masses), same iterated corrector. Refit
+            # (the slot layout differs), but the fit is deterministic on x1: same cuts and alphas
+            # as mass_L6_2b. Compare with mass_L6_2b_xc (control) and Scat4 (reference) via
+            # compute_marginal_agreement.py.
+            EXTRA_CORRECTOR_MAX="${XC_MAX:-5}"; EXTRA_CORRECTOR_TAU="${XC_TAU:-1.0}"; EXTRA_CORRECTOR_TAIL="${XC_TAIL:-0.1}"
+            TIME0="${TIME}"; [ "${GPU}" = "h100" ] && TIME="01:30:00" || TIME="04:00:00"
+            Q=3; DEDUPLICATE_FILTERS=true; GGD_TAIL_MASS=true; GGD_ALL_MASSES=true
+            submit allmass_L6_2b_xc L_6 Scalar_morlet_gaussianK Scalar_psi_gaussianK
+            TIME="${TIME0}"; EXTRA_CORRECTOR_MAX=""; GGD_ALL_MASSES="" ;;
         mass_L6_2b_merge)
             # mass_L6_2b with windows narrower than 10x the noise of the last SDE step merged
             # in the fit (Scalar_GGD_KRegion min_window); mass_L6_2b_drop removed them instead
@@ -125,6 +170,6 @@ for arm in ${ONLY}; do
                 CONTROLS="mass_L6_2b coarse_noL2_scat4" PAIRS="Scat4" \
                 bash "${LAUNCH_DIR}/queue_post_checks.sh"
             fi ;;
-        *) echo "unknown arm '${arm}'; use mass_noL6_2b | mass_L6_2b | tailq_noL6_2b | tailq_L6_2b | mass_L6_1b | mass_L6_2b_drop | mass_L6_2b_merge | mass_L6_2b_scat4"; exit 1 ;;
+        *) echo "unknown arm '${arm}'; use mass_noL6_2b | mass_L6_2b | tailq_noL6_2b | tailq_L6_2b | mass_L6_1b | mass_L6_2b_drop | mass_L6_2b_n1 | mass_L6_2b_xc | allmass_L6_2b_xc | mass_L6_2b_merge | mass_L6_2b_scat4"; exit 1 ;;
     esac
 done

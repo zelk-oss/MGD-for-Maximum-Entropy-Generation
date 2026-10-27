@@ -1069,7 +1069,9 @@ class Scalar_GGD_KRegion():
                  tail_quantile=None,
                  tail_alpha_bounds=None,
                  tail_mass=False,
+                 all_masses=False,
                  min_window=None,
+                 min_window_bic=None,
                  dwt=None,
                  verbose=True):
         self.filters = filters
@@ -1089,6 +1091,15 @@ class Scalar_GGD_KRegion():
         self.tail_mass = bool(tail_mass)
         if self.tail_mass:
             assert int(num_regions) >= 2, "tail_mass needs at least two regions"
+        # all_masses (2026-10-27): on top of tail_mass, the mass <w_k(|z|)> of every inner window
+        # too, except the first active window of each channel (the masses of all windows sum to
+        # 1, so one of them is fixed by the others and would make the Gram singular). Bounded
+        # statistics: the lowest-variance way to add constraints on the marginal, on the same
+        # windows. Slots: K power slots, then the outer mass (slot K, as with tail_mass alone),
+        # then the masses of windows 1..K-2 (slots K+1..).
+        self.all_masses = bool(all_masses)
+        if self.all_masses:
+            assert self.tail_mass, "all_masses extends tail_mass: pass tail_mass=True too"
         # tail_quantile: if set, the outermost cut is forced to quantile(|z_j|,
         # tail_quantile) on the fit data; inner cuts found by the boundary search above it
         # are discarded. The likelihood search is bulk-dominated and places the last cut
@@ -1107,6 +1118,15 @@ class Scalar_GGD_KRegion():
         # channels those constraints stayed 10-36% off at t=1, all others < 1%
         # (turbulence/window_vs_step_noise.py, mass_L6_2b, 2026-10-22).
         self.min_window = min_window
+        # min_window_bic (2026-10-27): same units as min_window (times n_j, the channel's std for
+        # unit white noise in x), but imposed INSIDE the likelihood search instead of merging
+        # afterwards: candidate cuts that leave a window narrower than min_window_bic * n_j are
+        # never considered, and BIC compares only admissible partitions (merging deletes cuts of
+        # an unconstrained fit and leaves a partition that is not likelihood-optimal; on
+        # mass_L6_2b it thinned the finest Q=3 tail, q.9999 0.71 -> 0.48). Why a bound at all:
+        # windows narrower than one SDE step's noise are not held by the corrector (psi[6] of
+        # mass_L6_2b: [0, 8.1e-5), noise > width even at the last step, 37% off at t=1).
+        self.min_window_bic = min_window_bic
         self.K = int(num_regions)
         assert self.K >= 1
         self.J = filters.shape[1] if dwt is None else dwt.n_channels
@@ -1218,9 +1238,20 @@ class Scalar_GGD_KRegion():
         return out.reshape(B, self.n_slots * J, -1)
 
     @property
+    def mass_windows(self):
+        """Window of each mass slot, in slot order (slot K + i is the mass of mass_windows[i])."""
+        if not self.tail_mass:
+            return []
+        return [self.K - 1] + (list(range(1, self.K - 1)) if self.all_masses else [])
+
+    @property
     def n_slots(self):
-        """Statistic slots per channel: the K regions, plus the outer-region mass."""
-        return self.K + (1 if self.tail_mass else 0)
+        """Statistic slots per channel: the K regions, plus the window masses."""
+        return self.K + len(self.mass_windows)
+
+    def slot_window(self, k):
+        """(window, is_mass) of slot k: slots < K are <w_k |z|^alpha_k>, the others masses."""
+        return (k, False) if k < self.K else (self.mass_windows[k - self.K], True)
 
     @property
     def is_fitted(self):
@@ -1284,11 +1315,13 @@ class Scalar_GGD_KRegion():
         return -np.sum(logpdf) + seg.size * np.log(mass), (a, s)
 
     @classmethod
-    def _composite_nll(cls, h, boundaries, alpha_bounds, fast=True, min_seg=5):
+    def _composite_nll(cls, h, boundaries, alpha_bounds, fast=True, min_seg=5, min_width=0.0):
         ah = np.abs(h); N = h.size
         edges = [0.0] + list(boundaries) + [np.inf]
         total = 0.0; params = []
         for lo, hi in zip(edges[:-1], edges[1:]):
+            if np.isfinite(hi) and hi - lo < min_width:
+                return np.inf, None                       # inadmissible partition
             seg = h[(ah >= lo) & (ah < hi)]
             if seg.size < min_seg:
                 return np.inf, None
@@ -1299,7 +1332,7 @@ class Scalar_GGD_KRegion():
 
     @classmethod
     def _fit_boundaries_k(cls, h, K, alpha_bounds, n_grid=12, n_iters=3,
-                          subsample=20000, seed=0):
+                          subsample=20000, seed=0, min_width=0.0):
         if K == 1:
             return []
         ah = np.abs(h); rng = np.random.default_rng(seed)
@@ -1310,10 +1343,12 @@ class Scalar_GGD_KRegion():
             h_s, ah_s = h, ah
         init_q = np.linspace(0.5, 0.99, K - 1) if K > 2 else np.array([0.9])
         cuts = list(np.quantile(ah_s, init_q))
+        for m in range(len(cuts)):                 # admissible start: every window >= min_width
+            cuts[m] = max(cuts[m], (cuts[m - 1] if m > 0 else 0.0) + min_width)
         q_los = np.linspace(0.05, 0.80, K - 1); q_his = np.linspace(0.80, 0.995, K - 1)
 
         def scored(cs):
-            nll, _ = cls._composite_nll(h_s, sorted(cs), alpha_bounds, fast=True)
+            nll, _ = cls._composite_nll(h_s, sorted(cs), alpha_bounds, fast=True, min_width=min_width)
             return nll
 
         for _ in range(n_iters):
@@ -1327,6 +1362,8 @@ class Scalar_GGD_KRegion():
                     if cand <= max(lo_nb * 1.05, 1e-10):
                         continue
                     if np.isfinite(hi_nb) and cand >= hi_nb * 0.95:
+                        continue
+                    if cand - lo_nb < min_width or (np.isfinite(hi_nb) and hi_nb - cand < min_width):
                         continue
                     trial = list(cuts); trial[m] = cand
                     nll = scored(trial)
@@ -1355,7 +1392,7 @@ class Scalar_GGD_KRegion():
                 Kmax += 1
         return int(min(Kmax, self.K))
 
-    def _select_model_order(self, h, seed=0, K_max=None):
+    def _select_model_order(self, h, seed=0, K_max=None, min_width=0.0):
         if K_max is None:
             K_max = self.K
         K_max = max(1, min(int(K_max), self.K))
@@ -1366,9 +1403,10 @@ class Scalar_GGD_KRegion():
             cuts = self._fit_boundaries_k(
                 h, K, self.alpha_bounds, n_grid=self.boundary_search_grid,
                 n_iters=self.boundary_search_iters,
-                subsample=self.boundary_search_subsample, seed=seed)
+                subsample=self.boundary_search_subsample, seed=seed, min_width=min_width)
             nll, params = self._composite_nll(h, cuts, self.alpha_bounds,
-                                              fast=False, min_seg=self.min_region_samples)
+                                              fast=False, min_seg=self.min_region_samples,
+                                              min_width=min_width)
             if params is None:
                 continue
             crit = 2.0 * nll + pen * (4 * K - 2)
@@ -1425,9 +1463,10 @@ class Scalar_GGD_KRegion():
         PI = np.zeros((J, K)); KEFF = np.ones(J, dtype=int)
         ACT = np.zeros((J, K), dtype=bool)
         FLOOR = np.zeros(J)
-        if self.min_window is not None and self.dwt is not None:
+        need_noise = self.min_window is not None or self.min_window_bic is not None
+        if need_noise and self.dwt is not None:
             unit_noise = np.ones(J)             # orthonormal transform: unit variance for unit white noise
-        elif self.min_window is not None:
+        elif need_noise:
             # z_j = Re(g_j * xi) with g_j = ifft(psi_hat_j) and xi real: Var = sum_s Re g_j(s)^2
             filters = self.filters.to(x.device)
             g = torch.fft.ifft(filters.reshape(-1, filters.shape[-2], filters.shape[-1])[0]).real
@@ -1435,15 +1474,16 @@ class Scalar_GGD_KRegion():
 
         for j in range(J):
             h = self._channel_values(z, j).reshape(-1); h = h[np.isfinite(h)]; ah = np.abs(h); N = h.size
+            w_min = self.min_window_bic * float(unit_noise[j]) if self.min_window_bic is not None else 0.0
 
             if boundary_method == "auto":
-                Keff, cuts = self._select_model_order(h, seed=0)
+                Keff, cuts = self._select_model_order(h, seed=0, min_width=w_min)
             elif boundary_method == "likelihood":
                 Keff = K
                 cuts = self._fit_boundaries_k(
                     h, K, self.alpha_bounds, n_grid=self.boundary_search_grid,
                     n_iters=self.boundary_search_iters,
-                    subsample=self.boundary_search_subsample)
+                    subsample=self.boundary_search_subsample, min_width=w_min)
             else:
                 qs = np.linspace(0.5, 0.97, K - 1); Keff = K
                 cuts = list(np.quantile(ah, qs))
@@ -1459,6 +1499,11 @@ class Scalar_GGD_KRegion():
             if self.min_window is not None and len(cuts) > 0:
                 cuts = self._merge_narrow(sorted(cuts), self.min_window * float(unit_noise[j]),
                                           keep_last=self.tail_quantile is not None)
+                Keff = len(cuts) + 1
+            if w_min > 0 and len(cuts) > 0:
+                # the likelihood search respected w_min; the forced tail cut did not: drop the
+                # inner cut next to it if it leaves a window narrower than w_min
+                cuts = self._merge_narrow(sorted(cuts), w_min, keep_last=self.tail_quantile is not None)
                 Keff = len(cuts) + 1
 
             KEFF[j] = Keff
@@ -1505,6 +1550,7 @@ class Scalar_GGD_KRegion():
                          else f"  |z| floor={np.sqrt(self.eps_abs):.2e} (scalar eps_abs)")
                 mw = (f"  min window={self.min_window * float(unit_noise[j]):.2e}"
                       if self.min_window is not None else "")
+                mw += f"  BIC min window={w_min:.2e}" if w_min > 0 else ""
                 print(f"[GGD^{K}][ch {j}] Keff={Keff}  cuts=[{cut_str}]  "
                       f"pi=[{pi_str}]  alpha=[{a_str}]  active={ACT[j].sum()}{floor}{mw}")
 
@@ -1514,8 +1560,13 @@ class Scalar_GGD_KRegion():
         self.alpha = mk(A); self.scale = mk(S); self.cuts = mk(CUT)
         self.sw = mk(SW); self.pi = mk(PI)
         self.Keff = torch.tensor(KEFF, device=dev)
-        if self.tail_mass:                      # mass slot is live iff the outer region is
-            ACT = np.concatenate([ACT, ACT[:, K - 1:K]], axis=1)
+        if self.tail_mass:                      # mass slot is live iff its region is
+            mass_act = [ACT[:, m].copy() for m in self.mass_windows]
+            if self.all_masses:                 # ... and is not the first active window
+                first = ACT.argmax(1)
+                for i, m in enumerate(self.mass_windows):
+                    mass_act[i] &= first != m
+            ACT = np.concatenate([ACT] + [a[:, None] for a in mass_act], axis=1)
         self.active = torch.tensor(ACT, device=dev)
         self.eps_ch = mk(FLOOR ** 2) if self.eps_quantile is not None else None
 
@@ -1623,8 +1674,7 @@ class Scalar_GGD_KRegion():
         ws = self._windows_from_sigmoids(g)
         alpha = self.alpha.to(x.device)
         phis = [self._position_mean(ws[k] * az ** alpha[:, k][None, :, None]) for k in range(self.K)]
-        if self.tail_mass:
-            phis.append(self._position_mean(ws[self.K - 1]))
+        phis += [self._position_mean(ws[m]) for m in self.mass_windows]
         return torch.cat(phis, dim=1)
 
     def forward(self, x, *args):
@@ -1661,8 +1711,7 @@ class Scalar_GGD_KRegion():
         for k in range(K):
             a = alpha[:, k][None, :, None]
             D.append(dws[k] * az ** a + ws[k] * a * z * az ** (a - 2.0))
-        if self.tail_mass:
-            D.append(dws[K - 1])
+        D += [dws[m] for m in self.mass_windows]
         D_all = torch.cat(D, dim=1)
         return self._adjoint(D_all, x)
 
@@ -1720,8 +1769,13 @@ class Scalar_GGD_KRegion():
             g = torch.Generator(device=device).manual_seed(0)
             sel = torch.randperm(M.shape[0], generator=g, device=device)[:max_rows]
             M = M.index_select(0, sel)
+        # float64 BEFORE the column norm (2026-10-27): a gradient column of ~1e-23 (narrow core
+        # window, alpha ~6) has a float32 norm that underflows to 0, so the division by
+        # (0 + 1e-30) inflated it ~1e30 and the pivoted QR dropped every other column
+        # (check_fit_offline, Scalar_psi Q=3 at n1=3000: 85 -> 1 statistic).
+        M = M.double()
         M = M / (M.norm(dim=0, keepdim=True) + 1e-30)
-        return M.double().cpu().numpy()
+        return M.cpu().numpy()
 
     
     def prune_collinear(self, x, cond_tol=1e-6, max_cols=20000, verbose=True,
@@ -1832,7 +1886,8 @@ class Scalar_GGD_KRegion():
             sw=self.sw.cpu(), pi=self.pi.cpu(), Keff=self.Keff.cpu(),
             active=self.active.cpu(), active_flat=self.active_flat.cpu(), stat_scale=self.stat_scale.cpu(),
             num_coefficients=self.num_coefficients, K=self.K, J=self.J,
-            tail_mass=self.tail_mass, min_window=self.min_window,
+            tail_mass=self.tail_mass, all_masses=self.all_masses, min_window=self.min_window,
+            min_window_bic=self.min_window_bic,
             trans_frac=self.trans_frac, eps_abs=self.eps_abs,
             eps_quantile=self.eps_quantile,
             eps_ch=None if self.eps_ch is None else self.eps_ch.cpu(),
@@ -1867,7 +1922,9 @@ class Scalar_GGD_KRegion():
                    pi_active_min=d.get("pi_active_min", 1e-3),
                    cond_tol=d.get("cond_tol", 1e-6),
                    tail_mass=d.get("tail_mass", False),
+                   all_masses=d.get("all_masses", False),
                    min_window=d.get("min_window"),
+                   min_window_bic=d.get("min_window_bic"),
                    dwt=dwt,
                    verbose=verbose)
         obj.alpha = d["alpha"]; obj.scale = d["scale"]; obj.cuts = d["cuts"]
