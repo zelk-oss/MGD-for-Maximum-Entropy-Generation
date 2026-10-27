@@ -72,6 +72,7 @@ from codes.utils_experiment import *
 from codes.check_moments import *     # noqa: E402
 from codes.ortho_wavelet.ReadyToUseWavelets import *
 from data.data_loader import *        # noqa: E402
+from jet_data import load_modane_raw, load_modane_windows  # noqa: E402
 
 device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 
@@ -83,8 +84,14 @@ def parse_args():
     p.add_argument('--timestamp', type=str, default=None, help='Timestamp for the run')
 
     # Data
-    p.add_argument('--Re_number', type=int, default=929, 
-                    help="Load time series with this Reynolds number. It can be = {89, 208, 463, 703, 929}.")
+    p.add_argument('--dataset', type=str, default='modane', choices=['modane'],
+                    help='Data record (jet_data.py). Only the Modane record '
+                         '(Vit_Modane95.mat) is used; tagged in the config name.')
+    p.add_argument('--n1_spread', action=argparse.BooleanOptionalAction, default=True,
+                    help='Draw the n1 windows at random (fixed seed 0) over the whole '
+                         'record instead of taking the first n1 consecutive ones, which '
+                         'are strongly correlated. Adds "spread" to the config name. '
+                         '--no-n1_spread restores Data[:n1].')
     p.add_argument('--n1', type=int, default=3000,
                     help='Dataset size: number of samples kept from the '
                          'preprocessed data, i.e. Data[:n1] (replaces the '
@@ -295,34 +302,15 @@ def main():
     outdir.mkdir(parents=True, exist_ok=True)
 
     # ---- data ----
-    W = DefineWavelet('Db', m=3, device=device)
-    from scipy.io import loadmat
-
-    data = loadmat("../data/data_files/helium_jets/Vit_Modane95.mat")
-    raw_data = data["Vit"].squeeze(1) 
-    raw_data = torch.from_numpy(raw_data[None,None,:]).float()
-
-    data_tensor = split_periodize_reshape(raw_data, args.subseries_len)    
-    B, C, pre_len = data_tensor.shape
-
-    # 2. Dynamically calculate required wavelet scales
-    coarse_grained = False
-    scales_needed = 0
-
-    if pre_len > args.target_len:
-            # Calculates how many power-of-2 divisions are needed
-            scales_needed = int(np.log2(pre_len / args.target_len))
-            
-            for _ in range(scales_needed):
-                data_tensor = W.decompose(data_tensor)[1]
-                
-            coarse_grained = scales_needed > 0
-    else:
-            print(f'-- Current length {pre_len} <= target_len {args.target_len}; skipping coarse graining.')
-
-    # 3. Slice and normalize using the correctly transformed tensor
-    x1 = normalize(data_tensor[:args.n1]).to(device)
-    B, channels, M = x1.shape  # M will now perfectly match your target_len (e.g., 128)
+    # periodized windows of subseries_len -> Db3 coarse-graining to target_len ->
+    # n1 windows (random over the record if --n1_spread, else the first n1), standardized
+    x1, _ = load_modane_windows(args.subseries_len, args.target_len, n=args.n1,
+                                spread=args.n1_spread)
+    x1 = x1.to(device)
+    pre_len = args.subseries_len
+    scales_needed = int(np.log2(pre_len / args.target_len)) if pre_len > args.target_len else 0
+    coarse_grained = scales_needed > 0
+    B, channels, M = x1.shape
 
     # ---- per-experiment folder: outdir/experiments/<config>/ ----
     config, exp_dir, fig_dir, _potentials_dir, logger, loaded = resolve_or_setup_experiment_output(
@@ -332,7 +320,7 @@ def main():
             'coarse_grained': coarse_grained, 'pre_coarse_grain_length': pre_len,
         },
     )
-    logger.info('Data original shape: %s', raw_data.shape)
+    logger.info('Data: %s record, %d samples', args.dataset, load_modane_raw().size)
     logger.info('Calculated scales applied: %d', scales_needed)
     logger.info('x1 final shape: %s (coarse_grained=%s)', tuple(x1.shape), coarse_grained)
 
