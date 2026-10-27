@@ -1,0 +1,20 @@
+
+=== seed 900: turbulencesynth_M128_J7_Q3_sigma3.5_nt15000_n1_3000_lam0.0_thomas_nsub1_moment_f64_dedupfilt1e-08_seed_900_termse51338f8_turbulence_ggd_mass_L6_2b_xc_20261027_1416
+  n1=3000 M=128 J=7 Q=3 sigma=3.5 terms=['L_6', 'Scalar_morlet_gaussianK', 'Scalar_psi_gaussianK']
+[deduplicate_filters] filters_Q: 22 -> 19 channels for channel-list potentials (dropped duplicates [18, 19, 20], tol=1e-08)
+  check: rebuilt phi on saved samples vs aux barphi_p: median rel 1.5e-07, max 2.2e-06
+1. 128 statistics at t=1 (miss: rel > 0.01); z median 0.67 under independent-sample noise
+  all       n= 128  rel mean 3.61e-03 median 6.21e-08 p90 8.51e-04 max 3.69e-01 | z median 2.4e-07 | sign persistence (1-t<1e-2) median 51%
+  matched   n= 124  rel mean 3.51e-04 median 0.00e+00 p90 1.07e-04 max 9.49e-03 | z median 0 | sign persistence (1-t<1e-2) median 51%
+  missed    n=   4  rel mean 1.05e-01 median 1.85e-02 p90 2.64e-01 max 3.69e-01 | z median 1.8 | sign persistence (1-t<1e-2) median 48%
+2. Ito term, 120 Scalar statistics (Spearman of |I_n| with rel_n across statistics):
+   1-t= 1e-2 h=5.43e-06: Spearman +0.79 (p 3e-26); |I| median missed 1.55e+02 vs matched 6.84e-04
+   1-t= 1e-3 h=5.43e-07: Spearman +0.79 (p 3e-26); |I| median missed 1.55e+01 vs matched 6.84e-05
+   1-t=  end h=2.72e-08: Spearman +0.79 (p 3e-26); |I| median missed 7.76e-01 vs matched 3.42e-06
+   sign(p - e) == sign(I) for 75% of the 4 missed Scalar statistics
+3. missed statistics (peak/onset along the run; I = Ito term / |e| at 1-t = 1e-2, 1e-3, end)
+stat                                rel    p/e      z persist     peak     @1-t onset 1-t   I(1e-2)   I(1e-3)    I(end)
+Scalar_psi_gaussianK[6]        3.69e-01  0.631     14    100% 9.22e-01  1.0e-01   1.0e+00  1.90e+01  1.90e+00  9.50e-02
+Scalar_psi_gaussianK[28]       1.88e-02  1.019      1     57% 5.85e-01  9.9e-01   1.0e+00  9.18e+01  9.18e+00  4.59e-01
+Scalar_psi_gaussianK[10]       1.82e-02  1.018      2     30% 7.97e-01  8.9e-01   1.0e+00  2.19e+02  2.19e+01  1.09e+00
+Scalar_psi_gaussianK[0]        1.32e-02  0.987      2     39% 1.31e+00  7.5e-01   1.0e+00 -3.71e+02 -3.71e+01 -1.86e+00

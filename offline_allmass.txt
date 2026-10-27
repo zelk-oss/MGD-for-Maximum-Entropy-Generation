@@ -1,0 +1,47 @@
+config: M=128 J=7 Q=3 n1=3000 morlet dedup 1e-8; held-out 9000 windows; L_6 in the 1-D solve of Scalar_morlet: True
+[deduplicate_filters] filters_Q: 22 -> 19 channels for channel-list potentials (dropped duplicates [18, 19, 20], tol=1e-08)
+
+################ mass: {'tail_quantile': 0.99, 'tail_mass': True}
+[prune-diagnostic] R-diagonal ratios (sorted desc), first 10 / last 10:
+  head=[1. 0. 0. 0. 0. 0. 0. 0. 0. 0.]
+  tail=[0. 0. 0. 0. 0. 0. 0. 0. 0. 0.]
+--- Scalar_psi_gaussianK: fit 187 s, 1 statistics
+ ch stats    resid     repl | in-sample     q.99   q.999  q.9999 q.99995 | held-out  q.9999 q.99995
+  6     1  5.3e-14  3.7e-16 |             99.467  43.932  28.040  25.529 |           23.980  21.302
+[prune-diagnostic] R-diagonal ratios (sorted desc), first 10 / last 10:
+  head=[1.     1.     1.     1.     1.     0.9999 0.9998 0.9998 0.9996 0.9982]
+  tail=[0.74424757 0.5996721  0.34682977 0.33376837 0.2725607  0.23933574
+ 0.19316194 0.18609895 0.17225066 0.05657746]
+--- Scalar_morlet_gaussianK: fit 113 s, 35 statistics
+ ch stats    resid     repl | in-sample     q.99   q.999  q.9999 q.99995 | held-out  q.9999 q.99995
+  0     5  6.7e-16  2.6e-16 |              0.987   1.037   1.027   1.011 |            1.050   1.115
+  1     5  5.7e-12  4.1e-16 |              0.983   1.033   1.053   0.979 |            0.941   0.926
+  2     4  7.5e-15  3.0e-17 |              0.934   1.120   0.973   0.942 |            0.857   0.821
+  3     4  2.2e-16  3.4e-16 |              0.972   1.038   0.948   0.937 |            0.909   0.875
+  4     4  2.2e-16  4.6e-17 |              0.985   1.033   0.961   0.966 |            1.045   1.051
+  5     4  1.5e-09  6.1e-16 |              0.992   1.011   0.984   0.978 |            0.973   0.957
+  6     4  2.7e-15  1.1e-16 |              0.993   1.021   0.946   0.905 |            1.022   1.026
+  7     5  3.8e-15  3.0e-16 |              1.026   0.939   0.990   1.024 |            0.835   0.859
+[deduplicate_filters] filters_Q: 22 -> 19 channels for channel-list potentials (dropped duplicates [18, 19, 20], tol=1e-08)
+
+################ allmass: {'tail_quantile': 0.99, 'tail_mass': True, 'all_masses': True}
+[prune-diagnostic] R-diagonal ratios (sorted desc), first 10 / last 10:
+  head=[1. 0. 0. 0. 0. 0. 0. 0. 0. 0.]
+  tail=[0. 0. 0. 0. 0. 0. 0. 0. 0. 0.]
+--- Scalar_psi_gaussianK: fit 184 s, 1 statistics
+ ch stats    resid     repl | in-sample     q.99   q.999  q.9999 q.99995 | held-out  q.9999 q.99995
+  6     1  5.3e-14  3.7e-16 |             99.467  43.932  28.040  25.529 |           23.980  21.302
+[prune-diagnostic] R-diagonal ratios (sorted desc), first 10 / last 10:
+  head=[1.     1.     1.     1.     1.     0.9999 0.9998 0.9998 0.9996 0.9989]
+  tail=[0.23651056 0.22577317 0.19795431 0.17591568 0.17568335 0.17176273
+ 0.17087982 0.16686496 0.13875728 0.05659236]
+--- Scalar_morlet_gaussianK: fit 85 s, 46 statistics
+ ch stats    resid     repl | in-sample     q.99   q.999  q.9999 q.99995 | held-out  q.9999 q.99995
+  0     7  2.2e-14  9.5e-18 |              1.012   0.963   0.904   0.895 |            0.924   0.988
+  1     7  1.1e-15  2.0e-16 |              1.009   0.971   0.985   0.933 |            0.880   0.883
+  2     5  1.6e-11  2.1e-16 |              1.002   0.996   0.996   1.014 |            0.877   0.883
+  3     5  7.2e-13  1.9e-16 |              1.002   0.985   0.985   1.005 |            0.944   0.939
+  4     5  2.8e-13  2.8e-16 |              1.002   0.989   0.967   1.000 |            1.051   1.087
+  5     5  3.1e-13  2.9e-16 |              1.003   0.991   1.012   1.025 |            1.001   1.002
+  6     5  6.0e-10  2.6e-17 |              0.998   1.005   0.951   0.922 |            1.028   1.045
+  7     7  6.2e-15  3.0e-16 |              1.017   0.955   1.040   1.084 |            0.877   0.910

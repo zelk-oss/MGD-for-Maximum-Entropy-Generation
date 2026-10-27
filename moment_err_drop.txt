@@ -1,0 +1,19 @@
+
+=== seed 900: turbulencesynth_M128_J7_Q3_sigma3.5_nt15000_n1_3000_lam0.0_thomas_nsub1_moment_f64_dedupfilt1e-08_seed_900_termse51338f8_turbulence_ggd_mass_L6_2b_drop_20261022_1437
+  n1=3000 M=128 J=7 Q=3 sigma=3.5 terms=['L_6', 'Scalar_morlet_gaussianK', 'Scalar_psi_gaussianK']
+[deduplicate_filters] filters_Q: 22 -> 19 channels for channel-list potentials (dropped duplicates [18, 19, 20], tol=1e-08)
+  check: rebuilt phi on saved samples vs aux barphi_p: median rel 1.3e-07, max 1.2e-06
+1. 113 statistics at t=1 (miss: rel > 0.01); z median 0.67 under independent-sample noise
+  all       n= 113  rel mean 1.09e-03 median 8.72e-08 p90 3.20e-05 max 7.53e-02 | z median 1.3e-06 | sign persistence (1-t<1e-2) median 48%
+  matched   n= 110  rel mean 1.53e-04 median 8.32e-08 p90 1.82e-05 max 7.09e-03 | z median 1.3e-06 | sign persistence (1-t<1e-2) median 46%
+  missed    n=   3  rel mean 3.54e-02 median 1.61e-02 p90 6.34e-02 max 7.53e-02 | z median 0.23 | sign persistence (1-t<1e-2) median 85%
+2. Ito term, 105 Scalar statistics (Spearman of |I_n| with rel_n across statistics):
+   1-t= 1e-2 h=5.43e-06: Spearman +0.66 (p 1e-14); |I| median missed 2.03e+01 vs matched 4.80e-04
+   1-t= 1e-3 h=5.43e-07: Spearman +0.66 (p 1e-14); |I| median missed 2.03e+00 vs matched 4.80e-05
+   1-t=  end h=2.72e-08: Spearman +0.66 (p 1e-14); |I| median missed 1.02e-01 vs matched 2.40e-06
+   sign(p - e) == sign(I) for 100% of the 3 missed Scalar statistics
+3. missed statistics (peak/onset along the run; I = Ito term / |e| at 1-t = 1e-2, 1e-3, end)
+stat                                rel    p/e      z persist     peak     @1-t onset 1-t   I(1e-2)   I(1e-3)    I(end)
+Scalar_psi_gaussianK[17]       7.53e-02  1.075      3     82% 1.31e+00  6.5e-04   1.0e+00  8.80e+01  8.80e+00  4.40e-01
+Scalar_psi_gaussianK[54]       1.61e-02  1.016      0     85% 4.20e+00  1.4e-03   1.0e-01  2.03e+01  2.03e+00  1.02e-01
+Scalar_psi_gaussianK[35]       1.49e-02  1.015      0     86% 4.22e+00  1.4e-03   2.1e-02  1.81e+01  1.81e+00  9.04e-02

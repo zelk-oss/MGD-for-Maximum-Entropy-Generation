@@ -1,0 +1,22 @@
+
+=== seed 900: turbulencesynth_M128_J7_Q3_sigma3.5_nt15000_n1_3000_lam0.0_thomas_nsub1_moment_f64_dedupfilt1e-08_seed_900_termse51338f8_turbulence_ggd_mass_L6_2b_merge_20261022_1514
+  n1=3000 M=128 J=7 Q=3 sigma=3.5 terms=['L_6', 'Scalar_morlet_gaussianK', 'Scalar_psi_gaussianK']
+[deduplicate_filters] filters_Q: 22 -> 19 channels for channel-list potentials (dropped duplicates [18, 19, 20], tol=1e-08)
+  check: rebuilt phi on saved samples vs aux barphi_p: median rel 1.3e-07, max 9.0e-07
+1. 114 statistics at t=1 (miss: rel > 0.01); z median 0.67 under independent-sample noise
+  all       n= 114  rel mean 3.26e-03 median 7.50e-08 p90 4.50e-04 max 1.10e-01 | z median 9.2e-07 | sign persistence (1-t<1e-2) median 49%
+  matched   n= 108  rel mean 1.24e-04 median 6.96e-08 p90 6.34e-05 max 3.97e-03 | z median 8e-07 | sign persistence (1-t<1e-2) median 44%
+  missed    n=   6  rel mean 5.97e-02 median 5.34e-02 p90 1.03e-01 max 1.10e-01 | z median 8.8 | sign persistence (1-t<1e-2) median 95%
+2. Ito term, 106 Scalar statistics (Spearman of |I_n| with rel_n across statistics):
+   1-t= 1e-2 h=5.43e-06: Spearman +0.63 (p 3e-13); |I| median missed 1.86e+01 vs matched 4.49e-04
+   1-t= 1e-3 h=5.43e-07: Spearman +0.63 (p 3e-13); |I| median missed 1.86e+00 vs matched 4.49e-05
+   1-t=  end h=2.72e-08: Spearman +0.63 (p 3e-13); |I| median missed 9.29e-02 vs matched 2.24e-06
+   sign(p - e) == sign(I) for 100% of the 6 missed Scalar statistics
+3. missed statistics (peak/onset along the run; I = Ito term / |e| at 1-t = 1e-2, 1e-3, end)
+stat                                rel    p/e      z persist     peak     @1-t onset 1-t   I(1e-2)   I(1e-3)    I(end)
+Scalar_psi_gaussianK[17]       1.10e-01  1.110     17     79% 6.17e-01  9.9e-01   1.0e+00  7.69e+01  7.69e+00  3.84e-01
+Scalar_psi_gaussianK[18]       9.49e-02  1.095     16     83% 5.55e-01  9.0e-01   1.0e+00  7.63e+01  7.63e+00  3.81e-01
+Scalar_psi_gaussianK[19]       6.69e-02  1.067     11    100% 3.40e-01  9.0e-04   1.0e+00  2.24e+01  2.24e+00  1.12e-01
+Scalar_psi_gaussianK[20]       3.98e-02  1.040      6    100% 2.27e-01  1.2e-03   2.7e-01  3.43e+00  3.43e-01  1.71e-02
+Scalar_morlet_gaussianK[8]     2.94e-02  1.029      4    100% 2.75e-01  1.8e-01   1.0e+00  1.47e+01  1.47e+00  7.37e-02
+Scalar_psi_gaussianK[2]        1.65e-02  1.017      3     90% 1.61e-01  1.2e-03   1.0e+00  4.98e+00  4.98e-01  2.49e-02

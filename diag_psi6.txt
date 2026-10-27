@@ -1,0 +1,34 @@
+run turbulencesynth_M128_J7_Q3_sigma3.5_nt15000_n1_3000_lam0.0_thomas_nsub1_moment_f64_dedupfilt1e-08_seed_900_termse51338f8_turbulence_ggd_mass_L6_2b_xc_20261027_1416
+[deduplicate_filters] filters_Q: 22 -> 19 channels for channel-list potentials (dropped duplicates [18, 19, 20], tol=1e-08)
+
+1. Scalar_psi_gaussianK[6] = global statistic 14
+   channel 6, window 0 (power alpha=5.806), [0.000e+00, 8.129e-05), edge width s=8.13e-06, live in the fit: True
+   fraction of |z| inside: data 0.0496, model t=1 0.0297; channel cuts [8.1e-05, 0.027705, 0.063006]
+   1-t=0.1: step noise nu=1.82e-02  nu/width=223.71  nu/s=2237.1
+   1-t=0.01: step noise nu=1.41e-03  nu/width=17.38  nu/s=173.8
+   last step: nu=9.99e-05  nu/width=1.229  nu/s=12.29
+
+2. walkers / target along the run
+   1-t=0.9: 1.281  1-t=0.5: 1.118  1-t=0.3: 1.043  1-t=0.1: 0.078  1-t=0.03: 0.872  1-t=0.01: 0.663  1-t=0.001: 0.642  1-t=0.0001: 0.605  end: 0.631
+
+3. per-step theta solve, 1500 logged steps
+   1-t in [0.1,1.01): in weakest-direction top 3 0% of steps; closest to the empty-region mask 0%; n_live median 127
+   1-t in [0.01,0.1): in weakest-direction top 3 0% of steps; closest to the empty-region mask 0%; n_live median 127
+   1-t in [0,0.01): in weakest-direction top 3 0% of steps; closest to the empty-region mask 0%; n_live median 127
+run turbulencesynth_M128_J7_Q3_sigma3.5_nt15000_n1_3000_lam0.0_thomas_nsub1_moment_f64_dedupfilt1e-08_seed_900_termse51338f8_turbulence_ggd_mass_L6_2b_20261021_1725
+[deduplicate_filters] filters_Q: 22 -> 19 channels for channel-list potentials (dropped duplicates [18, 19, 20], tol=1e-08)
+
+1. Scalar_psi_gaussianK[6] = global statistic 14
+   channel 6, window 0 (power alpha=5.806), [0.000e+00, 8.129e-05), edge width s=8.13e-06, live in the fit: True
+   fraction of |z| inside: data 0.0496, model t=1 0.0298; channel cuts [8.1e-05, 0.027705, 0.063006]
+   1-t=0.1: step noise nu=1.82e-02  nu/width=223.71  nu/s=2237.1
+   1-t=0.01: step noise nu=1.41e-03  nu/width=17.38  nu/s=173.8
+   last step: nu=9.99e-05  nu/width=1.229  nu/s=12.29
+
+2. walkers / target along the run
+   1-t=0.9: 1.281  1-t=0.5: 1.118  1-t=0.3: 1.043  1-t=0.1: 1.036  1-t=0.03: 1.058  1-t=0.01: 0.932  1-t=0.001: 0.637  1-t=0.0001: 0.612  end: 0.640
+
+3. per-step theta solve, 1500 logged steps
+   1-t in [0.1,1.01): in weakest-direction top 3 0% of steps; closest to the empty-region mask 0%; n_live median 127
+   1-t in [0.01,0.1): in weakest-direction top 3 0% of steps; closest to the empty-region mask 0%; n_live median 127
+   1-t in [0,0.01): in weakest-direction top 3 0% of steps; closest to the empty-region mask 0%; n_live median 127

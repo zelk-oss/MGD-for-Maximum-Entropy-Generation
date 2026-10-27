@@ -19,7 +19,8 @@ from pathlib import Path
 
 import numpy as np
 import matplotlib
-matplotlib.use('Agg')
+if __name__ == '__main__':          # keep the notebook's inline backend when imported
+    matplotlib.use('Agg')
 import matplotlib.pyplot as plt
 from matplotlib.colors import to_rgba
 
@@ -60,7 +61,7 @@ def plot_aggregate(ax, C, rare, edges, title):
     ax.legend(fontsize=8)
 
 
-def plot_bars(C, rare, title, out):
+def plot_bars(C, rare, title, out=None):
     fams = list(C)
     x = np.arange(len(fams))
     w = 0.38
@@ -101,8 +102,10 @@ def plot_bars(C, rare, title, out):
                 ax.set_title(f'zoom: {F} (own y-axis)', fontsize=9)
             if j == 0:
                 ax.set_ylabel(what)
-    fig.savefig(out, dpi=130)
-    print(f'figure: {out}')
+    if out is not None:
+        fig.savefig(out, dpi=130)
+        print(f'figure: {out}')
+    return fig
 
 
 def main(labels, lam, suffix, percentiles):

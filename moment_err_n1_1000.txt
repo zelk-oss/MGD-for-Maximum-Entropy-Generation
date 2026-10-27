@@ -1,0 +1,31 @@
+
+=== seed 900: turbulencesynth_M128_J7_Q3_sigma3.5_nt15000_n1_1000_lam0.0_thomas_nsub1_moment_f64_dedupfilt1e-08_seed_900_termse51338f8_turbulence_ggd_mass_L6_2b_n1_1000_20261023_1741
+  n1=1000 M=128 J=7 Q=3 sigma=3.5 terms=['L_6', 'Scalar_morlet_gaussianK', 'Scalar_psi_gaussianK']
+[deduplicate_filters] filters_Q: 22 -> 19 channels for channel-list potentials (dropped duplicates [18, 19, 20], tol=1e-08)
+  check: rebuilt phi on saved samples vs aux barphi_p: median rel 1.4e-07, max 2.1e-05
+1. 128 statistics at t=1 (miss: rel > 0.01); z median 0.67 under independent-sample noise
+  all       n= 128  rel mean 1.51e-02 median 1.17e-07 p90 2.73e-02 max 3.35e-01 | z median 1.6e-06 | sign persistence (1-t<1e-2) median 46%
+  matched   n= 113  rel mean 2.81e-04 median 1.02e-07 p90 9.41e-05 max 9.74e-03 | z median 1.1e-06 | sign persistence (1-t<1e-2) median 42%
+  missed    n=  15  rel mean 1.27e-01 median 9.95e-02 p90 2.39e-01 max 3.35e-01 | z median 6 | sign persistence (1-t<1e-2) median 76%
+2. Ito term, 120 Scalar statistics (Spearman of |I_n| with rel_n across statistics):
+   1-t= 1e-2 h=5.43e-06: Spearman +0.76 (p 2e-23); |I| median missed 5.60e+01 vs matched 4.14e-04
+   1-t= 1e-3 h=5.43e-07: Spearman +0.76 (p 2e-23); |I| median missed 5.60e+00 vs matched 4.14e-05
+   1-t=  end h=2.72e-08: Spearman +0.76 (p 2e-23); |I| median missed 2.80e-01 vs matched 2.07e-06
+   sign(p - e) == sign(I) for 67% of the 15 missed Scalar statistics
+3. missed statistics (peak/onset along the run; I = Ito term / |e| at 1-t = 1e-2, 1e-3, end)
+stat                                rel    p/e      z persist     peak     @1-t onset 1-t   I(1e-2)   I(1e-3)    I(end)
+Scalar_psi_gaussianK[6]        3.35e-01  0.665      7    100% 5.26e-01  9.5e-01   1.0e+00 -4.63e+01 -4.63e+00 -2.32e-01
+Scalar_psi_gaussianK[2]        2.40e-01  0.760     18     79% 5.41e-01  8.7e-01   1.0e+00  2.17e+02  2.17e+01  1.09e+00
+Scalar_psi_gaussianK[28]       2.39e-01  1.239      6     80% 1.88e+00  4.5e-04   1.0e+00  7.83e+01  7.83e+00  3.91e-01
+Scalar_psi_gaussianK[10]       2.12e-01  1.212     11     51% 8.29e-01  9.0e-01   1.0e+00  5.60e+01  5.60e+00  2.80e-01
+Scalar_psi_gaussianK[3]        2.03e-01  0.797     11     76% 4.03e-01  4.7e-01   1.0e+00  1.04e+02  1.04e+01  5.19e-01
+Scalar_psi_gaussianK[1]        1.63e-01  0.837     21     76% 1.25e+00  9.0e-01   1.0e+00  1.89e+02  1.89e+01  9.43e-01
+Scalar_psi_gaussianK[11]       1.04e-01  1.104      9     51% 3.67e-01  2.1e-04   1.0e+00  4.76e+01  4.76e+00  2.38e-01
+Scalar_psi_gaussianK[0]        9.95e-02  0.901      9     72% 1.06e+00  8.2e-01   1.0e+00  7.32e+01  7.32e+00  3.66e-01
+Scalar_morlet_gaussianK[0]     7.42e-02  0.926      4     70% 5.93e-01  1.2e-01   1.0e+00  2.21e+01  2.21e+00  1.10e-01
+Scalar_psi_gaussianK[29]       6.58e-02  1.066      2     81% 1.25e+00  6.3e-04   1.0e+00  3.56e+01  3.56e+00  1.78e-01
+Scalar_psi_gaussianK[12]       5.29e-02  1.053      4     59% 2.54e-01  2.8e-04   1.0e+00  3.43e+01  3.43e+00  1.72e-01
+Scalar_psi_gaussianK[9]        4.50e-02  1.045      4     64% 6.54e-01  8.7e-01   1.0e+00  1.95e+02  1.95e+01  9.76e-01
+Scalar_psi_gaussianK[5]        3.02e-02  0.970      1    100% 3.67e-01  8.3e-01   1.0e+00 -6.26e+01 -6.26e+00 -3.13e-01
+Scalar_morlet_gaussianK[3]     2.61e-02  1.026      3     63% 4.68e-01  1.0e-01   1.0e+00  1.51e+01  1.51e+00  7.54e-02
+Scalar_psi_gaussianK[30]       1.19e-02  1.012      0     95% 4.87e-01  1.1e-03   1.0e+00  1.07e+01  1.07e+00  5.34e-02

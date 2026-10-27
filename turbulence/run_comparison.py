@@ -191,14 +191,15 @@ def compute_stats(x, taus=None, pdf_taus=(1, 4, 16, 64), wav_J=6, wav_Q=3,
     s['freq'], s['spectrum'] = np.fft.rfftfreq(T)[1:], ps.mean(0)[1:]
     s['freq_band'], s['spec_band'] = log_bands(s['freq'], s['spectrum'])
 
-    S = {p: [] for p in (2, 3, 4, 6)}
+    S = {p: [] for p in (2, 3, 4, 6, 8, 10)}
     for tau in taus:
         d = np.roll(x, -tau, axis=1) - x                      # periodic increments
         d2 = d * d                                            # products, not d ** p: numpy's
         d4 = d2 * d2                                          # float pow is ~12x slower here
-        for p, v in ((2, d2), (3, d2 * d), (4, d4), (6, d4 * d2)):
+        for p, v in ((2, d2), (3, d2 * d), (4, d4), (6, d4 * d2), (8, d4 * d4), (10, d4 * d4 * d2)):
             S[p].append(np.mean(v))                           # signed for p=3
     S = {p: np.array(v) for p, v in S.items()}
+    s['Sp'] = {p: S[p] for p in (2, 4, 6, 8, 10)}
     s.update(S2=S[2], skew=S[3] / S[2] ** 1.5, flat4=S[4] / S[2] ** 2, flat6=S[6] / S[2] ** 3)
 
     s['pdf_taus'] = pdf_taus
@@ -323,6 +324,22 @@ def plot_structure(S_ref, S_runs):
         if key != 'skew':
             ax.set_yscale('log')
         ax.set_title(title); ax.set_xlabel(r'$\tau$'); ax.grid(alpha=0.2, which='both')
+    axes[0].legend(fontsize=8, frameon=False)
+    fig.tight_layout()
+    plt.show()
+
+
+def plot_structure_orders(S_ref, S_runs):
+    """S_p(tau) gen / data for p = 2, 4, 6, 8, 10, one panel per order (1 = perfect)."""
+    cols = _colors(S_runs)
+    ps = list(S_ref['Sp'])
+    fig, axes = plt.subplots(1, len(ps), figsize=(4 * len(ps), 3.6), sharey=True)
+    for ax, p in zip(axes, ps):
+        ax.axhline(1, color=DATA_COLOR, lw=1, ls='--')
+        for k, S in S_runs.items():
+            ax.plot(S_ref['taus'], S['Sp'][p] / S_ref['Sp'][p], 'o-', color=cols[k], lw=1.5, ms=3, label=k)
+        ax.set_xscale('log'); ax.set_yscale('log'); ax.grid(alpha=0.2, which='both')
+        ax.set_title(rf'$S_{{{p}}}(\tau)$ gen / data'); ax.set_xlabel(r'$\tau$')
     axes[0].legend(fontsize=8, frameon=False)
     fig.tight_layout()
     plt.show()
@@ -934,6 +951,66 @@ def plot_band_hists(pairs, bank='psi', kind='real', bands=None, J=None, n_series
         axes[-1, col].set_xlabel('Re W' if kind == 'real' else '|W|')
     fig.suptitle(f'{bank} wavelet coefficients ({"Re W" if kind == "real" else "|W|"}), '
                  f'data vs generated, {n_series} series each', y=1.0)
+    fig.tight_layout()
+    plt.show()
+
+
+def channel_table(x_data, xs, bank='psi', J=None, moments=(2, 4, 6),
+                  quantiles=(0.99, 0.999, 0.9999), n_series=5000, seed=0):
+    """Generated / data ratios of Re W, channel by channel (1 = perfect), one block per run.
+
+    Moments are E|W|^p ratios, quantiles are q_a(|W|) ratios. xs: {name: samples (B, M)}.
+    Row j{j}q{q} = band of the bank (j0 finest); a column is (metric, run)."""
+    M = x_data.shape[-1]
+    psi, labels, _ = wavelet_bank(M, bank, J)
+    ad = np.abs(np.real(_coeffs(x_data, psi, n_series, np.random.default_rng(seed))))
+    out = {}
+    for name, x in xs.items():
+        ag = np.abs(np.real(_coeffs(x, psi, n_series, np.random.default_rng(seed))))
+        cols = {f'm{p}': (ag ** p).mean(1) / (ad ** p).mean(1) for p in moments}
+        cols.update({f'q{a}': np.quantile(ag, a, axis=1) / np.quantile(ad, a, axis=1)
+                     for a in quantiles})
+        out[name] = pd.DataFrame(cols, index=labels)
+    return pd.concat(out, axis=1).swaplevel(axis=1).sort_index(axis=1, level=0, sort_remaining=False)
+
+
+def style_channel_table(df, tol=0.01):
+    """Styler of channel_table: per row and metric, green = run closest to 1, red = farthest
+    (translucent). No colour when the runs differ by less than tol in |log ratio|."""
+    css = pd.DataFrame('', index=df.index, columns=df.columns)
+    for m in df.columns.get_level_values(0).unique():
+        err = np.abs(np.log(df[m]))
+        lo, hi = err.min(axis=1), err.max(axis=1)
+        for run in err.columns:
+            css[(m, run)] = np.where((hi - lo) < tol, '',
+                            np.where(err[run] == lo, 'background-color: rgba(46,160,67,0.3)',
+                            np.where(err[run] == hi, 'background-color: rgba(220,50,47,0.3)', '')))
+    return df.style.apply(lambda _: css, axis=None).format('{:.2f}')
+
+
+def plot_tail_hists(x_data, xs, bank='psi', J=None, n_ch=6, n_series=5000, bins=100, seed=0):
+    """|Re W| per channel (finest n_ch of the bank), data in black vs each run:
+    left log-density histogram, right survival function P(|W| >= x) in log-log (tails)."""
+    M = x_data.shape[-1]
+    psi, labels, _ = wavelet_bank(M, bank, J)
+    psi, labels = psi[:n_ch], labels[:n_ch]
+    w = {'data': x_data, **xs}
+    W = {k: np.abs(np.real(_coeffs(v, psi, n_series, np.random.default_rng(seed)))) for k, v in w.items()}
+    cols = {'data': DATA_COLOR, **_colors(xs)}
+    fig, axes = plt.subplots(len(labels), 2, figsize=(11, 2.4 * len(labels)), squeeze=False)
+    for b, lab in enumerate(labels):
+        e = np.linspace(0, max(W[k][b].max() for k in W), bins + 1)
+        for k in W:
+            _hist_line(axes[b, 0], W[k][b], e, color=cols[k], lw=2 if k == 'data' else 1.2, label=k)
+            v = np.sort(W[k][b]); n = len(v)
+            i = np.unique(np.logspace(0, np.log10(n), 400).astype(int)) - 1
+            axes[b, 1].loglog(v[n - 1 - i], (i + 1) / n, color=cols[k], lw=2 if k == 'data' else 1.2)
+        axes[b, 0].set_yscale('log'); axes[b, 0].set_ylabel(lab + (' (finest)' if b == 0 else ''))
+        for a in axes[b]:
+            a.grid(alpha=0.2, which='both')
+    axes[0, 0].legend(fontsize=8, frameon=False)
+    axes[0, 0].set_title('|Re W|, density'); axes[0, 1].set_title('survival P(|Re W| >= x)')
+    fig.suptitle(f'{bank} bank (Q={BANKS[bank]}), finest {len(labels)} channels', y=1.0)
     fig.tight_layout()
     plt.show()
 

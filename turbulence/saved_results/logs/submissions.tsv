@@ -70,3 +70,18 @@ date	job_id	exp_name	script	timestamp	seeds	n1	nt	lam	terms
 2026-10-20T17:01:14+02:00	1345060	turbulence_ggd_tailfix_L6_full	turbulence_ggd_tailfix_full.sh	20261020_1701	900	10000	55000	0.0	L_6 Scalar_morlet_gaussianK
 2026-10-20T17:01:31+02:00	1345063	turbulence_ggd_tailfix_noScat4	turbulence_ggd_tailfix_noScat4.sh	20261020_1701	900	10000	55000	0.0	L_6 Scalar_psi_gaussianK Scalar_morlet_gaussianK
 2026-10-20T17:40:34+02:00	1347404	turbulence_ggd_tailfix_final	turbulence_ggd_tailfix_final.sh	20261020_1740	900	10000	55000	0.0	L_6 Scalar_psi_gaussianK Scalar_morlet_gaussianK Scattering_Fourth_Order_Mod2_Real_Q1 Scattering_Fourth_Order_Mod2_Imag_Q1
+2026-10-21T16:44:21+02:00	1391235	turbulence_final_gauss_scat2	turbulence_final_gauss_scat2.sh	20261021_1644	900	10000	55000	0.0	Scattering_Second_Order_Q1
+2026-10-21T16:46:46+02:00	1391436	turbulence_final_gauss_scat2	turbulence_final_gauss_scat2.sh	20261021_1646	901 902 903 904	10000	55000	0.0	Scattering_Second_Order_Q1
+2026-10-21T17:25:24+02:00	1396058	turbulence_ggd_mass_noL6_2b	turbulence_ggd_mass_2bank.sh	20261021_1725	900	3000	15000	0.0	Scalar_morlet_gaussianK Scalar_psi_gaussianK
+2026-10-21T17:25:26+02:00	1396059	turbulence_ggd_mass_L6_2b	turbulence_ggd_mass_2bank.sh	20261021_1725	900	3000	15000	0.0	L_6 Scalar_morlet_gaussianK Scalar_psi_gaussianK
+2026-10-21T17:34:21+02:00	1396256	turbulence_ggd_mass_noL6_2b	turbulence_ggd_mass_2bank.sh	20261021_1734	900	3000	15000	0.0	Scalar_morlet_gaussianK Scalar_psi_gaussianK
+2026-10-21T17:35:49+02:00	1396291	turbulence_ggd_tailq_noL6_2b	turbulence_ggd_mass_2bank.sh	20261021_1735	900	3000	15000	0.0	Scalar_morlet_gaussianK Scalar_psi_gaussianK
+2026-10-22T10:25:00+02:00	1424761	turbulence_ggd_tailq_L6_2b	turbulence_ggd_mass_2bank.sh	20261022_1025	900	3000	15000	0.0	L_6 Scalar_morlet_gaussianK Scalar_psi_gaussianK
+2026-10-22T10:51:07+02:00	1426156	turbulence_ggd_mass_L6_1b	turbulence_ggd_mass_2bank.sh	20261022_1051	900	3000	15000	0.0	L_6 Scalar_morlet_gaussianK
+2026-10-22T14:37:12+02:00	1444791	turbulence_ggd_mass_L6_2b_drop	turbulence_ggd_mass_2bank.sh	20261022_1437	900	3000	15000	0.0	L_6 Scalar_morlet_gaussianK Scalar_psi_gaussianK
+2026-10-22T15:14:59+02:00	1446525	turbulence_ggd_mass_L6_2b_merge	turbulence_ggd_mass_2bank.sh	20261022_1514	900	3000	15000	0.0	L_6 Scalar_morlet_gaussianK Scalar_psi_gaussianK
+2026-10-22T15:49:43+02:00	1447812	turbulence_ggd_mass_L6_2b_scat4	turbulence_ggd_mass_2bank.sh	20261022_1549	900	3000	15000	0.0	L_6 Scalar_morlet_gaussianK Scalar_psi_gaussianK Scattering_Fourth_Order_Mod2_Real_Q1 Scattering_Fourth_Order_Mod2_Imag_Q1
+2026-10-22T15:49:43+02:00	1447814	turbulence_ggd_mass_noScat4	turbulence_ggd_mass_noScat4.sh	20261022_1549	900	10000	55000	0.0	L_6 Scalar_psi_gaussianK Scalar_morlet_gaussianK
+2026-10-22T18:40:14+02:00	1454124	turbulence_ggd_mass_final	turbulence_ggd_mass_final.sh	20261022_1840	900	10000	55000	0.0	L_6 Scalar_psi_gaussianK Scalar_morlet_gaussianK Scattering_Fourth_Order_Mod2_Real_Q1 Scattering_Fourth_Order_Mod2_Imag_Q1
+2026-10-23T11:31:49+02:00	1476885	turbulence_nested_M3	turbulence_nested_M3.sh	20261023_1131	900 901 902 903 904	10000	55000	0.0	L_6 Scalar_psi_gaussianK Scalar_morlet_gaussianK
+2026-10-23T11:31:49+02:00	1476886	turbulence_nested_M2	turbulence_nested_M2.sh	20261023_1131	900 901 902 903 904	10000	55000	0.0	L_6 Scalar_morlet_gaussianK
