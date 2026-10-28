@@ -45,7 +45,8 @@ from check_fit_offline import build_data                             # noqa: E40
 from window_vs_step_noise import newest                              # noqa: E402
 
 MISS = 1e-2
-SCALAR = ('Scalar_psi_gaussianK', 'Scalar_morlet_gaussianK')
+SCALAR = ('Scalar_psi_gaussianK', 'Scalar_morlet_gaussianK',
+          'Scalar_psi_gaussianK_imag', 'Scalar_morlet_gaussianK_imag')
 H_KEYS = ('1e-2', '1e-3', 'end')
 
 
@@ -54,7 +55,7 @@ def scalar_laplacian(pt, x, batch=250):
     (same scaling as forward, i.e. divided by stat_scale). Checked against a central
     difference of pt.grad: max rel err 1e-4 at eps 1e-7 (2026-10-23)."""
     assert pt.dwt is None, 'DWT potentials not supported'
-    f = pt.filters.double()
+    f = pt.filters.to(torch.complex128)           # complex: the _imag terms carry filters * -1j
     g2 = torch.fft.ifft(f).real.pow(2).sum(-1).reshape(-1)              # ||g_j||^2, (J,)
     c, s, alpha, K = pt.cuts.double(), pt.sw.double(), pt.alpha.double(), pt.K
     eps = pt.eps_ch.double()[None, :, None] if pt.eps_ch is not None else pt.eps_abs

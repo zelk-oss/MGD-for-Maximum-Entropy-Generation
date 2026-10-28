@@ -82,7 +82,7 @@ def main(label, seed, stat, root):
         lo, hi = edges[w], edges[w + 1]
         sw = pt.sw[j].double().numpy()
         s_edge = min(sw[m] for m in (w - 1, w) if 0 <= m < len(sw))
-        f = pt.filters.double()
+        f = pt.filters.to(torch.complex128)       # complex: the _imag terms carry filters * -1j
         with torch.no_grad():
             zd = torch.fft.ifft(f * torch.fft.fft(x1.double())).real[:, j].numpy()
             xs = torch.load(newest(f'{cfg}*', res / 'samples'), map_location='cpu').double()

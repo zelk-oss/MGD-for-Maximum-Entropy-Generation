@@ -1108,6 +1108,8 @@ class Scalar_GGD_KRegion():
         # tail_alpha_bounds: alpha bounds for the outermost region only, so its
         # statistic |z|^alpha is neither blind to the tail (alpha -> 0.2) nor dominated
         # by a handful of extremes (alpha -> 8).
+        # A list of quantiles (2026-10-28, e.g. [0.99, 0.999]) forces one cut per quantile; all
+        # windows above the first one get the tail settings (tail bounds, tail_mass floor).
         self.tail_quantile = tail_quantile
         self.tail_alpha_bounds = tail_alpha_bounds
         # min_window: no inner window narrower than min_window * n_j, n_j = std of channel j
@@ -1421,25 +1423,34 @@ class Scalar_GGD_KRegion():
         return K, cuts
 
     @staticmethod
-    def _merge_narrow(cuts, min_width, keep_last):
+    def _merge_narrow(cuts, min_width, keep_last, protect=()):
         """Remove cuts until every inner window [c_{i-1}, c_i] (c_{-1} = 0) is >= min_width.
-        A narrow window is merged with the one above; if its upper cut is the last one and
-        keep_last (forced tail cut), with the one below. A lone window [0, c] narrower than
-        min_width is kept: there is nothing left to merge it with."""
+        A narrow window is merged with the one above; if its upper cut is locked (the last one
+        with keep_last, or one of `protect`, the forced tail cuts), with the one below. A narrow
+        window between two locked cuts, or a lone window [0, c], is kept: nothing can be removed."""
         cuts = list(cuts)
+        protect = set(protect)
         i = 0
         while i < len(cuts):
             lo = cuts[i - 1] if i > 0 else 0.0
             if cuts[i] - lo >= min_width:
                 i += 1
-            elif i == len(cuts) - 1 and keep_last:
-                if i == 0:
-                    break
+            elif (i == len(cuts) - 1 and keep_last) or cuts[i] in protect:
+                if i == 0 or cuts[i - 1] in protect:
+                    i += 1
+                    continue
                 del cuts[i - 1]
                 i -= 1
             else:
                 del cuts[i]
         return cuts
+
+    def _tail_quantiles(self):
+        """tail_quantile as a sorted list ([] if None): one forced cut per quantile."""
+        if self.tail_quantile is None:
+            return []
+        q = self.tail_quantile
+        return sorted(float(v) for v in (q if isinstance(q, (list, tuple)) else [q]))
 
     def _embed_slots(self, cuts, ah):
         eps = max(float(np.quantile(ah, 1e-3)), 1e-12) * 1e-2
@@ -1488,22 +1499,29 @@ class Scalar_GGD_KRegion():
                 qs = np.linspace(0.5, 0.97, K - 1); Keff = K
                 cuts = list(np.quantile(ah, qs))
 
-            if self.tail_quantile is not None and K > 1:
-                q_tail = float(np.quantile(ah, self.tail_quantile))
-                # slots are later forced to grow by >= 1.5x: keep only inner cuts that
-                # leave q_tail where it is
-                inner = [c for c in sorted(cuts) if 1.5 * c <= q_tail][:K - 2]
-                cuts = inner + [q_tail]
+            forced = []
+            if self._tail_quantiles() and K > 1:
+                # slots are later forced to grow by >= 1.5x: a forced cut closer than that to the
+                # previous one would be moved, so it is skipped (2026-10-28: second cut at q.999,
+                # skipped on near-Gaussian channels where q.999 / q.99 < 1.5)
+                for q in self._tail_quantiles():
+                    v = float(np.quantile(ah, q))
+                    if not forced or v >= 1.5 * forced[-1]:
+                        forced.append(v)
+                forced = forced[:K - 1]
+                inner = [c for c in sorted(cuts) if 1.5 * c <= forced[0]][:K - 1 - len(forced)]
+                cuts = inner + forced
                 Keff = len(cuts) + 1
 
             if self.min_window is not None and len(cuts) > 0:
                 cuts = self._merge_narrow(sorted(cuts), self.min_window * float(unit_noise[j]),
-                                          keep_last=self.tail_quantile is not None)
+                                          keep_last=self.tail_quantile is not None, protect=forced)
                 Keff = len(cuts) + 1
             if w_min > 0 and len(cuts) > 0:
-                # the likelihood search respected w_min; the forced tail cut did not: drop the
-                # inner cut next to it if it leaves a window narrower than w_min
-                cuts = self._merge_narrow(sorted(cuts), w_min, keep_last=self.tail_quantile is not None)
+                # the likelihood search respected w_min; the forced tail cuts did not: drop the
+                # inner cut next to them if it leaves a window narrower than w_min
+                cuts = self._merge_narrow(sorted(cuts), w_min, keep_last=self.tail_quantile is not None,
+                                          protect=forced)
                 Keff = len(cuts) + 1
 
             KEFF[j] = Keff
@@ -1519,6 +1537,9 @@ class Scalar_GGD_KRegion():
                 width = slots[m] - edges[m]
                 SW[j, m] = max(self.trans_frac * max(width, slots[m]), 1e-6)
 
+            # tail windows = the windows above the first forced cut (the outer window alone when
+            # there is at most one forced cut: unchanged behaviour)
+            k_tail = K - len(forced) if len(forced) > 1 else K - 1
             full_edges = [0.0] + list(slots) + [np.inf]
             counts = []
             for k, (lo, hi) in enumerate(zip(full_edges[:-1], full_edges[1:])):
@@ -1527,10 +1548,10 @@ class Scalar_GGD_KRegion():
                     A[j, k], S[j, k] = 1.0, max(self._scale_floor(ah), 1e-8)
                     continue
                 bounds = (self.tail_alpha_bounds
-                          if (k == K - 1 and self.tail_alpha_bounds is not None)
+                          if (k >= k_tail and self.tail_alpha_bounds is not None)
                           else self.alpha_bounds)
                 floor_frac = 0.02
-                if k == K - 1 and self.tail_mass:
+                if k >= k_tail and self.tail_mass:
                     floor_frac = 1e-12
                     if self.tail_alpha_bounds is None:
                         bounds = (0.05, 8.0)
@@ -1539,6 +1560,10 @@ class Scalar_GGD_KRegion():
             counts = np.asarray(counts, float)
             PI[j] = counts / max(counts.sum(), 1)
             ACT[j] = (PI[j] >= self.pi_active_min) & (counts >= self.min_region_samples)
+            if len(forced) > 1:
+                # the window above q.999 holds ~1e-3 of the data by construction, at the edge of
+                # pi_active_min: forced tail windows are active whenever they have enough points
+                ACT[j, k_tail:] = counts[k_tail:] >= self.min_region_samples
             if not ACT[j].any():
                 ACT[j, int(np.argmax(counts))] = True
 

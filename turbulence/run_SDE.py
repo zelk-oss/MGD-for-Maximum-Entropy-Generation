@@ -175,9 +175,12 @@ def parse_args():
                          'by 20\'s 1.1e-4 component at bin 2 (1 - cos = 6e-9): their statistics are '
                          'near-duplicates (normalized-gradient cond 9.6e4 with both, 12 without). '
                          'Adds the tol to the name when not the default')
-    p.add_argument('--ggd_tail_quantile', type=float, default=None,
+    p.add_argument('--ggd_tail_quantile', type=float, nargs='+', default=None,
                     help='Scalar_*_gaussianK: force the outermost region cut to this quantile '
-                         'of |z_j| (e.g. 0.99) instead of the likelihood/BIC search. '
+                         'of |z_j| (e.g. 0.99) instead of the likelihood/BIC search. Several values '
+                         '(e.g. 0.99 0.999) force one cut each. Not in the config name: use --label')
+    p.add_argument('--ggd_num_regions', type=int, default=None, metavar='K',
+                    help='Scalar_*_gaussianK: maximum number of windows per channel (default 4). '
                          'Not in the config name: use --label')
     p.add_argument('--ggd_tail_alpha_bounds', type=float, nargs=2, default=None,
                     metavar=('LO', 'HI'),

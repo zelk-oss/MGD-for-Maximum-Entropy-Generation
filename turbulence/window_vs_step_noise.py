@@ -35,7 +35,8 @@ from filters_bank import return_Filters                              # noqa: E40
 from potentials_builder import get_1d_potentials                     # noqa: E402
 from check_fit_offline import build_data                             # noqa: E402
 
-SCALAR = ('Scalar_psi_gaussianK', 'Scalar_morlet_gaussianK')        # builder order
+SCALAR = ('Scalar_psi_gaussianK', 'Scalar_morlet_gaussianK',
+          'Scalar_psi_gaussianK_imag', 'Scalar_morlet_gaussianK_imag')   # builder order
 MISS = 1e-2
 
 
@@ -95,7 +96,7 @@ def main(label, seed, show):
 
     rows = []
     for name, pot in loaded.items():
-        f = pot.filters.double()
+        f = pot.filters.to(torch.complex128)      # complex: the _imag terms carry filters * -1j
         with torch.no_grad():
             zd = torch.fft.ifft(f * torch.fft.fft(x1.double())).real.numpy()
             zw = torch.fft.ifft(f * torch.fft.fft(white)).real.numpy()

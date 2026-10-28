@@ -51,7 +51,7 @@ def main(arm, seed, channels):
             continue
         pot = type(pots[name]).load_fixed_parameters(exp / 'fitted_potentials' / f'{name}.pt',
                                                      pots[name].filters, map_location='cpu')
-        f = pot.filters.double()
+        f = pot.filters.to(torch.complex128)      # complex: the _imag terms carry filters * -1j
         with torch.no_grad():
             zd = torch.fft.ifft(f * torch.fft.fft(x1)).real.numpy()
             zs = torch.fft.ifft(f * torch.fft.fft(xs)).real.numpy()

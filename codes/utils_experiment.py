@@ -399,6 +399,7 @@ def run_experiment(args, M, config, x1, filters, t, logger, outdir, device,
         dedup_tol=getattr(args, 'dedup_tol', 1e-12), dwt=dwt,
         ggd_kwargs={k: v for k, v in dict(
             tail_quantile=getattr(args, 'ggd_tail_quantile', None),
+            num_regions=getattr(args, 'ggd_num_regions', None),
             tail_alpha_bounds=getattr(args, 'ggd_tail_alpha_bounds', None),
             tail_mass=getattr(args, 'ggd_tail_mass', False) or None,
             all_masses=getattr(args, 'ggd_all_masses', False) or None,

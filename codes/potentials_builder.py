@@ -5,6 +5,8 @@ Assemble the dict of potentials (moments / sufficient statistics) passed to the 
 samplers, selected by string keys in ``terms``: scalar, 1D, conditional 1D, and 2D.
 """
 
+import torch
+
 from potentials.potentials_scalar import *
 from potentials.potentials_1d import *
 from potentials.potentials_1d_condi import *
@@ -170,6 +172,20 @@ def get_1d_potentials(terms, J, filters, Q=1, filters_Q=None, filters_Phi=None,s
 
     if 'Scalar_morlet_gaussianK' in terms:
         potentials['Scalar_morlet_gaussianK'] = Scalar_GGD_KRegion(filters, **ggd_kwargs)
+
+    # same marginals of the imaginary part: Im(psi * x) = Re((-i psi) * x), so the potential is
+    # the real-part one given the filters times -i (2026-10-28, model C). Channels with a real,
+    # symmetric impulse response (the low-pass) have Im(psi * x) = 0 for every x: dropped.
+    def imag_filters(f):
+        g = torch.fft.ifft(f.to(torch.complex128))
+        keep = g.imag.norm(dim=-1).reshape(-1) > 1e-8 * g.abs().norm(dim=-1).reshape(-1)
+        return f[:, keep] * (-1j)
+
+    if 'Scalar_psi_gaussianK_imag' in terms:
+        potentials['Scalar_psi_gaussianK_imag'] = Scalar_GGD_KRegion(imag_filters(filters_Q_channels), **ggd_kwargs)
+
+    if 'Scalar_morlet_gaussianK_imag' in terms:
+        potentials['Scalar_morlet_gaussianK_imag'] = Scalar_GGD_KRegion(imag_filters(filters), **ggd_kwargs)
 
     # same potential on the critically decimated orthonormal DWT coefficients (details + approximation)
     if 'Scalar_dwt_gaussianK' in terms:
