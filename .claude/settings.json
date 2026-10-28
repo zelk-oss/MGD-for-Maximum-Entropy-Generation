@@ -18,5 +18,19 @@
       "Bash(*run_SDE.py*)",
       "Bash(*run_jet_SDE.py*)"
     ]
+  },
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "/usr/bin/python3 /home/chiaraz/phd/MGD-for-Maximum-Entropy-Generation/.claude/hooks/guard_python.py",
+            "timeout": 10
+          }
+        ]
+      }
+    ]
   }
 }
