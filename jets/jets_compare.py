@@ -35,7 +35,8 @@ from pathlib import Path
 
 import numpy as np
 import matplotlib
-matplotlib.use('Agg')
+if 'ipykernel' not in sys.modules:                          # imported by a notebook: keep its inline backend
+    matplotlib.use('Agg')
 import matplotlib.pyplot as plt
 
 HERE = Path(__file__).resolve().parent                      # jets/
