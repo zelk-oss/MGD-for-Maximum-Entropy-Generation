@@ -51,8 +51,8 @@ def get_1d_potentials(terms, J, filters, Q=1, filters_Q=None, filters_Phi=None,s
 
     Covers wavelet Lp-norm moments (``'L_2'..'L_10'`` and their ``'_phi'``
     low-pass variants, via ``L2p_norm`` / ``L2p1_norm``), quantile-confined scalar
-    potentials, and scattering moments up to fourth order. Third/fourth-order
-    imaginary terms are stubbed out (``pass``).
+    potentials, and scattering moments up to fourth order, real and imaginary parts
+    (``Scattering_Third_Order_Imag`` added 2026-10-27).
 
     ``dwt``: a ``PeriodicDWT`` (codes/ortho_wavelet/periodic_dwt.py), used by ``'Scalar_dwt_gaussianK'`` only.
 
@@ -238,8 +238,7 @@ def get_1d_potentials(terms, J, filters, Q=1, filters_Q=None, filters_Phi=None,s
         potentials['Scattering_Third_Order_Real'] = Scattering_Third_Order_Real_1d(J, filters_Q)
 
     if 'Scattering_Third_Order_Imag' in terms:
-        pass
-        #potentials['Scattering_Third_Order_Imag'] = Scattering_Third_Order_Imag_1d(J, filters_Q)
+        potentials['Scattering_Third_Order_Imag'] = Scattering_Third_Order_Imag_1d(J, filters_Q)
     
     if 'Scattering_Fourth_Order_Real' in terms:
         potentials['Scattering_Fourth_Order_Real'] = Scattering_Fourth_Order_Real_1d(J, Q, filters, filters_Q[:,:-1])

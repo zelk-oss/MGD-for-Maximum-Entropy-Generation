@@ -301,7 +301,74 @@ class Scattering_Third_Order_Real_1d(Potential):
         output = output[:, indices[0], indices[1]]/x.shape[-1]
 
         return output
-    
+
+
+class Scattering_Third_Order_Imag_1d(Potential):
+    """Imaginary counterpart of Scattering_Third_Order_Real_1d: Im[conj(W_j x) (psi_j * |W_k x|)].
+
+    Same indices and layout as the Real class. Like the Real one it is odd under x -> -x, so its
+    expectation vanishes for sign-symmetric data. Gradient: with g_j = ifft(fft(x) |psi_j^|^2),
+    Phi_kj = -mean(|W_k x| Im g_j); the Real class has +Re g_j, and the modulus term uses
+    the frequency-reversed |psi_j^|^2 because the Imag part is not symmetric in omega.
+    """
+    def __init__(self, J, filters):
+        super().__init__()
+        self.J = J
+        self.filters = filters
+        self.num_coefficients = int(J*((1+J)/2+1))
+
+    def forward(self, x):
+        filters = self.filters.to(x.device)
+        x_filtered = torch.fft.ifft(filters*torch.fft.fft(x))
+        x_filtered_abs = abs_eps(x_filtered)
+
+        output = torch.imag(x_filtered[:, None].conj() * torch.fft.ifft(filters[:, None] * torch.fft.fft(x_filtered_abs)[:, :, None]))
+
+        output = output.mean(-1)
+
+        indices = indices_third_order(self.J, 1).long()
+
+        output = output[:, indices[0], indices[1]]
+
+        return output
+
+    def grad(self, x,  v=None,  means=None):
+        filters = self.filters.to(x.device)
+        number_filters = filters.shape[1]
+
+        x_fourier = torch.fft.fft(x)
+        filters_abs2 = filters*filters.conj()
+        filters_abs2_flip = torch.roll(torch.flip(filters_abs2, [-1]), 1, -1)   # |psi^|^2 at -omega
+        x_filtered_2 = torch.fft.ifft(x_fourier*filters_abs2)
+        x_filtered = torch.fft.ifft(filters*x_fourier)
+        x_filtered_abs = abs_eps(x_filtered)
+        x_filtered_over_abs = x_filtered/x_filtered_abs
+
+        indices = indices_third_order(self.J, 1)
+
+        if v!=None:
+            m = torch.zeros((number_filters-1, number_filters)).to(x.device)
+            m[indices[0], indices[1]] = v
+
+            result_conv_phase = x_filtered_over_abs[:,:-1]*torch.einsum('ij, aib -> ajb', m.T, -torch.imag(x_filtered_2))
+            result_conv_phase = torch.fft.ifft(filters[:,:-1].conj()*torch.fft.fft(result_conv_phase))
+
+            x_filtered_abs_weighted = torch.einsum('ij, aib -> ajb', m, x_filtered_abs[:,:-1])
+            result_conv_modulus = torch.fft.ifft(filters_abs2_flip*torch.fft.fft(x_filtered_abs_weighted))
+
+            return (result_conv_phase.sum(1).real - result_conv_modulus.sum(1).imag)[:,None]/x.shape[-1]
+
+        result_conv_phase = x_filtered_over_abs[:,:-1,None]*(-torch.imag(x_filtered_2))[:,None]
+        result_conv_phase = torch.fft.ifft(filters[:,:-1,None].conj()*torch.fft.fft(result_conv_phase))
+
+        result_conv_modulus = torch.fft.ifft(filters_abs2_flip[:,None]*torch.fft.fft(x_filtered_abs)[:,:-1,None])
+
+        output = result_conv_phase.real - result_conv_modulus.imag
+
+        output = output[:, indices[0], indices[1]]/x.shape[-1]
+
+        return output
+
 
 class Scattering_Fourth_Order_Real_1d(Potential):
     def __init__(self, J,Q,filters,filters_Q,include_diag = False,lite=True):
