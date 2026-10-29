@@ -72,6 +72,7 @@ from codes.utils_experiment import *
 from codes.check_moments import *     # noqa: E402
 from codes.ortho_wavelet.ReadyToUseWavelets import *
 from data.data_loader import *        # noqa: E402
+from codes.time_schedules import add_schedule_args, build_time_grid  # noqa: E402
 from jet_data import load_modane_raw, load_modane_windows  # noqa: E402
 
 device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
@@ -121,12 +122,123 @@ def parse_args():
                     help='Exponent in t = 1-(1-linspace)^exponent')
     p.add_argument('--interpolant', type=str, default='Cos',
                     help='Interpolant type: Cos | Linear | VarPreserv | Sqrt')
-    p.add_argument('--regularization', type=float, default=1e-1,
-                    help='Tikhonov regularization for the Gram matrix')
+    p.add_argument('--regularization', type=float, default=1e-4,
+                    help='Tikhonov regularization for the Gram matrix (jets default 1e-4, as turbulence runs)')
     p.add_argument('--lam', type=float, default=5e-6,
                     help='lambda passed to Solver.forward_regularised')
     p.add_argument('--n_subsample', type=int, default=100,
                     help='n_subsample passed to Solver.forward_regularised')
+    p.add_argument('--reg_solver', type=str, default='dense', choices=['dense', 'thomas'],
+                    help="Solver for Theta_reg: 'dense' (legacy float32 dense solve) or "
+                         "'thomas' (float64 block-Thomas on CPU, O(n r^2) memory; use "
+                         "with --n_subsample 1 for no block averaging)")
+    p.add_argument('--reg_ridge', type=float, default=0.0,
+                    help='thomas only: M_k += reg_ridge * diag(M_k) in the Theta_reg '
+                         'problem (0 = off)')
+    p.add_argument('--reg_mode', type=str, default=None, choices=['legacy', 'moment'],
+                    help="Energy of Theta_reg (thomas only for 'moment'). Default: 'moment' "
+                         "with --reg_solver thomas, 'legacy' with dense. 'moment': time term "
+                         "Sigma_w Theta_dot = mdot (walker covariance, pathwise mdot, no tau); "
+                         "adds _moment to the name. 'legacy': the pre-2026-09-30 tau-based "
+                         "term (reproduction only, see notes/guth_reg_audit_0930)")
+    p.add_argument('--reg_schedule', type=str, default='uniform', choices=['uniform', 'guth'],
+                    help="moment mode: quadrature weights uniform in t (default) or Guth et "
+                         "al.'s schedule mapped to Cos time (comparison option)")
+    p.add_argument('--cond_every', type=int, default=0,
+                    help='every N steps, log the spectrum of the Jacobi-scaled live Gram of the '
+                         'eta and theta solves (lambda_min/max, n_live, lambda_min eigenvector, '
+                         'margin above the live floor) to saved_results/aux_moments/'
+                         '<config>_cond.pt; 0 = off. Diagnostic only, no name tag')
+    p.add_argument('--interp_time_terms', action='store_true',
+                    help='thomas only: also save r-vector diagnostics of the tau term on the '
+                         'interpolant samples (c_I, m_I, mean tau_I); off by default')
+    p.add_argument('--deduplicate_filters', action='store_true',
+                    help='Drop filters_Q channels proportional to an earlier one for the '
+                         'channel-list potentials (L_6_psi, Scalar_psi_*): lossless, removes '
+                         'exactly duplicated statistics (e.g. M=256, J=8, Q=3: channels 21-23 '
+                         '== channel 20); adds _dedupfilt to the name')
+    p.add_argument('--dedup_tol', type=float, default=1e-12,
+                    help='with --deduplicate_filters: drop channel i when 1 - |cos(f_i, f_j)| <= tol '
+                         'for a kept j. 1e-12 (default) = exact copies only (M=256, J=8, Q=3: drops 22, 23). '
+                         '1e-8 also drops channel 21, which differs from the kept channel 20 only '
+                         'by 20\'s 1.1e-4 component at bin 2 (1 - cos = 6e-9): their statistics are '
+                         'near-duplicates (normalized-gradient cond 9.6e4 with both, 12 without). '
+                         'Adds the tol to the name when not the default')
+    p.add_argument('--ggd_tail_quantile', type=float, default=None,
+                    help='Scalar_*_gaussianK: force the outermost region cut to this quantile '
+                         'of |z_j| (e.g. 0.99) instead of the likelihood/BIC search. '
+                         'Not in the config name: use --label')
+    p.add_argument('--ggd_tail_alpha_bounds', type=float, nargs=2, default=None,
+                    metavar=('LO', 'HI'),
+                    help='Scalar_*_gaussianK: alpha bounds for the outermost region only '
+                         '(e.g. 0.5 3). Not in the config name: use --label')
+    p.add_argument('--ggd_tail_mass', action='store_true',
+                    help='Scalar_*_gaussianK: add the outer-region mass <w_K> as one more '
+                         'statistic per channel, and fit the outer alpha without scale floor. '
+                         'Not in the config name: use --label')
+    p.add_argument('--ggd_all_masses', action='store_true',
+                    help='Scalar_*_gaussianK, with --ggd_tail_mass: also the mass <w_k> of every inner '
+                         'window except the first active one of each channel. Not in the config name: '
+                         'use --label')
+    p.add_argument('--ggd_boundary_method', type=str, default=None, choices=['auto', 'likelihood'],
+                    help="Scalar_*_gaussianK: how the region cuts are placed. Default None = the class "
+                         "default ('auto': BIC picks the number of regions, unused slots are dead windows). "
+                         "'likelihood': always K regions (jets, 2026-10-28: 4 populated regions per channel)")
+    p.add_argument('--ggd_bic_min_window', type=float, default=None, metavar='C',
+                    help='Scalar_*_gaussianK: constrained BIC, no window narrower than C times the noise '
+                         'one SDE step adds to the channel at 1 - t = --ggd_noise_ref_gap (fixed grids only). '
+                         'Not in the config name: use --label')
+    p.add_argument('--ggd_noise_ref_gap', type=float, default=1e-2,
+                    help='1 - t of the step whose noise sets --ggd_bic_min_window')
+    p.add_argument('--ggd_min_window_noise', type=float, default=None, metavar='C',
+                    help='Scalar_*_gaussianK: merge inner windows narrower than C times the '
+                         'noise the last SDE step adds to each channel (C * sqrt(2 h_end) * '
+                         'sigma * per-channel white-noise std). Fixed grids only. Not in the '
+                         'config name: use --label')
+    p.add_argument('--drop_stats', nargs='*', default=None, metavar='NAME:CHANNEL:REGION',
+                    help='Region statistics removed after the fit, e.g. '
+                         'Scalar_morlet_gaussianK:8:3 (= Scalar_morlet[30] of the zfloor fit, a '
+                         'near-copy of Scalar_psi ch 21 region 3). Fails if the slot is not active. '
+                         'Not in the config name: use --label')
+    p.add_argument('--gram_preflight', type=float, default=None, metavar='TOL',
+                    help='Before the SDE, fit the potentials and drop every statistic whose gradient is '
+                         'explained to within TOL (residual fraction) by the statistics before it, in the '
+                         'order L_6, Scalar_morlet, Scalar_psi, ... across families '
+                         '(codes/gram_preflight.py). E.g. 1e-6. Not in the config name: use --label')
+    p.add_argument('--preflight_only', action='store_true',
+                    help='With --gram_preflight: write gram_preflight.json and stop before the SDE')
+    p.add_argument('--extra_corrector_max', type=int, default=0, metavar='N',
+                    help='Tail steps: extra corrector passes (same Gram) until every live statistic is '
+                         'within --extra_corrector_tau standard errors of its target, at most N. 0 = off '
+                         '(single pass, as before). Not in the config name: use --label')
+    p.add_argument('--extra_corrector_tau', type=float, default=1.0,
+                    help='Tolerance of the extra corrector, in standard errors of each target moment')
+    p.add_argument('--extra_corrector_tail', type=float, default=0.1,
+                    help='Extra corrector only where 1 - t < this')
+    p.add_argument('--theta_solver', type=str, default=None, choices=['ridge', 'jac_minres', 'ito_cg'],
+                   help='Use SDEKrylov with this corrector solver (ridge = --regularization). Adds '
+                        '_<solver> to the name, plus _eta<value> / _g64 for the options below')
+    p.add_argument('--eta_regularization', type=float, default=None,
+                   help='With --theta_solver: ridge of the eta solve, separate from --regularization (e.g. 1e-7)')
+    p.add_argument('--g64', action='store_true',
+                   help='With --theta_solver: accumulate the Gram in float64 (needs --solve_float64)')
+    p.add_argument('--monitor_abort', action='store_true',
+                   help='With --theta_solver: abort on the live stability criteria of SDEKrylov '
+                        '(non-finite, R_k spike > 100x, weak-direction growth); the monitoring file '
+                        'saved_results/aux_moments/<config>_monitor.pt is always written')
+    p.add_argument('--solve_float64', action='store_true',
+                    help='Per-step eta/theta solves in float64 (needed only for small '
+                         '--regularization, ridge near float32 rounding); adds _f64 to the name')
+    p.add_argument('--save_reg_system', action='store_true',
+                    help='Save the regularised system (t_reg, M, G, b, c) before the '
+                         'solve, for offline lam re-tuning with codes/resolve_theta_reg.py '
+                         '(~ nt * r^2 * 8 bytes: ~24 GB for nt=40000, r=272)')
+    p.add_argument('--reg_system_dir', type=str, default=None,
+                    help='Where --save_reg_system writes (default '
+                         '<outdir>/saved_results/reg_system), e.g. a $SCRATCH path')
+    p.add_argument('--skip_reg_solve', action='store_true',
+                    help='Skip the in-run Theta_reg solve (requires --save_reg_system); '
+                         'roughly halves peak host RAM, solve offline instead')
 
     # Batch
     p.add_argument('--batch_size', type=int, default=None,
@@ -161,6 +273,7 @@ def parse_args():
     p.add_argument('--no_save_aux_moments', action='store_true',
                     help='Disable saving of barphi_e / barphi_p aux moments')
     p.add_argument('--seed', type=int, default=0, help='Random seed')
+    add_schedule_args(p)                             # --schedule power | two_phase | adaptive
 
     return p.parse_args()
 
@@ -313,12 +426,13 @@ def main():
     B, channels, M = x1.shape
 
     # ---- per-experiment folder: outdir/experiments/<config>/ ----
-    config, exp_dir, fig_dir, _potentials_dir, logger, loaded = resolve_or_setup_experiment_output(
+    config, exp_dir, fig_dir, potentials_dir, logger, loaded = resolve_or_setup_experiment_output(
         outdir, args, M, device, coarse_grained=coarse_grained,
         extra_metadata={
             'M': M, 'B': B, 'channels': channels,
             'coarse_grained': coarse_grained, 'pre_coarse_grain_length': pre_len,
         },
+        include_potentials_dir=True,
     )
     logger.info('Data: %s record, %d samples', args.dataset, load_modane_raw().size)
     logger.info('Calculated scales applied: %d', scales_needed)
@@ -327,17 +441,16 @@ def main():
     with logged_run(logger):
         filters, filters_Phi = return_Filters(M, args.J, 1, device=device, include_phi=True)
 
-        t = 1 - (1 - torch.linspace(0, 1, args.nt + 1)) ** args.schedule_exponent
-
-        t_rounded = torch.round(t, decimals=4)
-        t_final = int((t_rounded == 1.0).nonzero(as_tuple=True)[0][0])
-        logger.info(f"t_final = {t_final}/{len(t)} (last t = {t[t_final-1].item():.6f}, "
-            f"dropping {len(t) - t_final} redundant trailing points at 1.0000)")
+        # --schedule power (default) is the legacy grid, cut at 1.0000 as before;
+        # two_phase / adaptive: see codes/time_schedules.py
+        t, adaptive = build_time_grid(args, logger)
 
         if loaded is not None:
             result = loaded
         else:
-            result = run_experiment(args, M, config, x1, filters, t[:t_final], logger, outdir, device)
+            result = run_experiment(args, M, config, x1, filters, t, logger, outdir, device,
+                                    filters_Phi=filters_Phi, potentials_save_dir=potentials_dir,
+                                    adaptive=adaptive)
 
         save_diagnostics(x1, result, t, args, config, fig_dir, logger)
 
