@@ -11,7 +11,11 @@
 
 # Which systems: glob matched inside REG_SYSTEM_DIR (e.g. one potential set)
 SYSTEM_PATTERN="${SYSTEM_PATTERN:-*_lamtune_*.pt}"   # override: SYSTEM_PATTERN="..." bash resolve_lamsweep.sh
-REG_SYSTEM_DIR="${SCRATCH:+${SCRATCH}/MGD-for-Maximum-Entropy-Generation/turbulence/reg_system}"
+# (2026-10-28: an outside REG_SYSTEM_DIR is kept; before, this line overwrote it)
+REG_SYSTEM_DIR="${REG_SYSTEM_DIR:-${SCRATCH:+${SCRATCH}/MGD-for-Maximum-Entropy-Generation/turbulence/reg_system}}"
+# Which experiment's results (saved_results/ of the runs, and where the sweep is written): turbulence by default;
+# jets: RESULTS_DIR=jets REG_SYSTEM_DIR=$SCRATCH/MGD-for-Maximum-Entropy-Generation/jets/reg_system/jets_full \
+#       SYSTEM_PATTERN='*.pt' RIDGE=1e-4 bash turbulence/launch/resolve_lamsweep.sh
 
 # lam grid: 0 (the unsmoothed per-node solve, the reference lamtune_select.ipynb
 # measures residuals against) plus half-decade steps over 1e-8 .. 1e-3
@@ -74,9 +78,10 @@ MODULE="pytorch-gpu/py3/2.8.0"
 LAUNCH_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 TURB_DIR="$(cd "${LAUNCH_DIR}/.." && pwd)"
 PROJECT_DIR="$(cd "${TURB_DIR}/.." && pwd)"
-REG_SYSTEM_DIR="${REG_SYSTEM_DIR:-${TURB_DIR}/saved_results/reg_system}"
-OUT_DIR="${TURB_DIR}/saved_results/theta_reg_lamsweep"
-LOG_DIR="${TURB_DIR}/saved_results/logs"
+RESULTS_DIR="$(cd "${RESULTS_DIR:-${TURB_DIR}}" && pwd)"
+REG_SYSTEM_DIR="${REG_SYSTEM_DIR:-${RESULTS_DIR}/saved_results/reg_system}"
+OUT_DIR="${RESULTS_DIR}/saved_results/theta_reg_lamsweep"
+LOG_DIR="${RESULTS_DIR}/saved_results/logs"
 mkdir -p "${LOG_DIR}" "${OUT_DIR}"
 
 shopt -s nullglob
@@ -114,7 +119,7 @@ python codes/resolve_theta_reg.py "\${FILES[\${SLURM_ARRAY_TASK_ID}]}" \
     --ridge ${RIDGE} \
     ${MODE:+--mode ${MODE}} --schedule ${SCHEDULE} ${DIM:+--dim ${DIM}} \
     --mask ${MASK} $( [ "${SELECT}" = "1" ] && echo --select ) \
-    --results_root "${TURB_DIR}" \
+    --results_root "${RESULTS_DIR}" \
     --diagnose 5 \
     --outdir "${OUT_DIR}"
 EOT

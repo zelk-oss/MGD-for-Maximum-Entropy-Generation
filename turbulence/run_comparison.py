@@ -955,18 +955,21 @@ def plot_band_hists(pairs, bank='psi', kind='real', bands=None, J=None, n_series
     plt.show()
 
 
+PARTS = {'real': np.real, 'imag': np.imag}
+
+
 def channel_table(x_data, xs, bank='psi', J=None, moments=(2, 4, 6),
-                  quantiles=(0.99, 0.999, 0.9999), n_series=5000, seed=0):
-    """Generated / data ratios of Re W, channel by channel (1 = perfect), one block per run.
+                  quantiles=(0.99, 0.999, 0.9999), n_series=5000, seed=0, part='real'):
+    """Generated / data ratios of Re W (part='imag': Im W), channel by channel (1 = perfect), one block per run.
 
     Moments are E|W|^p ratios, quantiles are q_a(|W|) ratios. xs: {name: samples (B, M)}.
     Row j{j}q{q} = band of the bank (j0 finest); a column is (metric, run)."""
     M = x_data.shape[-1]
     psi, labels, _ = wavelet_bank(M, bank, J)
-    ad = np.abs(np.real(_coeffs(x_data, psi, n_series, np.random.default_rng(seed))))
+    ad = np.abs(PARTS[part](_coeffs(x_data, psi, n_series, np.random.default_rng(seed))))
     out = {}
     for name, x in xs.items():
-        ag = np.abs(np.real(_coeffs(x, psi, n_series, np.random.default_rng(seed))))
+        ag = np.abs(PARTS[part](_coeffs(x, psi, n_series, np.random.default_rng(seed))))
         cols = {f'm{p}': (ag ** p).mean(1) / (ad ** p).mean(1) for p in moments}
         cols.update({f'q{a}': np.quantile(ag, a, axis=1) / np.quantile(ad, a, axis=1)
                      for a in quantiles})
@@ -988,14 +991,15 @@ def style_channel_table(df, tol=0.01):
     return df.style.apply(lambda _: css, axis=None).format('{:.2f}')
 
 
-def plot_tail_hists(x_data, xs, bank='psi', J=None, n_ch=6, n_series=5000, bins=100, seed=0):
-    """|Re W| per channel (finest n_ch of the bank), data in black vs each run:
+def plot_tail_hists(x_data, xs, bank='psi', J=None, n_ch=6, n_series=5000, bins=100, seed=0, part='real'):
+    """|Re W| (part='imag': |Im W|) per channel (finest n_ch of the bank), data in black vs each run:
     left log-density histogram, right survival function P(|W| >= x) in log-log (tails)."""
     M = x_data.shape[-1]
     psi, labels, _ = wavelet_bank(M, bank, J)
     psi, labels = psi[:n_ch], labels[:n_ch]
     w = {'data': x_data, **xs}
-    W = {k: np.abs(np.real(_coeffs(v, psi, n_series, np.random.default_rng(seed)))) for k, v in w.items()}
+    W = {k: np.abs(PARTS[part](_coeffs(v, psi, n_series, np.random.default_rng(seed)))) for k, v in w.items()}
+    P = 'Re W' if part == 'real' else 'Im W'
     cols = {'data': DATA_COLOR, **_colors(xs)}
     fig, axes = plt.subplots(len(labels), 2, figsize=(11, 2.4 * len(labels)), squeeze=False)
     for b, lab in enumerate(labels):
@@ -1009,8 +1013,8 @@ def plot_tail_hists(x_data, xs, bank='psi', J=None, n_ch=6, n_series=5000, bins=
         for a in axes[b]:
             a.grid(alpha=0.2, which='both')
     axes[0, 0].legend(fontsize=8, frameon=False)
-    axes[0, 0].set_title('|Re W|, density'); axes[0, 1].set_title('survival P(|Re W| >= x)')
-    fig.suptitle(f'{bank} bank (Q={BANKS[bank]}), finest {len(labels)} channels', y=1.0)
+    axes[0, 0].set_title(f'|{P}|, density'); axes[0, 1].set_title(f'survival P(|{P}| >= x)')
+    fig.suptitle(f'{bank} bank (Q={BANKS[bank]}), finest {len(labels)} channels, {P}', y=1.0)
     fig.tight_layout()
     plt.show()
 
