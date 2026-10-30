@@ -46,7 +46,7 @@ from pathlib import Path
 import numpy as np
 import torch
 import matplotlib
-if 'ipykernel' not in sys.modules:                          # imported by a notebook: keep its inline backend
+if __name__ == '__main__':                                  # only as a script: an importing notebook keeps its backend
     matplotlib.use('Agg')
 import matplotlib.pyplot as plt
 

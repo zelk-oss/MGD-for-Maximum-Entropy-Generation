@@ -35,7 +35,7 @@ from pathlib import Path
 
 import numpy as np
 import matplotlib
-if 'ipykernel' not in sys.modules:                          # imported by a notebook: keep its inline backend
+if __name__ == '__main__':                                  # only as a script: an importing notebook keeps its backend
     matplotlib.use('Agg')
 import matplotlib.pyplot as plt
 
@@ -183,7 +183,7 @@ def compute(args):
 
 
 # --------------------------------------------------------------- arm vs arm (b) ----
-def arm_difference(z, out_dir, pair=(0, 1)):
+def arm_difference(z, out_dir, pair=(0, 1), tag=''):
     names = list(z['run_names'])
     ia, ib = pair
     a, b = names[ia], names[ib]
@@ -205,7 +205,7 @@ def arm_difference(z, out_dir, pair=(0, 1)):
                          frac_a_closer_among_differ=float(closer_a[sig].mean()) if sig.any() else np.nan,
                          median_abs_z=float(np.median(np.abs(zs))) if len(zs) else np.nan,
                          median_abs_diff=float(np.median(dabs)) if len(zs) else np.nan))
-    with open(out_dir / 'arm_difference.csv', 'w', newline='') as f:
+    with open(out_dir / f'arm_difference{tag}.csv', 'w', newline='') as f:
         w = csv.writer(f)
         w.writerow([f'# A = {a} ({na} seeds), B = {b} ({nb} seeds); differ = |m_A - m_B| > 2 seed sigma of the '
                     'difference; A closer = |deviation of A from data| < that of B'])
@@ -224,9 +224,9 @@ def arm_difference(z, out_dir, pair=(0, 1)):
     ax.set_title(f'A = {a}  vs  B = {b}\n(differ = > 2 seed sigma; 0.5 in column 2 = no preference)', fontsize=9)
     fig.colorbar(im, ax=ax, fraction=0.04)
     fig.tight_layout()
-    fig.savefig(out_dir / 'arm_difference.png', dpi=130)
+    fig.savefig(out_dir / f'arm_difference{tag}.png', dpi=130)
     plt.close(fig)
-    print(open(out_dir / 'arm_difference.csv').read())
+    print(open(out_dir / f'arm_difference{tag}.csv').read())
 
 
 def main():
@@ -241,6 +241,9 @@ def main():
     ap.add_argument('--root', default=str(HERE), help='folder holding saved_results/ and experiments/')
     ap.add_argument('--out', type=Path, default=HERE / 'figures' / 'jets_compare')
     ap.add_argument('--plot_only', action='store_true')
+    ap.add_argument('--pairs', nargs='+', default=None,
+                    help='arm-vs-arm tables as A:B (--names), each -> arm_difference_A_vs_B.csv/png; '
+                         'default: first arm vs second -> arm_difference.csv/png')
     args = ap.parse_args()
     assert len(args.labels) == len(args.names), '--labels and --names must have the same length'
     args.sigma_note = 'data halves + seed spread of each arm / sqrt(n seeds)'
@@ -248,7 +251,12 @@ def main():
         compute(args)
     csc.plot(args)                                          # all figures + summary.csv/png (a), per-arm sigma
     z = np.load(args.out / 'curves.npz', allow_pickle=True)
-    if len(z['run_names']) > 1:
+    names = list(z['run_names'])
+    if args.pairs:
+        for p in args.pairs:                                # (b): each requested pair
+            a, b = p.split(':')
+            arm_difference(z, args.out, (names.index(a), names.index(b)), tag=f'_{a}_vs_{b}')
+    elif len(names) > 1:
         arm_difference(z, args.out)                         # (b): first arm vs second
 
 

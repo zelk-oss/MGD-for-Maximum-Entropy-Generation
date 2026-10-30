@@ -7,7 +7,14 @@
 # Two arms (ARM):
 #   full      L_6, Scattering 1st/2nd/3rd (Real+Imag)/4th Mod2 (Real+Imag), Scalar_morlet_gaussianK
 #   noscalar  the same without the scalar potential
+#   scat2         L_6, Scattering 1st/2nd only (2026-10-29: check that the higher-order statistics are NOT
+#                 reproduced when their potentials are missing)
+#   scat2_scalar  scat2 + Scalar_morlet_gaussianK (same scalar windows as full)
 # (Scalar_psi_gaussianK is not used: at Q=1 it is the same bank as Scalar_morlet_gaussianK.)
+#
+# The cross-seed lambda sweep (lam_selection_criterion/launch_turb_xseed.sh) is chained after the SDE array
+# (CHAIN_XSEED=true, default): phase 1 seed k starts when SDE task k succeeded, phase 2 after all of phase 1.
+# Output: lam_selection_criterion/results/jets_xseed/xseed_jets_<ARM>.pt + slurm logs.
 #
 # Choices (2026-10-28): N1 10000, nt 40000, seeds 500-504, regularization 1e-4, SUBSERIES_LEN 512 -> 256.
 # Schedule from the data (jets/data_audit/choose_schedule.py): gap_end 7.5e-4 = leftover Cos noise 1% of the
@@ -24,6 +31,10 @@
 #   ARM=full bash jets/launch_jet_SDE.sh
 #   ARM=noscalar bash jets/launch_jet_SDE.sh
 #   SEEDS="500" ARM=full bash jets/launch_jet_SDE.sh           # other seeds
+#   ARM=scat2 bash jets/launch_jet_SDE.sh
+#   ARM=scat2_scalar bash jets/launch_jet_SDE.sh
+#   CHAIN_XSEED=false ...                                      # SDE only, no lambda sweep
+#   JOB_TIME=10:00:00 ...                                      # other job time (default 14 h)
 
 # timestamp shared by all array tasks of one submission
 TIMESTAMP=$(date +"%Y%m%d_%H%M")
@@ -31,6 +42,7 @@ TIMESTAMP=$(date +"%Y%m%d_%H%M")
 ARM="${ARM:-full}"
 SEED_LIST=(${SEEDS:-500 501 502 503 504})
 PREFLIGHT_ONLY="${PREFLIGHT_ONLY:-false}"
+CHAIN_XSEED="${CHAIN_XSEED:-true}"
 
 # ── PARAMETERS ───────────────────────────────────────
 N1=10000
@@ -78,14 +90,16 @@ BASE_TERMS=(
 case "${ARM}" in
     full)     TERMS=("${BASE_TERMS[@]}" Scalar_morlet_gaussianK); SCALAR=true ;;
     noscalar) TERMS=("${BASE_TERMS[@]}");                         SCALAR=false ;;
-    *) echo "unknown ARM '${ARM}'; use full | noscalar"; exit 1 ;;
+    scat2)        TERMS=(L_6 Scattering_First_Order Scattering_Second_Order);                         SCALAR=false ;;
+    scat2_scalar) TERMS=(L_6 Scattering_First_Order Scattering_Second_Order Scalar_morlet_gaussianK); SCALAR=true ;;
+    *) echo "unknown ARM '${ARM}'; use full | noscalar | scat2 | scat2_scalar"; exit 1 ;;
 esac
 
 # ── SLURM & JEAN ZAY QOS CONFIG ──────────────────────
 ACCOUNT="wbg@h100"
 CONSTRAINT="h100"
 PARTITION="gpu_p6"
-TIME="14:00:00"          # job time; loop budget = TIME - 30 min reserve = 13.5 h (loop_budget_s in codes/sde_routines.py)
+TIME="${JOB_TIME:-14:00:00}"   # job time; loop budget = TIME - 30 min reserve = 13.5 h (loop_budget_s in codes/sde_routines.py)
 CPUS=24
 NGPUS=1
 
@@ -191,3 +205,12 @@ LEDGER="${LOG_DIR}/submissions.tsv"
 printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
     "$(date -Iseconds)" "${JOBID}" "${EXP_NAME}" "$(basename "$0")" "${TIMESTAMP}" \
     "${SEED_LIST[*]}" "${N1}" "${NT}" "${LAM}" "${TERMS_STR}" >> "${LEDGER}"
+
+# Cross-seed lambda sweep, chained (systems are found at run time, one per seed).
+if [ "${CHAIN_XSEED}" = "true" ] && [ "${PREFLIGHT_ONLY}" != "true" ] && [ -n "${REG_SYSTEM_DIR}" ]; then
+    DEPEND="${JOBID}" SEEDS="${SEED_LIST[*]}" ARM="${EXP_NAME}" RIDGE="${REGULARIZATION}" \
+    REG_SYSTEM_DIR="${REG_SYSTEM_DIR}" SYSTEM_PATTERN='*.pt' \
+    SWEEP_DIR="${SCRATCH}/MGD-for-Maximum-Entropy-Generation/jets/theta_reg_lamsweep_xseed" \
+    OUT="${SCRIPT_DIR}/../lam_selection_criterion/results/jets_xseed" \
+        bash "${SCRIPT_DIR}/../lam_selection_criterion/launch_turb_xseed.sh"
+fi
