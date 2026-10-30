@@ -26,7 +26,8 @@ import numpy as np
 import pandas as pd
 import torch
 import matplotlib
-matplotlib.use('Agg')
+if __name__ == '__main__':                  # only as a script: an importing notebook keeps its backend
+    matplotlib.use('Agg')
 import matplotlib.pyplot as plt
 from scipy import stats
 
@@ -169,7 +170,10 @@ def main(label, seed, lam, ridge, eps, use_theta_t, percentiles, unconstrained=F
 
     inc = (x1[..., 1:] - x1[..., :-1]).abs().amax(dim=(1, 2)).cpu().numpy()
     fams = list(C)
-    npz = HERE / 'figures' / 'data' / f'logp_C_{label}_lam{lam:g}{"_unc" if unconstrained else ""}.npz'
+    # seed 900 keeps the original name (read by plot_logp_summary.py, talk_turbulence.ipynb); other seeds
+    # get _seed<N>, so they never overwrite it (2026-10-30)
+    stag = '' if seed == 900 else f'_seed{seed}'
+    npz = HERE / 'figures' / 'data' / f'logp_C_{label}{stag}_lam{lam:g}{"_unc" if unconstrained else ""}.npz'
     np.savez(npz, increment=inc, theta_desc=desc, **C)           # read by plot_logp_summary.py
     print(f'saved family contributions: {npz}')
     for P in percentiles:
@@ -192,7 +196,7 @@ def main(label, seed, lam, ridge, eps, use_theta_t, percentiles, unconstrained=F
         df['SE(D)'] = boot.std(0, ddof=1)
         with pd.option_context('display.float_format', '{:,.4g}'.format, 'display.width', 200):
             print(df.to_string())
-        plot_shapes(C, rare, P, label, HERE / 'figures' / f'logp_families_{label}_lam{lam:g}_p{P:g}.png')
+        plot_shapes(C, rare, P, label, HERE / 'figures' / f'logp_families_{label}{stag}_lam{lam:g}_p{P:g}.png')
     print('\nstd across signals of each family (all signals), and corr with TOTAL:')
     for F in fams:
         if F != 'TOTAL':

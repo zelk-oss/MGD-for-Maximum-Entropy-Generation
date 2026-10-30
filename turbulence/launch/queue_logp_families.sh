@@ -4,9 +4,10 @@
 #
 #   1. theta_sign_constraint/launch_l6neg.sh on the arm's saved reg system, chained behind
 #      the SDE job (DEPEND, aftercorr) when given, else submitted at once;
-#   2. a small H100 dev job (afterok on 1) that prints the per-family log p table and writes
-#      turbulence/figures/logp_families_<LABEL>_p<P>.png, output in
-#      turbulence/figures/data/logp_<LABEL>.txt.
+#   2. small H100 dev jobs, one per seed (array, task k after L_6<0 task k), that print the per-family
+#      log p table and write turbulence/figures/logp_families_<LABEL>[_seed<N>]_p<P>.png and
+#      figures/data/logp_C_<LABEL>[_seed<N>]_lam<lam>.npz (no suffix for seed 900); text output in
+#      turbulence/figures/data/logp_<LABEL>_seed<N>.txt.
 # Needs the reg system of the arm on $SCRATCH (SAVE_REG_SYSTEM=true in the launchers).
 #
 # Usage (repo root on Jean Zay):
@@ -38,10 +39,13 @@ echo "${OUT}"
 L6_ID=$(echo "${OUT}" | sed -n 's/^Submitted \([0-9]*\) .*/\1/p' | tail -1)
 if [ -z "${L6_ID}" ]; then echo "Error: could not read the L_6<0 job id"; exit 1; fi
 
-OUTTXT="${TURB_DIR}/figures/data/logp_${LABEL}.txt"
-POST_ID=$(sbatch --parsable --dependency=afterok:${L6_ID} <<EOT
+# one array task per seed (2026-10-30; before: first seed only). Task k waits for L_6<0 task k (aftercorr).
+SEED_ARR=(${SEEDS})
+OUTTXT="${TURB_DIR}/figures/data/logp_${LABEL}_seed\${SEED}.txt"
+POST_ID=$(sbatch --parsable --dependency=aftercorr:${L6_ID} --kill-on-invalid-dep=yes <<EOT
 #!/bin/bash
 #SBATCH --job-name=logp_${LABEL}
+#SBATCH --array=0-$(( ${#SEED_ARR[@]} - 1 ))
 #SBATCH -A wbg@h100
 #SBATCH --partition=gpu_p6
 #SBATCH -C h100
@@ -50,18 +54,20 @@ POST_ID=$(sbatch --parsable --dependency=afterok:${L6_ID} <<EOT
 #SBATCH --cpus-per-task=24
 #SBATCH --hint=nomultithread
 #SBATCH --time=01:00:00
-#SBATCH --output=${LOG_DIR}/slurm_%x_%j.log
+#SBATCH --output=${LOG_DIR}/slurm_%x_%A_%a.log
 module purge
 module load arch/h100
 module load pytorch-gpu/py3/2.8.0
 cd "${PROJECT_DIR}"
+SEED_ARR=( ${SEED_ARR[@]} )
+SEED=\${SEED_ARR[\${SLURM_ARRAY_TASK_ID}]}
 : > "${OUTTXT}"
 for L in ${LAMS}; do
     echo "################ lam \${L}" >> "${OUTTXT}"
-    python turbulence/logp_family_contrib.py --label ${LABEL} --seed ${SEEDS%% *} --lam \${L} --ridge ${RIDGE} >> "${OUTTXT}" 2>&1
+    python turbulence/logp_family_contrib.py --label ${LABEL} --seed \${SEED} --lam \${L} --ridge ${RIDGE} >> "${OUTTXT}" 2>&1
 done
 echo "written ${OUTTXT}"
 EOT
 )
 if [ -z "${POST_ID}" ]; then echo "Error: sbatch returned no job id for the log p job"; exit 1; fi
-echo "Queued log p families ${POST_ID} after L_6<0 job ${L6_ID} -> ${OUTTXT}"
+echo "Queued log p families ${POST_ID} (array of ${#SEED_ARR[@]}) after L_6<0 job ${L6_ID} -> ${OUTTXT}"

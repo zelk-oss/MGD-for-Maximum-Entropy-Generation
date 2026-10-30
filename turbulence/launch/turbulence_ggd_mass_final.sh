@@ -19,7 +19,10 @@
 #   NT=52000 N_BULK=2000 bash turbulence/launch/turbulence_ggd_mass_final.sh
 #
 # Usage (on Jean Zay, repo root):
-#   bash turbulence/launch/turbulence_ggd_mass_final.sh                   # + post checks + log p chain
+#   SEEDS="901 902 903 904" bash turbulence/launch/turbulence_ggd_mass_final.sh
+#       chain per seed: SDE -> Theta_reg L_6<0 (lam 5e-4) -> log p per family; + cross-seed lam check
+#       (2026-10-30; post checks are seed-900 only and off for other seeds)
+#   bash turbulence/launch/turbulence_ggd_mass_final.sh                   # seed 900: + post checks + log p chain
 #   CHAIN_LOGP=false bash ...      # post checks only (the L_6<0 Theta_reg solve of M=256 is long)
 #   POST_CHECKS=false bash ...     # neither
 
@@ -72,7 +75,9 @@ MODULE_PRE="arch/h100"
 
 source "${LAUNCH_DIR}/_submit_turb_sweep.sh"
 
-if [ "${POST_CHECKS:-true}" = "true" ]; then
+# post checks read seed 900's outputs only: on by default only when seed 900 is in this launch
+case " ${SEED_LIST[*]} " in *" 900 "*) POST_DEFAULT=true ;; *) POST_DEFAULT=false ;; esac
+if [ "${POST_CHECKS:-${POST_DEFAULT}}" = "true" ]; then
     DEPEND="${JOBID}" ARM=mass_final LABEL="${EXP_NAME}" CONTROLS="final mass_noScat4" \
     PAIRS="mass \+ Scat4 at M=256|Scat4 on top of mass, M=256" \
         bash "${LAUNCH_DIR}/queue_post_checks.sh"
@@ -80,7 +85,18 @@ fi
 
 # Theta_reg with L_6<0 (lam 5e-4, ridge 1e-4, L_6 columns 0:9 at J=8) + per-family log p.
 # M=256 solves are slower than the M=128 ones: 250-310 s per round on the turbulence_final systems.
-if [ "${POST_CHECKS:-true}" = "true" ] && [ "${CHAIN_LOGP:-true}" = "true" ]; then
+# (independent of POST_CHECKS since 2026-10-30)
+if [ "${CHAIN_LOGP:-true}" = "true" ]; then
     DEPEND="${JOBID}" SEEDS="${SEED_LIST[*]}" LABEL="${EXP_NAME}" COLS=0:9 TIME=06:00:00 \
         bash "${LAUNCH_DIR}/queue_logp_families.sh"
+fi
+
+# Cross-seed lambda check (lam_selection_criterion/turb_xseed.py), chained per seed. Only a CHECK: the L_6<0
+# solve above uses lam 5e-4 for every seed, so they stay comparable with seed 900, whose reg system was deleted
+# (2026-10-28) and cannot be re-solved at another lam. Needs >= 2 seeds in this launch; 5e-4 is in the grid.
+if [ "${CHAIN_XSEED:-true}" = "true" ] && [ ${#SEED_LIST[@]} -ge 2 ]; then
+    DEPEND="${JOBID}" SEEDS="${SEED_LIST[*]}" ARM="${EXP_NAME}" RIDGE="${REGULARIZATION}" \
+    REG_SYSTEM_DIR="${REG_SYSTEM_DIR}" LAMS="${XSEED_LAMS:-0 1e-6 1e-5 1e-4 5e-4 1e-3 1e-2 1e-1 1}" \
+    OUT="${LAUNCH_DIR}/../../lam_selection_criterion/results/turb_xseed" \
+        bash "${LAUNCH_DIR}/../../lam_selection_criterion/launch_turb_xseed.sh"
 fi
