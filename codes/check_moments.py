@@ -931,6 +931,247 @@ def leverage_plot(Data, synth, p=2.0, scale=1, max_tau=50, beta=None, ksize=1,
 
     return tau, L_data, err_data, L_synth, err_synth
 
+
+def signed_leverage_correlation(data, scale=1, max_tau=50):
+    """
+    Signed leverage correlation (Bouchaud, Matacz & Potters 2001, Eq. 1-2):
+        L(tau) = < dX(t-tau) * dX(t)^2 >_t / < dX^2 >^2,   dX(t) = X(t) - X(t-scale)
+    tau in [-(max_tau-1), max_tau-1]; tau > 0 correlates a PAST signed increment
+    with PRESENT squared activity (finance: L(tau>0) < 0, L(tau<0) ~ 0).
+
+    Symmetries:
+      - X and -X equally likely      -> L(tau) = 0 for all tau.
+      - X time-reversible            -> L(-tau) = -L(tau) (odd), so L(0) = 0.
+    Time asymmetry therefore shows up as the even part L(tau) + L(-tau) != 0.
+    Contrast with leverage_correlation (|dX(t-tau)|), which is even under
+    time reversal and insensitive to x -> -x.
+
+    Z = <dX^2>^2 is computed per series (as per stock in the paper), then
+    L(tau) is averaged over the leading (batch/channel) dims with error bars.
+
+    Parameters
+    ----------
+    data : torch.Tensor or numpy.ndarray, shape (..., T), e.g. (B, C, T)
+    scale : int
+        Increment lag; scale=1 is the paper's definition.
+    max_tau : int
+        Lags run over -(max_tau-1) .. max_tau-1, capped at T - scale.
+
+    Returns
+    -------
+    taus : (2*max_tau_eff - 1,) ndarray
+    L_mean, L_err : ndarray, same shape as taus
+        Mean and SEM over batch/channel elements.
+    """
+    x = data.cpu().numpy() if hasattr(data, 'cpu') else np.asarray(data)
+    T = x.shape[-1]
+    if scale >= T:
+        raise ValueError(f"scale={scale} must be < T={T}")
+
+    x2 = x.reshape(-1, T).astype(np.float64)              # (N, T)
+
+    # signed increment dX(s) = X(s) - X(s-scale), stored at k = s - scale
+    d = x2[:, scale:] - x2[:, :-scale]
+    d2 = d ** 2
+    Z = d2.mean(axis=-1) ** 2                             # (N,), <dX^2>^2 per series
+
+    Te = d.shape[-1]
+    max_tau = int(min(max_tau, Te))
+    taus = np.arange(-(max_tau - 1), max_tau)
+    L_samples = np.empty((x2.shape[0], len(taus)))
+
+    for i, tau in enumerate(taus):
+        if tau >= 0:
+            a = d[:, :Te - tau] if tau > 0 else d          # dX(t-tau)
+            b = d2[:, tau:]     if tau > 0 else d2         # dX(t)^2
+        else:
+            m = -tau
+            a = d[:, m:]                                   # dX(t-tau) = dX(t+m)
+            b = d2[:, :Te - m]                             # dX(t)^2
+        L_samples[:, i] = (a * b).mean(axis=-1) / Z
+
+    L_mean = L_samples.mean(axis=0)
+    L_err = L_samples.std(axis=0, ddof=1) / np.sqrt(L_samples.shape[0])
+
+    return taus, L_mean, L_err
+
+
+def signed_leverage_plot(Data, synth, scale=1, max_tau=50, save=None):
+    """Plot signed leverage L(tau) +/- SEM, Data vs Synth (left), and its even
+    part L(tau) + L(-tau) for tau >= 0 (right), which vanishes for a
+    time-reversible process. See signed_leverage_correlation."""
+    tau, L_data,  err_data  = signed_leverage_correlation(Data,  scale=scale, max_tau=max_tau)
+    _,   L_synth, err_synth = signed_leverage_correlation(synth, scale=scale, max_tau=max_tau)
+
+    fig, axes = plt.subplots(1, 2, figsize=(11, 4.5))
+    ax = axes[0]
+    ax.axhline(0, color='black', linewidth=0.5)
+    ax.axvline(0, color='black', linewidth=0.5)
+    ax.plot(tau, L_data, 'k-', label='Data')
+    ax.fill_between(tau, L_data - err_data, L_data + err_data, color='k', alpha=0.2)
+    ax.plot(tau, L_synth, 'r--', label='Synth')
+    ax.fill_between(tau, L_synth - err_synth, L_synth + err_synth, color='r', alpha=0.2)
+    ax.set_xlabel(r'$\tau$')
+    ax.set_ylabel(r'$\langle \delta X(t{-}\tau)\,\delta X(t)^2\rangle / \langle \delta X^2\rangle^2$')
+    ax.set_title(rf'Signed leverage, lag {scale} (mean $\pm$ SEM over batch)')
+    ax.grid(True, alpha=0.3)
+    ax.legend()
+
+    # even part: L(tau) + L(-tau), tau >= 0 (taus is symmetric around 0);
+    # SEM combined as if the two lags were independent (an approximation)
+    pos = tau >= 0
+    ax = axes[1]
+    ax.axhline(0, color='black', linewidth=0.5)
+    for L, err, style, c, lab in ((L_data, err_data, 'k-', 'k', 'Data'),
+                                  (L_synth, err_synth, 'r--', 'r', 'Synth')):
+        even = L[pos] + L[::-1][pos]                       # L(tau) + L(-tau)
+        even_err = np.sqrt(err[pos] ** 2 + err[::-1][pos] ** 2)
+        ax.plot(tau[pos], even, style, label=lab)
+        ax.fill_between(tau[pos], even - even_err, even + even_err, color=c, alpha=0.2)
+    ax.set_xlabel(r'$\tau$')
+    ax.set_ylabel(r'$L(\tau) + L(-\tau)$')
+    ax.set_title('Even part (0 if time-reversible)')
+    ax.grid(True, alpha=0.3)
+    ax.legend()
+
+    if save is not None:
+        fig.suptitle(save["title"])
+        fig.tight_layout(rect=[0, 0, 1, 0.95])
+        fig.savefig(save["filename"], dpi=200, bbox_inches="tight")
+        plt.close(fig)
+    else:
+        plt.tight_layout()
+        plt.show()
+
+    return tau, L_data, err_data, L_synth, err_synth
+
+
+def zumbach_moment(data, scale=1, max_tau=50, paper_indexing=False):
+    """
+    Zumbach moment (Morel et al. 2023, arXiv:2204.10177, Sec. 6.2), raw (no
+    normalization, no mean subtraction), order 4:
+        Z(tau) = Ave_t [ |dX_s(t-tau)|^2 * Sigma(t) ],   s = scale = 2^j
+        dX_s(t)  = X(t) - X(t-s)                               (coarse increment)
+        Sigma(t) = Ave over the s one-step increments X(u) - X(u-1) in the
+                   same window, u = t-s+1 .. t                  (realized volatility)
+    tau > 0: past coarse move vs present volatility. Time-reversible X ->
+    Z(-tau) = Z(tau); the asymmetry is summed into
+        A(t) = sum_{u=0}^{t} (Z(u) - Z(-u))                     (paper's Fig. 8)
+
+    Window alignment: the paper writes Sigma(t) = Ave_{t-s <= u < t} |dX_0(u)|^2,
+    which uses X(t-s-1) .. X(t-1), one sample earlier than dX_s(t). Taken
+    literally, reversibility then gives Z(tau) = Z(2 - tau), not Z(-tau), and a
+    reversible process shows a fake asymmetry. Default: windows aligned (both
+    on X(t-s) .. X(t)). paper_indexing=True reproduces the literal formula
+    (= the aligned Z at tau - 1, up to which t are valid at the edges).
+
+    For scale = 1 the aligned Z(tau) is the autocorrelation of squared
+    increments, symmetric for ANY stationary process: the test only says
+    something for scale > 1.
+
+    Ave_t runs over the t where every index is valid, so the number of terms
+    decreases with |tau|. Computed per series (leading dims), then averaged.
+
+    Parameters
+    ----------
+    data : torch.Tensor or numpy.ndarray, shape (..., T), e.g. (B, C, T)
+    scale : int
+        Window size 2^j (in samples).
+    max_tau : int
+        Lags run over -(max_tau-1) .. max_tau-1.
+    paper_indexing : bool
+        Use the paper's literal (shifted) volatility window.
+
+    Returns
+    -------
+    taus : (2*max_tau_eff - 1,) ndarray
+    Z_mean, Z_err : ndarray, same shape as taus      (mean, SEM over series)
+    t_pos : (max_tau_eff,) ndarray, 0 .. max_tau_eff-1
+    A_mean, A_err : ndarray, same shape as t_pos     (cumulative asymmetry)
+    """
+    x = data.cpu().numpy() if hasattr(data, 'cpu') else np.asarray(data)
+    T = x.shape[-1]
+    if scale + 1 >= T:
+        raise ValueError(f"scale={scale} must be < T-1={T - 1}")
+
+    x2 = x.reshape(-1, T).astype(np.float64)              # (N, T)
+    n_ser = x2.shape[0]
+
+    # both on the full time axis t = 0 .. T-1, NaN where an index would be < 0
+    a = np.full((n_ser, T), np.nan)
+    a[:, scale:] = (x2[:, scale:] - x2[:, :-scale]) ** 2  # |dX_s(t)|^2, t >= scale
+    d1sq = np.diff(x2, axis=-1) ** 2                       # |X(u) - X(u-1)|^2 at u = 1 .. T-1
+    c = np.concatenate([np.zeros((n_ser, 1)), np.cumsum(d1sq, axis=-1)], axis=-1)
+    sigma = np.full((n_ser, T), np.nan)
+    sigma[:, scale:] = (c[:, scale:] - c[:, :-scale]) / scale   # mean over u = t-scale+1 .. t
+    if paper_indexing:                                     # u = t-scale .. t-1: one sample earlier
+        sigma[:, 1:] = sigma[:, :-1].copy()
+        sigma[:, 0] = np.nan
+
+    max_tau = int(min(max_tau, T - scale - 1))
+    taus = np.arange(-(max_tau - 1), max_tau)
+    Z_samples = np.empty((n_ser, len(taus)))
+
+    for i, tau in enumerate(taus):
+        if tau >= 0:
+            prod = a[:, :T - tau] * sigma[:, tau:]         # a(t-tau) sigma(t)
+        else:
+            m = -tau
+            prod = a[:, m:] * sigma[:, :T - m]
+        Z_samples[:, i] = np.nanmean(prod, axis=-1)        # only t with every index valid
+
+    pos = taus >= 0
+    A_samples = np.cumsum(Z_samples[:, pos] - Z_samples[:, ::-1][:, pos], axis=-1)
+
+    n = Z_samples.shape[0]
+    return (taus, Z_samples.mean(axis=0), Z_samples.std(axis=0, ddof=1) / np.sqrt(n),
+            taus[pos], A_samples.mean(axis=0), A_samples.std(axis=0, ddof=1) / np.sqrt(n))
+
+
+def zumbach_plot(Data, synth, scale=1, max_tau=50, paper_indexing=False, save=None):
+    """Plot Z(tau) (left) and the cumulative asymmetry A(t) (right), Data vs
+    Synth, mean +/- SEM over series. Each set is divided by its own
+    <|dX_s|^2> <|dX_1|^2> (plotting only), so Z = 1 when the coarse move and
+    the volatility are independent. See zumbach_moment."""
+    def own_norm(v):
+        v = v.cpu().numpy() if hasattr(v, 'cpu') else np.asarray(v)
+        return (np.mean((v[..., scale:] - v[..., :-scale]) ** 2)
+                * np.mean(np.diff(v, axis=-1) ** 2))
+
+    tau, Z_d, eZ_d, t, A_d, eA_d = zumbach_moment(Data,  scale=scale, max_tau=max_tau,
+                                                  paper_indexing=paper_indexing)
+    _,   Z_s, eZ_s, _, A_s, eA_s = zumbach_moment(synth, scale=scale, max_tau=max_tau,
+                                                  paper_indexing=paper_indexing)
+    n_d, n_s = own_norm(Data), own_norm(synth)
+
+    fig, axes = plt.subplots(1, 2, figsize=(11, 4.5))
+    for ax, x_, curves in ((axes[0], tau, ((Z_d, eZ_d, n_d), (Z_s, eZ_s, n_s))),
+                           (axes[1], t,   ((A_d, eA_d, n_d), (A_s, eA_s, n_s)))):
+        ax.axhline(0, color='black', linewidth=0.5)
+        for (y, e, n), style, col, lab in zip(curves, ('k-', 'r--'), ('k', 'r'), ('Data', 'Synth')):
+            ax.plot(x_, y / n, style, label=lab)
+            ax.fill_between(x_, (y - e) / n, (y + e) / n, color=col, alpha=0.2)
+        ax.grid(True, alpha=0.3)
+        ax.legend()
+    axes[0].axvline(0, color='black', linewidth=0.5)
+    axes[0].set_xlabel(r'$\tau$')
+    axes[0].set_ylabel(r'$Z(\tau)\,/\,\langle|\delta_j X|^2\rangle\langle|\delta_0 X|^2\rangle$')
+    axes[0].set_title(rf'Zumbach moment, $2^j={scale}$ (mean $\pm$ SEM)')
+    axes[1].set_xlabel(r'$t$')
+    axes[1].set_ylabel(r'$\sum_{u=0}^{t} [Z(u) - Z(-u)]$ (same norm.)')
+    axes[1].set_title('Cumulative asymmetry (0 if time-reversible)')
+
+    if save is not None:
+        fig.suptitle(save["title"])
+        fig.tight_layout(rect=[0, 0, 1, 0.95])
+        fig.savefig(save["filename"], dpi=200, bbox_inches="tight")
+        plt.close(fig)
+    else:
+        plt.tight_layout()
+        plt.show()
+
+    return tau, Z_d, eZ_d, Z_s, eZ_s
+
 def C_p_q(data, p=2.0, tau_star=1, max_tau=50, beta=None, ksize=1,
           normalize=True, epsilon=1e-12):
     """

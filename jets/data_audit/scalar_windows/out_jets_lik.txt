@@ -1,0 +1,71 @@
+data jets x1 (5000, 1, 256) xh (9000, 1, 256) kw {'boundary_method': 'likelihood'}
+/home/chiaraz/phd/MGD-for-Maximum-Entropy-Generation/codes/potentials/potentials_1d.py:1380: RuntimeWarning: overflow encountered in cast
+  logpdf = (np.log(a) - np.log(2.0) - np.log(s) - gammaln(1.0 / a) - (ah / s) ** a)
+/home/chiaraz/phd/MGD-for-Maximum-Entropy-Generation/codes/potentials/potentials_1d.py:2075: UserWarning: FigureCanvasAgg is non-interactive, and thus cannot be shown
+  plt.show()
+[deduplicate_filters] filters_Q: 9 -> 9 channels for channel-list potentials (dropped duplicates [], tol=1e-08)
+[GGD^4][ch 0] Keff=4  cuts=[0.0067 0.0101 0.0286]  pi=[52.3% 14.7% 27.1% 5.9%]  alpha=[1.64 1.65 0.71 0.51]  active=4  |z| floor=1.10e-05
+[GGD^4][ch 1] Keff=4  cuts=[0.0096 0.0203 0.0491]  pi=[52.7% 28.1% 16.9% 2.2%]  alpha=[1.72 1.09 0.83 0.53]  active=4  |z| floor=1.61e-05
+[GGD^4][ch 2] Keff=4  cuts=[0.0102 0.0192 0.0463]  pi=[32.6% 23.1% 33.1% 11.2%]  alpha=[1.87 1.95 1.27 0.82]  active=4  |z| floor=3.00e-05
+[GGD^4][ch 3] Keff=4  cuts=[0.0178 0.0657 0.1039]  pi=[39.0% 50.9% 7.9% 2.2%]  alpha=[1.91 1.50 0.93 0.75]  active=4  |z| floor=4.25e-05
+[GGD^4][ch 4] Keff=4  cuts=[0.0027 0.0702 0.1705]  pi=[4.9% 80.4% 14.2% 0.5%]  alpha=[0.73 1.73 1.13 1.19]  active=4  |z| floor=5.71e-05
+[GGD^4][ch 5] Keff=4  cuts=[0.0285 0.0428 0.1532]  pi=[38.8% 15.9% 42.9% 2.4%]  alpha=[1.86 1.15 1.41 0.97]  active=4  |z| floor=6.83e-05
+[GGD^4][ch 6] Keff=4  cuts=[0.0719 0.1079 0.1923]  pi=[66.3% 17.3% 14.1% 2.3%]  alpha=[1.94 1.96 1.68 1.28]  active=4  |z| floor=9.27e-05
+[GGD^4][ch 7] Keff=4  cuts=[0.0858 0.1288 0.3507]  pi=[59.7% 18.0% 21.8% 0.4%]  alpha=[1.86 2.19 1.61 0.85]  active=4  |z| floor=1.27e-04
+[GGD^4][ch 8] Keff=4  cuts=[0.4752 0.7128 1.2749]  pi=[39.0% 17.5% 27.2% 16.3%]  alpha=[2.44 8.00 3.87 1.49]  active=4  |z| floor=9.54e-04
+[active] 36 active statistics (0 dead slots dropped before they can singularize the Gram)
+[prune-diagnostic] R-diagonal ratios (sorted desc), first 10 / last 10:
+  head=[1.     1.     1.     1.     1.     0.9999 0.9999 0.9996 0.9995 0.9993]
+  tail=[0.91338837 0.90211936 0.90008317 0.89923978 0.87395629 0.86507378
+ 0.82884258 0.80869575 0.73800234 0.69227033]
+[prune] dropped 0 near-collinear statistic(s); 36 remain
+fit 118s
+
+SUMMARY lik: J=9 K=4 active stats=36 of 36
+ch0 std=1.486e-02 floor=1.10e-05(7.4e-04sd) Keff=4
+   cuts/sd=4.52e-01 6.77e-01 1.92e+00  cdf(<cut)=0.5232 0.6700 0.9407
+   counts=669632 187987 346515 75866  pi=0.523 0.147 0.271 0.059  alpha=1.64 1.65 0.71 0.51  scale/sd=6.18e-01 7.37e-01 2.94e-01 7.08e-02
+   active-before-prune=[] alive slots after prune=[0, 1, 2, 3]
+ch1 std=1.817e-02 floor=1.61e-05(8.8e-04sd) Keff=4
+   cuts/sd=5.28e-01 1.12e+00 2.70e+00  cdf(<cut)=0.5274 0.8087 0.9779
+   counts=675048 360118 216503 28331  pi=0.527 0.281 0.169 0.022  alpha=1.72 1.09 0.83 0.53  scale/sd=7.88e-01 6.97e-01 4.37e-01 6.54e-02
+   active-before-prune=[] alive slots after prune=[0, 1, 2, 3]
+ch2 std=3.021e-02 floor=3.00e-05(9.9e-04sd) Keff=4
+   cuts/sd=3.37e-01 6.37e-01 1.53e+00  cdf(<cut)=0.3262 0.5572 0.8885
+   counts=417559 295717 423950 142774  pi=0.326 0.231 0.331 0.112  alpha=1.87 1.95 1.27 0.82  scale/sd=9.80e-01 9.69e-01 8.90e-01 3.87e-01
+   active-before-prune=[] alive slots after prune=[0, 1, 2, 3]
+ch3 std=4.095e-02 floor=4.25e-05(1.0e-03sd) Keff=4
+   cuts/sd=4.34e-01 1.60e+00 2.54e+00  cdf(<cut)=0.3898 0.8988 0.9781
+   counts=498964 651516 101527 27993  pi=0.390 0.509 0.079 0.022  alpha=1.91 1.50 0.93 0.75  scale/sd=1.04e+00 1.07e+00 5.09e-01 2.41e-01
+   active-before-prune=[] alive slots after prune=[0, 1, 2, 3]
+ch4 std=5.067e-02 floor=5.71e-05(1.1e-03sd) Keff=4
+   cuts/sd=5.34e-02 1.39e+00 3.36e+00  cdf(<cut)=0.0494 0.8530 0.9949
+   counts=63247 1028619 181572 6562  pi=0.049 0.804 0.142 0.005  alpha=0.73 1.73 1.13 1.19  scale/sd=1.83e+01 1.16e+00 7.72e-01 9.84e-01
+   active-before-prune=[] alive slots after prune=[0, 1, 2, 3]
+ch5 std=6.324e-02 floor=6.83e-05(1.1e-03sd) Keff=4
+   cuts/sd=4.51e-01 6.77e-01 2.42e+00  cdf(<cut)=0.3878 0.5472 0.9760
+   counts=496326 204126 548864 30684  pi=0.388 0.159 0.429 0.024  alpha=1.86 1.15 1.41 0.97  scale/sd=1.20e+00 1.20e+00 1.05e+00 5.08e-01
+   active-before-prune=[] alive slots after prune=[0, 1, 2, 3]
+ch6 std=7.989e-02 floor=9.27e-05(1.2e-03sd) Keff=4
+   cuts/sd=9.00e-01 1.35e+00 2.41e+00  cdf(<cut)=0.6630 0.8365 0.9773
+   counts=848656 222029 180280 29035  pi=0.663 0.173 0.141 0.023  alpha=1.94 1.96 1.68 1.28  scale/sd=1.22e+00 1.28e+00 1.27e+00 9.44e-01
+   active-before-prune=[] alive slots after prune=[0, 1, 2, 3]
+ch7 std=1.094e-01 floor=1.27e-04(1.2e-03sd) Keff=4
+   cuts/sd=7.84e-01 1.18e+00 3.20e+00  cdf(<cut)=0.5972 0.7773 0.9957
+   counts=764477 230442 279583 5498  pi=0.597 0.180 0.218 0.004  alpha=1.86 2.19 1.61 0.85  scale/sd=1.22e+00 1.27e+00 1.22e+00 2.46e-01
+   active-before-prune=[] alive slots after prune=[0, 1, 2, 3]
+ch8 std=9.125e-01 floor=9.54e-04(1.0e-03sd) Keff=4
+   cuts/sd=5.21e-01 7.81e-01 1.40e+00  cdf(<cut)=0.3897 0.5647 0.8370
+   counts=498801 223989 348559 208651  pi=0.390 0.175 0.272 0.163  alpha=2.44 8.00 3.87 1.49  scale/sd=8.63e-01 1.13e+00 1.49e+00 9.99e-01
+   active-before-prune=[] alive slots after prune=[0, 1, 2, 3]
+
+model/data quantile ratios of |z| (MaxEnt of the potential stats), QS= [0.99    0.999   0.9999  0.99995]
+ch0 nstat=4 res=2.2e-16 in=[1.21 1.44 1.58 1.61] heldout=[1.19 1.41 1.57 1.6 ]
+ch1 nstat=4 res=7.5e-14 in=[1.04 1.34 1.56 1.59] heldout=[1.02 1.33 1.55 1.6 ]
+ch2 nstat=4 res=2.2e-16 in=[1.16 1.24 1.27 1.27] heldout=[1.15 1.23 1.26 1.26]
+ch3 nstat=4 res=2.2e-16 in=[1.01 1.18 1.28 1.3 ] heldout=[1.01 1.18 1.31 1.35]
+ch4 nstat=4 res=1.6e-13 in=[1.01 0.96 0.93 0.93] heldout=[1.   0.95 0.93 0.92]
+ch5 nstat=4 res=3.3e-16 in=[1.01 1.09 1.15 1.19] heldout=[1.   1.07 1.11 1.09]
+ch6 nstat=4 res=3.3e-16 in=[1.   1.01 1.02 1.04] heldout=[0.99 0.95 0.9  0.9 ]
+ch7 nstat=4 res=6.7e-13 in=[0.98 1.08 1.23 1.27] heldout=[0.96 1.05 1.01 1.07]
+ch8 nstat=4 res=2.2e-16 in=[1.05 1.15 1.21 1.27] heldout=[1.   1.04 1.07 1.12]

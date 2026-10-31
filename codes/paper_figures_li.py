@@ -109,6 +109,14 @@ def _band(ax, x, lo, hi, color):
     ax.fill_between(x, lo, hi, color=color, alpha=BAND_ALPHA, lw=0)
 
 
+def _finish(fig, ax, title, save_dir, name, fmt, dpi):
+    """_finalize with the data/synth legend and an optional panel title (e.g. the statistic's flag)."""
+    ax.legend(fontsize=STYLE['fontsize'] * 0.5, frameon=False)
+    if title:
+        ax.set_title(title, fontsize=STYLE['fontsize'] * 0.6)
+    _finalize(fig, save_dir, name, fmt, dpi)
+
+
 # ---------------------------------------------------- (fig 1a) increment PDFs ----
 def _std_pdf(z, bins, smooth, smooth_sigma):
     h, _ = np.histogram(z / (z.std() + 1e-12), bins=bins, density=True)
@@ -119,7 +127,7 @@ def _std_pdf(z, bins, smooth, smooth_sigma):
 
 def panel_li_fig1a_increment_pdfs(data, synth, label="Lagrangian",
                                   tau_ratios=(1, 2, 5, 100), tau_eta=TAU_ETA, shift_decades=3,
-                                  n_bins=201, smooth=True, smooth_sigma=1.5,
+                                  n_bins=201, smooth=True, smooth_sigma=1.5, title=None,
                                   save_dir=None, fmt='pdf', dpi=200):
     """Standardized PDFs of delta_tau V at tau/tau_eta in tau_ratios, shifted down by
     10^(-shift_decades) per curve (paper: 'vertically shifted for the sake of presentation').
@@ -149,12 +157,12 @@ def panel_li_fig1a_increment_pdfs(data, synth, label="Lagrangian",
                           edgecolor='black', linewidth=1.2))
     ax.set_yscale('log')
     _apply_style(ax, r'$\delta_\tau V/\sigma(\delta_\tau V)$', r'PDF$(\delta_\tau V)$ (shifted)')
-    _finalize(fig, save_dir, 'li_fig1a_increment_pdfs', fmt, dpi)
+    _finish(fig, ax, title, save_dir, 'li_fig1a_increment_pdfs', fmt, dpi)
 
 
 # ------------------------------------------------- (fig 2) acceleration PDF ----
 def panel_li_fig2_acceleration_pdf(data, synth, label="Lagrangian", n_bins=201,
-                                   smooth=True, smooth_sigma=1.5,
+                                   smooth=True, smooth_sigma=1.5, title=None,
                                    save_dir=None, fmt='pdf', dpi=200):
     """Standardized PDF of a = delta_1 V (dt_s = 1): PDF(a) sigma(a) vs a/sigma(a)."""
     fig, ax = plt.subplots(figsize=STYLE['figsize'])
@@ -170,7 +178,7 @@ def panel_li_fig2_acceleration_pdf(data, synth, label="Lagrangian", n_bins=201,
             lw=STYLE['lw'], label=f'{label} synth')
     ax.set_yscale('log')
     _apply_style(ax, r'$a/\sigma(a)$', r'PDF$(a)\,\sigma(a)$')
-    _finalize(fig, save_dir, 'li_fig2_acceleration_pdf', fmt, dpi)
+    _finish(fig, ax, title, save_dir, 'li_fig2_acceleration_pdf', fmt, dpi)
 
 
 # ------------------------------------- (fig 2 inset) acceleration correlation ----
@@ -185,7 +193,7 @@ def acceleration_correlation(data, max_lag=MAX_LAG):
 
 
 def panel_li_fig2_inset_acceleration_correlation(data, synth, label="Lagrangian", max_lag=MAX_LAG,
-                                                 tau_eta=TAU_ETA, save_dir=None, fmt='pdf', dpi=200):
+                                                 tau_eta=TAU_ETA, title=None, save_dir=None, fmt='pdf', dpi=200):
     """C_tau vs tau/tau_eta, lin-log (tau = 0 is not shown on the log axis)."""
     fig, ax = plt.subplots(figsize=STYLE['figsize'])
     taus, C_d = acceleration_correlation(data, max_lag)
@@ -195,12 +203,12 @@ def panel_li_fig2_inset_acceleration_correlation(data, synth, label="Lagrangian"
     ax.axhline(0, color='black', lw=1)
     ax.set_xscale('log')
     _apply_style(ax, r'$\tau/\tau_\eta$', r'$C_\tau$')
-    _finalize(fig, save_dir, 'li_fig2_inset_acceleration_correlation', fmt, dpi)
+    _finish(fig, ax, title, save_dir, 'li_fig2_inset_acceleration_correlation', fmt, dpi)
 
 
 # --------------------------------------------- (fig 4a) structure functions ----
 def panel_li_fig4a_structure_functions(data, synth, label="Lagrangian", orders=(2, 4, 6, 8),
-                                       n_batches=10, max_lag=MAX_LAG, tau_eta=TAU_ETA,
+                                       n_batches=10, max_lag=MAX_LAG, tau_eta=TAU_ETA, title=None,
                                        save_dir=None, fmt='pdf', dpi=200):
     # orders distinguished by alpha only (1.0 .. 0.4), as panel_c_structure_functions
     fig, ax = plt.subplots(figsize=STYLE['figsize'])
@@ -219,12 +227,12 @@ def panel_li_fig4a_structure_functions(data, synth, label="Lagrangian", orders=(
     ax.set_yscale('log')
     _apply_style(ax, r'$\tau/\tau_\eta$',
                  rf'$S^{{(p)}}_\tau$, $p={",".join(map(str, orders))}$')
-    _finalize(fig, save_dir, 'li_fig4a_structure_functions', fmt, dpi)
+    _finish(fig, ax, title, save_dir, 'li_fig4a_structure_functions', fmt, dpi)
 
 
 # ---------------------------------------------- (fig 4b) generalized flatness ----
 def panel_li_fig4b_flatness(data, synth, label="Lagrangian", orders=(4, 6, 8),
-                            n_batches=10, max_lag=MAX_LAG, tau_eta=TAU_ETA,
+                            n_batches=10, max_lag=MAX_LAG, tau_eta=TAU_ETA, title=None,
                             save_dir=None, fmt='pdf', dpi=200):
     fig, ax = plt.subplots(figsize=STYLE['figsize'])
     taus, S_d, Sb_d = structure_functions(data, n_batches, max_lag)
@@ -242,13 +250,13 @@ def panel_li_fig4b_flatness(data, synth, label="Lagrangian", orders=(4, 6, 8),
     ax.set_yscale('log')
     _apply_style(ax, r'$\tau/\tau_\eta$',
                  rf'$F^{{(p)}}_\tau$, $p={",".join(map(str, orders))}$')
-    _finalize(fig, save_dir, 'li_fig4b_flatness', fmt, dpi)
+    _finish(fig, ax, title, save_dir, 'li_fig4b_flatness', fmt, dpi)
 
 
 # ------------------------------------------- (fig 5) local scaling exponent ----
 def panel_li_fig5_local_exponent(data, synth, label="Lagrangian", p=4,
                                  n_batches_data=30, n_batches_synth=10, max_lag=MAX_LAG, ylim=None,
-                                 tau_eta=TAU_ETA, save_dir=None, fmt='pdf', dpi=200):
+                                 tau_eta=TAU_ETA, title=None, save_dir=None, fmt='pdf', dpi=200):
     """zeta(p, tau), lin-log, dotted line at the non-intermittent value p/2 (S_p ~ S_2^(p/2)).
 
     ylim defaults to (p/4, 1.1 p/2), i.e. the paper's (1.0, 2.2) at p = 4: zeta diverges where
@@ -268,7 +276,7 @@ def panel_li_fig5_local_exponent(data, synth, label="Lagrangian", p=4,
     ax.set_ylim(ylim if ylim is not None else (p / 4, 1.1 * p / 2))
     ax.set_xscale('log')
     _apply_style(ax, r'$\tau/\tau_\eta$', rf'$\zeta({p},\tau)$')
-    _finalize(fig, save_dir, f'li_fig5_local_exponent_p{p}', fmt, dpi)
+    _finish(fig, ax, title, save_dir, f'li_fig5_local_exponent_p{p}', fmt, dpi)
 
 
 # ------------------------------------------------------------------ table 2 ----

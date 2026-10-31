@@ -15,7 +15,11 @@ MODELS = {
     'M1 Gaussian': 'turbulence_final_gauss_scat2',
     'M2 Morlet': 'turbulence_nested_M2',
     'M2 Db4 (decimated)': 'turbulence_nested_M2_db4',
-    # 'M3': 'turbulence_nested_M3',
+    'M3': 'turbulence_nested_M3',
+    # 2026-10-29: more imposed one-point statistics (seed 900 only) and the run with Scat4
+    'A constrained windows': 'turbulence_nested_M3_bicw',
+    'B A + all masses': 'turbulence_nested_M3_bicw_allmass',
+    'with Scat4 (mass_final)': 'turbulence_ggd_mass_final',
 }
 
 SEEDS = (900, 901, 902, 903, 904)
