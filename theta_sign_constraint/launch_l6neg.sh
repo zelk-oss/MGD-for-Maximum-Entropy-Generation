@@ -81,7 +81,8 @@ fi
 echo "seed \${SEED}: \${FILES[0]}"
 python -u codes/resolve_theta_reg.py "\${FILES[0]}" --lams ${LAM_LIST[@]} \
     --ridge ${RIDGE} --schedule uniform --mask auto --diagnose 0 --outdir "${OUTDIR}" \
-    --neg_cols ${COLS} --neg_eps_nats ${EPS} --neg_t_min ${T_MIN} --neg_max_iter ${MAX_ITER} --neg_method ${METHOD}
+    --neg_cols ${COLS} --neg_eps_nats ${EPS} --neg_t_min ${T_MIN} --neg_max_iter ${MAX_ITER} --neg_method ${METHOD} \
+    $( [ "${MMAP:-0}" = "1" ] && echo --mmap )
 EOT
 )
     if [ -z "${JOB}" ]; then echo "Error: sbatch returned no job id"; exit 1; fi
@@ -120,7 +121,8 @@ cd "${PROJECT_DIR}"
 FILES=( ${FILES[@]} )
 python -u codes/resolve_theta_reg.py "\${FILES[\${SLURM_ARRAY_TASK_ID}]}" --lams ${LAM_LIST[@]} \
     --ridge ${RIDGE} --schedule uniform --mask auto --diagnose 0 --outdir "${OUTDIR}" \
-    --neg_cols ${COLS} --neg_eps_nats ${EPS} --neg_t_min ${T_MIN} --neg_max_iter ${MAX_ITER} --neg_method ${METHOD}
+    --neg_cols ${COLS} --neg_eps_nats ${EPS} --neg_t_min ${T_MIN} --neg_max_iter ${MAX_ITER} --neg_method ${METHOD} \
+    $( [ "${MMAP:-0}" = "1" ] && echo --mmap )
 EOT
 )
 if [ -z "${JOB}" ]; then echo "Error: sbatch returned no job id"; exit 1; fi

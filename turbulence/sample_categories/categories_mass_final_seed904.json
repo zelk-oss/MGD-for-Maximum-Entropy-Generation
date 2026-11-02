@@ -1,0 +1,311 @@
+{
+ "model_samples": "turbulence/saved_results/samples/turbulencesynth_M256_J8_Q3_sigma3.5_nt55000_n1_10000_lam0.0_thomas_nsub1_moment_f64_dedupfilt1e-08_seed_904_terms9296e719_turbulence_ggd_mass_final_20261030_1726.pt",
+ "data": "Data[:10000] as in turbulence/run_SDE.py (subseries_len 512, target_len 256, normalize)",
+ "rule": "fine energy = periodic lag-1 increments^2, local profile = 16-pt moving average; active = profile > data q95; no active patch: quiet if fine_E < data median else rippled; >=3 patches: multi-burst; else dominant event +-16 pts: step if |net|/total-variation > 0.4, spike if <=2 direction changes (moves < 20% of the window range ignored), else packet. Thresholds always come from the DATA, so data and model are labelled with the same cut. NOT bit-identical to the lost seed-904 script: quiet/rippled/multi-burst identical, overall agreement ~96% data / ~95% model (see --check). Compare models only with labels made by THIS script.",
+ "thresholds": {
+  "profile_q95": 0.005271367623487868,
+  "fineE_median": 0.0006309254677034914
+ },
+ "categories": [
+  "quiet",
+  "rippled",
+  "step",
+  "spike",
+  "packet",
+  "multi-burst"
+ ],
+ "summary": {
+  "quiet": {
+   "data": 4960,
+   "model": 5115
+  },
+  "rippled": {
+   "data": 1330,
+   "model": 1820
+  },
+  "step": {
+   "data": 1261,
+   "model": 1173
+  },
+  "spike": {
+   "data": 1482,
+   "model": 1196
+  },
+  "packet": {
+   "data": 383,
+   "model": 341
+  },
+  "multi-burst": {
+   "data": 584,
+   "model": 355
+  }
+ },
+ "clearest": {
+  "quiet": {
+   "data": [
+    9086,
+    7652,
+    5801,
+    2771,
+    6428,
+    3804,
+    3810,
+    4427
+   ],
+   "model": [
+    6417,
+    6058,
+    2499,
+    8977,
+    7585,
+    967,
+    4203,
+    6135
+   ]
+  },
+  "rippled": {
+   "data": [
+    8114,
+    3829,
+    7067,
+    7712,
+    5411,
+    8527,
+    9773,
+    7551
+   ],
+   "model": [
+    5578,
+    7419,
+    3433,
+    1992,
+    2493,
+    2771,
+    8148,
+    6223
+   ]
+  },
+  "step": {
+   "data": [
+    9523,
+    9287,
+    4329,
+    2153,
+    4077,
+    904,
+    100,
+    9769
+   ],
+   "model": [
+    3553,
+    7917,
+    1478,
+    6539,
+    6205,
+    3224,
+    279,
+    8777
+   ]
+  },
+  "spike": {
+   "data": [
+    8185,
+    7675,
+    3341,
+    2161,
+    3637,
+    8551,
+    6194,
+    4144
+   ],
+   "model": [
+    375,
+    4059,
+    1957,
+    3698,
+    7491,
+    6436,
+    1315,
+    6199
+   ]
+  },
+  "packet": {
+   "data": [
+    4578,
+    4572,
+    315,
+    995,
+    4486,
+    2857,
+    3700,
+    1826
+   ],
+   "model": [
+    8113,
+    9470,
+    3208,
+    6491,
+    7814,
+    8036,
+    6110,
+    1023
+   ]
+  },
+  "multi-burst": {
+   "data": [
+    8832,
+    9732,
+    8343,
+    57,
+    5730,
+    579,
+    9895,
+    81
+   ],
+   "model": [
+    8149,
+    776,
+    6121,
+    7039,
+    8558,
+    3538,
+    4960,
+    7444
+   ]
+  }
+ },
+ "random": {
+  "quiet": {
+   "data": [
+    6756,
+    964,
+    6597,
+    6687,
+    3630,
+    1485,
+    1207,
+    6758
+   ],
+   "model": [
+    3832,
+    6732,
+    1600,
+    3568,
+    7919,
+    3580,
+    8662,
+    7573
+   ]
+  },
+  "rippled": {
+   "data": [
+    9111,
+    9098,
+    8227,
+    6791,
+    7304,
+    6951,
+    1636,
+    9138
+   ],
+   "model": [
+    1303,
+    5952,
+    7908,
+    3316,
+    4415,
+    3118,
+    310,
+    877
+   ]
+  },
+  "step": {
+   "data": [
+    73,
+    7831,
+    7570,
+    2795,
+    1622,
+    4816,
+    122,
+    2356
+   ],
+   "model": [
+    6218,
+    7244,
+    9323,
+    3593,
+    5292,
+    865,
+    6621,
+    7098
+   ]
+  },
+  "spike": {
+   "data": [
+    3701,
+    3806,
+    6605,
+    4159,
+    3027,
+    5252,
+    5563,
+    3634
+   ],
+   "model": [
+    1725,
+    9641,
+    7013,
+    9411,
+    8770,
+    5061,
+    5992,
+    8627
+   ]
+  },
+  "packet": {
+   "data": [
+    8742,
+    5473,
+    8240,
+    993,
+    6580,
+    930,
+    8295,
+    6469
+   ],
+   "model": [
+    5611,
+    2868,
+    3002,
+    4954,
+    700,
+    246,
+    1769,
+    3528
+   ]
+  },
+  "multi-burst": {
+   "data": [
+    7702,
+    7792,
+    1541,
+    9815,
+    6925,
+    8613,
+    1878,
+    3570
+   ],
+   "model": [
+    7469,
+    4498,
+    3413,
+    6704,
+    1647,
+    2963,
+    1052,
+    8054
+   ]
+  }
+ }
+}

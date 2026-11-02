@@ -330,28 +330,54 @@ def ranked_indices(logp, n=10):
     return order[np.round(np.linspace(0, len(order) - 1, n)).astype(int)]
 
 
-def plot_ranked_signals(signals, logp, name, n=10, ncol=5):
-    """Left: histogram of log p over all the signals (relative to its median), with an arrow at the log p of each
-    of n signals: for n evenly spaced values from the lowest (rarest) to the highest log p, the signal closest to
-    it. Right: those signals, framed with the colour of their arrow, log p on top (same y-scale everywhere)."""
+def plot_ranked_signals(signals, logp, name, n=10, ncol=5, bins=80, min_freq=1e-3):
+    """Left: histogram of log p over all the signals (relative to its median), as a frequency (fraction of the
+    signals per bin), with an arrow at the log p of each of n signals: for n evenly spaced values across the
+    support, the signal closest to it. Right: those signals, framed with the colour of their arrow, log p on top
+    (same y-scale everywhere).
+    The support is capped so isolated outliers are not picked: walking out from the most populated bin, it stops
+    at the first bin whose frequency is below min_freq (on each side). Signals beyond the cap are still in the
+    histogram, shaded. min_freq=None (or 0) uses the full range, as before. Note the frequency is per bin, so the
+    cap depends on `bins`."""
     from matplotlib import gridspec
     v = np.asarray(logp, dtype=np.float64)
     v = v - np.median(v)
-    idx = np.array([np.argmin(np.abs(v - t)) for t in np.linspace(v.min(), v.max(), n)])
+    counts, edges = np.histogram(v, bins)
+    freq = counts / v.size
+    lo, hi = v.min(), v.max()
+    if min_freq:
+        i0 = int(np.argmax(freq))
+        ok = freq >= min_freq
+        a = i0
+        while a > 0 and ok[a - 1]:
+            a -= 1
+        b = i0
+        while b < len(freq) - 1 and ok[b + 1]:
+            b += 1
+        inside = (v >= edges[a]) & (v <= edges[b + 1])
+        lo, hi = v[inside].min(), v[inside].max()
+        print(f'ranked signals: support capped at freq >= {min_freq:g} -> [{lo:+.1f}, {hi:+.1f}] nats; '
+              f'{(v < lo).sum()} below, {(v > hi).sum()} above of {v.size} signals left out')
+    idx = np.array([np.argmin(np.abs(v - t)) for t in np.linspace(lo, hi, n)])
     s = _np(signals)[idx]
     colors = plt.get_cmap('plasma')(np.linspace(0.0, 0.85, n))       # dark (rare) -> light (typical), no pale end
     nrow = int(np.ceil(n / ncol))
     fig = plt.figure(figsize=(17, 2.4 * nrow + 1.2))
     gs = gridspec.GridSpec(nrow, ncol + 2, figure=fig, width_ratios=[2.4, 0.35] + [1] * ncol, wspace=0.08, hspace=0.35)
     ax = fig.add_subplot(gs[:, 0])
-    ax.hist(v, 80, color=GREY, alpha=0.6)
+    ax.stairs(freq, edges, fill=True, color=GREY, alpha=0.6)
     ax.set_yscale('log')
+    if min_freq:
+        ax.axhline(min_freq, color=GREY, ls='--', lw=1)
+        for x0, x1 in ((edges[0], lo), (hi, edges[-1])):
+            if x1 > x0:
+                ax.axvspan(x0, x1, color=GREY, alpha=0.12, lw=0)
     for c, x in zip(colors, v[idx]):
         ax.annotate('', xy=(x, 0), xytext=(x, -0.08), xycoords=ax.get_xaxis_transform(),
                     arrowprops=dict(arrowstyle='->', color=c, lw=2), annotation_clip=False)
     ax.tick_params(axis='x', pad=30)                                   # tick labels below the arrows
     ax.set_xlabel(r'$\log p(x)$ $-$ median (nats)')
-    ax.set_ylabel('number of signals')
+    ax.set_ylabel('frequency')
     lim = 1.05 * np.abs(s).max()
     for k in range(n):
         a = fig.add_subplot(gs[k // ncol, 2 + k % ncol])

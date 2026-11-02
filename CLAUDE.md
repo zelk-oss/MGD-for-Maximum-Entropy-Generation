@@ -55,7 +55,12 @@ rules — attempting them will be refused, not just prompted.
 
 When something needs to happen on the cluster — fetching results, pushing
 code, submitting or cancelling a job — output the exact command in a
-copy-pasteable block and stop there. The user runs it and pastes back the
+copy-pasteable block and stop there.
+
+Format every command the user must run (cluster or local) so it stands out:
+a bold `▶ RUN (JZ)` / `▶ RUN (local)` label line, then a fenced ```bash block
+(the terminal colours fenced code; plain text cannot be coloured). Never put
+a command to run inline in a sentence. The user runs it and pastes back the
 output if there's something to report back.
 
 # Local safety

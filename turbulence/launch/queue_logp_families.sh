@@ -31,13 +31,20 @@ LAMS="${LAMS:-5e-4}"
 RIDGE="${RIDGE:-1e-4}"
 COLS="${COLS:-0:8}"
 REG_DIR="${SCRATCH}/MGD-for-Maximum-Entropy-Generation/turbulence/reg_system/${LABEL}"
+# QoS of the log p job: dev by default (max 10 queued dev jobs per user); LOGP_QOS="" = default t3 queue
+LOGP_QOS="${LOGP_QOS-qos_gpu_h100-dev}"
 
+# L6_ID=<job id>: the L_6<0 job is already submitted; only queue the log p job behind it
+if [ -z "${L6_ID-}" ]; then
 OUT=$(DEPEND="${DEPEND-}" SEEDS="${SEEDS}" ARM="${LABEL}" RIDGE="${RIDGE}" LAMS="${LAMS}" COLS="${COLS}" \
       REG_SYSTEM_DIR="${REG_DIR}" DRY="${DRY-}" bash "${PROJECT_DIR}/theta_sign_constraint/launch_l6neg.sh" 2>&1)
 echo "${OUT}"
 [ -n "${DRY}" ] && exit 0
 L6_ID=$(echo "${OUT}" | sed -n 's/^Submitted \([0-9]*\) .*/\1/p' | tail -1)
 if [ -z "${L6_ID}" ]; then echo "Error: could not read the L_6<0 job id"; exit 1; fi
+else
+echo "L6_ID=${L6_ID} given: L_6<0 job not resubmitted, queueing log p only"
+fi
 
 # one array task per seed (2026-10-30; before: first seed only). Task k waits for L_6<0 task k (aftercorr).
 SEED_ARR=(${SEEDS})
@@ -49,7 +56,7 @@ POST_ID=$(sbatch --parsable --dependency=aftercorr:${L6_ID} --kill-on-invalid-de
 #SBATCH -A wbg@h100
 #SBATCH --partition=gpu_p6
 #SBATCH -C h100
-#SBATCH --qos=qos_gpu_h100-dev
+${LOGP_QOS:+#SBATCH --qos=${LOGP_QOS}}
 #SBATCH --gres=gpu:1
 #SBATCH --cpus-per-task=24
 #SBATCH --hint=nomultithread

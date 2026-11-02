@@ -41,6 +41,9 @@ SELECT="${SELECT:-0}"
 # which lam = 0 reproduces theta_t except where potentials were masked; set it to the
 # run's --regularization for other runs (the July batch used 1e-2).
 RIDGE="${RIDGE:-1e-4}"
+# MMAP=1: load the system memory-mapped (file-backed, same numbers). RSS is logged to
+# stderr (same slurm log) every 60 s, lines start with [mem].
+MMAP="${MMAP:-0}"
 
 # SLURM (CPU). Peak RAM ~ 2 x system size (~50 GB for nt=40000, r=272); on
 # Jean Zay host memory scales with --cpus-per-task, so CPUS sets the memory too.
@@ -118,7 +121,7 @@ python codes/resolve_theta_reg.py "\${FILES[\${SLURM_ARRAY_TASK_ID}]}" \
     --lams ${LAM_LIST[@]} \
     --ridge ${RIDGE} \
     ${MODE:+--mode ${MODE}} --schedule ${SCHEDULE} ${DIM:+--dim ${DIM}} \
-    --mask ${MASK} $( [ "${SELECT}" = "1" ] && echo --select ) \
+    --mask ${MASK} $( [ "${SELECT}" = "1" ] && echo --select ) $( [ "${MMAP}" = "1" ] && echo --mmap ) \
     --results_root "${RESULTS_DIR}" \
     --diagnose 5 \
     --outdir "${OUT_DIR}"

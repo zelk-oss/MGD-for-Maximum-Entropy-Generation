@@ -17,7 +17,8 @@
 # cross-scale gap to the Scat4 run keep closing with even more one-point statistics?
 #
 # Time (measured, seed 900): M3 4.2 h (r=160), A 4.0 h, B 4.6 h (r=201). C: unmeasured, r from the
-# pre-flight; RICH_TIME sets its wall time (the run aborts cleanly at 90% of it). NT / N_BULK
+# pre-flight; RICH_TIME sets its wall time (the SDE loop aborts cleanly once its projection exceeds RICH_TIME
+# minus min(30 min, 10%), codes/sde_routines.py:loop_budget_s; 18 h -> 17h30). NT / N_BULK
 # override the schedule for a short timing job (the config name carries nt, so no clash).
 #
 # Usage (on Jean Zay, from the repo root):
@@ -25,6 +26,9 @@
 #   ONLY=bicw_allmass SEEDS="900 901 902 903 904" bash ...                  # one arm, 5 seeds
 #   PREFLIGHT_ONLY=true bash ...                                            # fit + Gram check only
 #   BIC_C=2 bash ...                                                        # wider bound (label gets _C2)
+#   ONLY=bicw_rich RICH_TIME=18:00:00 CPUS=48 NGPUS=2 bash ...              # model C, full grid (~240 GB RAM)
+#   ONLY=bicw_allmass_scat4 NT=6000 N_BULK=1000 SCAT4_TIME=02:00:00 QOS=qos_gpu_h100-dev bash ...  # B+Scat4 timing
+#   ONLY=bicw_allmass_scat4 SEEDS="900 901 902 903 904" bash ...            # B+Scat4, 5 seeds (~18.6 h each)
 
 LAUNCH_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
@@ -34,6 +38,11 @@ BIC_C="${BIC_C:-1}"
 NOISE_REF_GAP="${NOISE_REF_GAP:-1e-2}"
 BASE_TERMS=(L_6 Scalar_psi_gaussianK Scalar_morlet_gaussianK)
 RICH_TIME="${RICH_TIME:-16:00:00}"
+# bicw_allmass_scat4: mass_final (same Scat4 terms) took 18.2 h SDE. This arm, 2026-11-01: 1.22 s/it
+# steady to step 4300, then a node slowdown aborted job 1812104 (NT=52000) at 1.5 h; guard window widened
+# (sde_routines._check_time_budget) -> default NT=55000, ~18.6 h. (+ Scat3 Real/Imag on Q=3: 2.03 s/it
+# = 31 h at 55000; dropped.)
+SCAT4_TIME="${SCAT4_TIME:-20:00:00}"
 
 # ── as turbulence_nested_M3.sh ──
 N1=10000
@@ -54,7 +63,9 @@ DEDUPLICATE_FILTERS=true
 DEDUP_TOL=1e-8
 
 LAM=0.0
-N_SUBSAMPLE=1
+# Theta_reg system stored every N_SUBSAMPLE steps (block average). bicw_rich at 1: r=522 x 55000 steps
+# x (M + Sigma) float32 = 120 GB host RAM -> OOM (job 1670470, 2026-10-29); N_SUBSAMPLE=2 halves it.
+N_SUBSAMPLE="${N_SUBSAMPLE:-1}"
 REG_SOLVER=thomas
 REG_RIDGE=0.0
 SAVE_REG_SYSTEM=true
@@ -69,7 +80,9 @@ PREFLIGHT_ONLY="${PREFLIGHT_ONLY:-false}"
 GGD_BIC_MIN_WINDOW="${BIC_C}"
 GGD_NOISE_REF_GAP="${NOISE_REF_GAP}"
 
-CPUS=24
+# host RAM = 5000 MB per requested CPU (sacct 1670470: 24 CPUs -> ReqMem 120000M). bicw_rich at
+# N_SUBSAMPLE=1 needs ~120 GB for the Theta_reg system alone: CPUS=48 -> ~240 GB.
+CPUS="${CPUS:-24}"
 ACCOUNT="wbg@h100"
 CONSTRAINT="h100"
 PARTITION="gpu_p6"
@@ -84,6 +97,11 @@ for arm in ${ONLY}; do
     case "${arm}" in
         bicw)         GGD_ALL_MASSES="";     TIME="06:00:00" ;;
         bicw_allmass) GGD_ALL_MASSES=true;   TIME="10:00:00" ;;
+        bicw_allmass_scat4)
+                      # B + Scat4 (same two terms as turbulence_ggd_mass_final): the Scat4 model with
+                      # matched moments. B vs this = Scat4 alone; mass_final vs this = windows + masses
+                      GGD_ALL_MASSES=true;   TIME="${SCAT4_TIME}"
+                      TERMS+=(Scattering_Fourth_Order_Mod2_Real_Q1 Scattering_Fourth_Order_Mod2_Imag_Q1) ;;
         bicw_rich)    GGD_ALL_MASSES=true;   TIME="${RICH_TIME}"
                       GGD_NUM_REGIONS=6;     GGD_TAIL_QUANTILE="0.99 0.999"
                       TERMS+=(Scalar_psi_gaussianK_imag Scalar_morlet_gaussianK_imag)
@@ -91,7 +109,7 @@ for arm in ${ONLY}; do
                       # the slot need not exist (--drop_stats fails then): the Gram pre-flight
                       # removes near-copies instead
                       DROP_STATS="" ;;
-        *) echo "unknown arm '${arm}'; use bicw | bicw_allmass | bicw_rich"; exit 1 ;;
+        *) echo "unknown arm '${arm}'; use bicw | bicw_allmass | bicw_allmass_scat4 | bicw_rich"; exit 1 ;;
     esac
     [ "${PREFLIGHT_ONLY}" = "true" ] && TIME="00:30:00"
     EXP_NAME="turbulence_nested_M3_${arm}${TAG}"

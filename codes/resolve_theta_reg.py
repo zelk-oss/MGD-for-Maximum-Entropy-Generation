@@ -55,6 +55,7 @@ import contextlib
 import io
 import os
 import sys
+import threading
 import time
 import types
 from pathlib import Path
@@ -116,12 +117,43 @@ def parse_args():
                    help='with --neg_cols: cap on active-set iterations (one Thomas solve each)')
     p.add_argument('--neg_method', choices=['pnewton', 'exact', 'add_only'], default='pnewton',
                    help='with --neg_cols: bound loop (codes/theta_reg_bounds.py)')
+    p.add_argument('--mmap', action='store_true',
+                   help='torch.load(..., mmap=True): the system stays file-backed instead of copied '
+                        'into RAM (same numbers)')
+    p.add_argument('--mem_every', type=float, default=60.0,
+                   help='print process RSS to stderr every this many seconds (0 = off)')
     p.add_argument('--overwrite', action='store_true',
                    help='Recompute (system, lam) pairs whose output already exists')
     p.add_argument('--threads', type=int,
                    default=int(os.environ.get('SLURM_CPUS_PER_TASK', 0)) or None,
                    help='torch CPU threads (default: $SLURM_CPUS_PER_TASK)')
     return p.parse_args()
+
+
+def rss_gb():
+    """(current, peak) resident memory of this process in GB (10^9 B), from /proc/self/status."""
+    v = {}
+    with open('/proc/self/status') as fh:
+        for line in fh:
+            if line.startswith(('VmRSS:', 'VmHWM:')):
+                v[line.split(':')[0]] = int(line.split()[1]) * 1024 / 1e9
+    return v.get('VmRSS', float('nan')), v.get('VmHWM', float('nan'))
+
+
+def log_mem(label):
+    """RSS line on stderr (the solver's stdout is captured during the solve)."""
+    cur, peak = rss_gb()
+    print(f'[mem] {time.strftime("%H:%M:%S")} {label}: RSS {cur:.1f} GB, peak {peak:.1f} GB',
+          file=sys.stderr, flush=True)
+
+
+def start_mem_monitor(every):
+    """Background thread: log_mem every `every` seconds until the process exits."""
+    def loop():
+        while True:
+            time.sleep(every)
+            log_mem('monitor')
+    threading.Thread(target=loop, daemon=True).start()
 
 
 def tag(mode, schedule, mask):
@@ -274,13 +306,18 @@ def main():
     args = parse_args()
     if args.threads:
         torch.set_num_threads(args.threads)
+    log_mem('start')
+    if args.mem_every > 0:
+        start_mem_monitor(args.mem_every)
 
     for system_path in args.systems:
         config = system_path.name[:-len('.pt')] if system_path.name.endswith('.pt') else system_path.name
         t0 = time.time()
-        system = torch.load(system_path, map_location='cpu', weights_only=False)
+        system = torch.load(system_path, map_location='cpu', weights_only=False, mmap=args.mmap)
+        log_mem(f'after load ({system_path.stat().st_size / 1e9:.1f} GB file, mmap {args.mmap})')
         mode = args.mode or system.get('meta', {}).get('reg_mode', 'legacy')
         inp = build_inputs(system, config, args, mode)
+        log_mem('after build_inputs')
         print(f'[{config}] loaded {len(inp["t"])} nodes, r={inp["r"]} in {time.time() - t0:.0f} s; '
               f'mode {mode}' + (f' ({args.schedule})' if mode == 'moment' else '') +
               f', inputs: {inp["source"]}, mask: {inp["mask"]}')
@@ -368,6 +405,7 @@ def main():
                         'lam': lam, 'residual': solver_self.last_reg_residual, 'neg': neg_info,
                         **common}, tmp)
             tmp.replace(dest)
+            log_mem(f'after lam={lam:g}')
             print(f'[{config}] lam={lam:g}: residual {solver_self.last_reg_residual:.2e}, '
                   f'finite {bool(torch.isfinite(Theta).all())}, {time.time() - t1:.0f} s -> {dest}')
 
