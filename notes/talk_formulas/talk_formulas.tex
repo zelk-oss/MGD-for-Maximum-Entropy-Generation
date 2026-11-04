@@ -1,0 +1,206 @@
+\documentclass[11pt]{article}
+\usepackage[a4paper,margin=2.2cm]{geometry}
+\usepackage{amsmath,amssymb}
+\usepackage[T1]{fontenc}
+\usepackage{lmodern}
+\usepackage{xcolor}
+\usepackage{listings}
+\usepackage{titlesec}
+\usepackage{parskip}
+\definecolor{codebg}{gray}{0.95}
+\definecolor{notegray}{gray}{0.40}
+\lstset{basicstyle=\ttfamily\small, backgroundcolor=\color{codebg}, frame=single, rulecolor=\color{gray!40},
+        breaklines=true, breakatwhitespace=true, columns=fullflexible, keepspaces=true, upquote=true, aboveskip=2pt, belowskip=8pt}
+\titleformat{\section}{\large\bfseries}{}{0pt}{}
+\titlespacing*{\section}{0pt}{14pt}{4pt}
+\newcommand{\codenote}[1]{{\small\color{notegray}\emph{Code:} #1\par}}
+\begin{document}
+{\LARGE\bfseries Statistics in the turbulence talk figures}\par\smallskip
+{\small Formulas recovered from \texttt{codes/talk\_figures.py}, \texttt{codes/paper\_figures\_li.py},\\
+\texttt{turbulence/paper\_figs\_ensemble.py}, \texttt{codes/check\_moments.py}.\\
+Each formula is followed by its LaTeX code (copy from the grey box; math mode, no custom macros).
+Grey \emph{Code:} lines are implementation details, not for the slides.}
+
+\section{Notation (common to all figures)}
+$N$ signals $x_b$, $b = 1,\dots,N$, each of $T$ samples. Lags $\tau$ are integers (samples). Lagrangian figures show the lag as $\tau/\tau_\eta$ ($\tau_\eta$: Kolmogorov time in samples); Eulerian (jets) figures show $\tau$ in samples.
+
+\[
+\delta_\tau x(t) = x(t+\tau) - x(t)
+\]
+\begin{lstlisting}
+\delta_\tau x(t) = x(t+\tau) - x(t)
+\end{lstlisting}
+$\langle \cdot \rangle$: average over all signals and over all times $t$ at which the quantity exists. $\sigma$: standard deviation,
+
+\[
+\sigma(y)^2 = \langle y^2 \rangle - \langle y \rangle^2
+\]
+\begin{lstlisting}
+\sigma(y)^2 = \langle y^2 \rangle - \langle y \rangle^2
+\end{lstlisting}
+\section{Structure functions $S_p(\tau)$}
+Figures: \texttt{li\_structure\_functions} ($p = 2,4,6,8$, Lagrangian); \texttt{fig6\_*\_1}, right panel ($p = 4,6,8$, both). Curves shifted down by $10^{-1}$ per order.
+
+\[
+S_p(\tau) = \big\langle (\delta_\tau x)^p \big\rangle
+\]
+\begin{lstlisting}
+S_p(\tau) = \big\langle (\delta_\tau x)^p \big\rangle
+\end{lstlisting}
+\codenote{Fig.~6 takes the absolute value of the mean, $|\langle(\delta_\tau x)^p\rangle|$: identical for even $p$. Lags: $\tau = 1,\dots,T/2-1$ (Fig.~6), $\tau = 1,\dots,\min(\texttt{max\_lag}, T-2)$ (Li).}
+\section{Flatness $F_p(\tau)$}
+Figure: \texttt{li\_flatness} ($p = 4,6,8$, Lagrangian).
+
+\[
+F_p(\tau) = \frac{S_p(\tau)}{S_2(\tau)^{p/2}}
+\]
+\begin{lstlisting}
+F_p(\tau) = \frac{S_p(\tau)}{S_2(\tau)^{p/2}}
+\end{lstlisting}
+Gaussian values, for reference (not drawn in the figure):
+
+\[
+F_4 = 3, \qquad F_6 = 15, \qquad F_8 = 105
+\]
+\begin{lstlisting}
+F_4 = 3, \qquad F_6 = 15, \qquad F_8 = 105
+\end{lstlisting}
+\section{Flatness slope}
+Figure: \texttt{fig6\_*\_2}, left panel (both). Dotted line at $0$.
+
+\[
+\frac{d \log F_4}{d \log \tau}
+\]
+\begin{lstlisting}
+\frac{d \log F_4}{d \log \tau}
+\end{lstlisting}
+\codenote{Evaluated on 30 log-spaced lags in $[1, T/2)$, centred second-order finite differences in $\log\tau$ (\texttt{np.gradient}).}
+\section{Local scaling exponent $\zeta_p(\tau)$}
+Figure: \texttt{li\_local\_exponents} ($p = 4,6,8$, Lagrangian). Dotted line at $p/2$ (no intermittency: $S_p \propto S_2^{\,p/2}$).
+
+\[
+\zeta_p(\tau) = \frac{d \log S_p}{d \log S_2}
+\]
+\begin{lstlisting}
+\zeta_p(\tau) = \frac{d \log S_p}{d \log S_2}
+\end{lstlisting}
+\codenote{Computed as the ratio $\frac{d \log S_p / d \log \tau}{d \log S_2 / d \log \tau}$ (same thing, chain rule), finite differences on the unit-spaced lag grid $\tau = 1, 2, \dots$, as Li et al.\ 2024.}
+\section{Increment PDFs}
+\[
+\mathrm{PDF}\!\left( \frac{\delta_\tau x}{\sigma(\delta_\tau x)} \right)
+\]
+\begin{lstlisting}
+\mathrm{PDF}\!\left( \frac{\delta_\tau x}{\sigma(\delta_\tau x)} \right)
+\end{lstlisting}
+\texttt{li\_increment\_pdfs} (Lagrangian): normalised density, $\tau/\tau_\eta = 1, 2, 5$, shifted down by $10^{-3}$ per lag.\\ \texttt{fig6\_*\_2}, middle panel (both): PDF divided by its maximum (peak $=1$), $\tau = 1, 4, 16, 64$ samples, shifted down by $10^{-1}$ per lag.
+
+\codenote{Fig.~6: histogram on $[-6, 6]$, 201 bin edges, Gaussian smoothing of 1.5 bins. Li: no smoothing, bins over $\pm\max|\delta_\tau x|/\sigma$.}
+\section{Marginal PDF}
+Figure: \texttt{fig6\_*\_1}, left panel (both).
+
+\[
+\mathrm{PDF}\!\left( \frac{x}{\sigma(x)} \right)
+\]
+\begin{lstlisting}
+\mathrm{PDF}\!\left( \frac{x}{\sigma(x)} \right)
+\end{lstlisting}
+\codenote{The data are standardised ($\langle x\rangle = 0$, $\sigma(x) = 1$), so the code histograms $x$ directly; the model samples are put on the same bins without re-standardising. Gaussian smoothing of 1.5 bins.}
+\section{Power spectrum $P(\omega)$}
+Figure: \texttt{fig6\_*\_1}, middle panel (both); $\omega = k/T$ ($k = 1,\dots,T/2$) in cycles per sample, shown for $0 < \omega \le 0.4$.
+
+\[
+P(\omega) = \frac{1}{N} \sum_{b=1}^{N} \Big| \sum_{t=0}^{T-1} x_b(t)\, e^{-2\pi i \omega t} \Big|^2
+\]
+\begin{lstlisting}
+P(\omega) = \frac{1}{N} \sum_{b=1}^{N} \Big| \sum_{t=0}^{T-1} x_b(t)\, e^{-2\pi i \omega t} \Big|^2
+\end{lstlisting}
+\codenote{No $1/T$ normalisation (\texttt{|rfft|}$^2$ averaged over signals).}
+\section{Skewness}
+Figure: \texttt{fig6\_*\_2}, right panel (both). Dotted line at $0$.
+
+\[
+\mathrm{skewness}(y) = \frac{\big\langle \big(y - \langle y \rangle\big)^3 \big\rangle}{\sigma(y)^3}, \qquad y = x(t)\,\delta_\tau x(t)
+\]
+\begin{lstlisting}
+\mathrm{skewness}(y) = \frac{\big\langle \big(y - \langle y \rangle\big)^3 \big\rangle}{\sigma(y)^3}, \qquad y = x(t)\,\delta_\tau x(t)
+\end{lstlisting}
+\codenote{\texttt{skew\_mode=\textquotesingle power\textquotesingle} (the talk setting). 45 log-spaced lags in $[1, T/2)$.}
+\section{Cross-scale correlations $C_{p,q}(\tau, \tau^\star)$}
+Figure: \texttt{fig6\_*\_3} (both), $\tau^\star = 20$ samples (dotted vertical line; shown as $\tau^\star/\tau_\eta$ in the Lagrangian figure). Horizontal line at $1$: value when the increment amplitudes at the two scales are uncorrelated.
+
+\[
+C_{p,q}(\tau, \tau^\star) = \frac{\big\langle |\delta_{\tau^\star} x|^p \, |\delta_\tau x|^q \big\rangle}{\big\langle |\delta_{\tau^\star} x|^p \big\rangle \, \big\langle |\delta_\tau x|^q \big\rangle}
+\]
+\begin{lstlisting}
+C_{p,q}(\tau, \tau^\star) = \frac{\big\langle |\delta_{\tau^\star} x|^p \, |\delta_\tau x|^q \big\rangle}{\big\langle |\delta_{\tau^\star} x|^p \big\rangle \, \big\langle |\delta_\tau x|^q \big\rangle}
+\end{lstlisting}
+The three panels are $C_4 \equiv C_{2,2}$, \; $C_6 \equiv C_{3,3}$ and $C_{4,2}$. For even $p, q$ the absolute values are not needed, e.g.
+
+\[
+C_4(\tau, \tau^\star) = \frac{\big\langle (\delta_{\tau^\star} x)^2 \, (\delta_\tau x)^2 \big\rangle}{S_2(\tau^\star)\, S_2(\tau)}
+\]
+\begin{lstlisting}
+C_4(\tau, \tau^\star) = \frac{\big\langle (\delta_{\tau^\star} x)^2 \, (\delta_\tau x)^2 \big\rangle}{S_2(\tau^\star)\, S_2(\tau)}
+\end{lstlisting}
+\codenote{Both increments start at the same time $t$; the numerator averages over $t \le T-1-\max(\tau, \tau^\star)$, each denominator factor over its own full range. $10^{-8}$ added to the denominator. Lags $\tau = 1,\dots,T/2-1$.}
+\section{Rare signals: acceleration criterion}
+Acceleration = one-step increment (as Li et al.):
+
+\[
+a(t) = \delta_1 x(t) = x(t+1) - x(t)
+\]
+\begin{lstlisting}
+a(t) = \delta_1 x(t) = x(t+1) - x(t)
+\end{lstlisting}
+Each signal is summarised by its peak acceleration $\max_t |a(t)|$. \textbf{Criterion of the talk}: a signal is rare if
+
+\[
+\max_t |a(t)| \;>\; \mathrm{percentile}_{95}\big( \max_t |a| \big)
+\]
+\begin{lstlisting}
+\max_t |a(t)| \;>\; \mathrm{percentile}_{95}\big( \max_t |a| \big)
+\end{lstlisting}
+where the percentile is taken over the data signals: rare = the $5\,\%$ of the data signals with the largest peak acceleration.
+
+\textbf{Alternative} (\texttt{turb\_rare\_typical\_sigma.ipynb}, threshold in units of the standard deviation of $a$): rare if
+
+\[
+\max_t |a(t)| \;\ge\; 20\,\sigma(a)
+\]
+\begin{lstlisting}
+\max_t |a(t)| \;\ge\; 20\,\sigma(a)
+\end{lstlisting}
+where $\sigma(a)$ is computed over every time of every data signal. One single number, so the threshold is the same level for the data and for the generated signals.
+
+\codenote{\texttt{rare\_events\_data\_vs\_generated} applies the same rule at the lags $\tau/\tau_\eta = 20, 5, 1$, with $a$ replaced by $\delta_\tau x$ and the percentile taken at that lag on the data; the generated signals use the same absolute threshold. \texttt{rare\_events\_by\_logp} instead picks signals among the $1\,\%$ with the highest $-\log p$.}
+\section{$-\log p$: what the mean and the std are taken over}
+The model is $p(x) \propto \exp\!\big(+\Theta \cdot \phi(x)\big)$ ($\Theta = \Theta_{\rm reg}$ at the last time step), so
+
+\[
+-\log p(x) = -\,\Theta \cdot \phi(x) + \mathrm{const}
+\]
+\begin{lstlisting}
+-\log p(x) = -\,\Theta \cdot \phi(x) + \mathrm{const}
+\end{lstlisting}
+The constant is unknown, so the level of $-\log p$ means nothing: only differences between signals do. Large $-\log p$ = unlikely signal (rare signals sit on the right of the histograms).
+
+\textbf{Mean and std are over signals, for one fixed $\Theta$}: $x_b$, $b = 1,\dots,N$, are the $N = 10000$ data signals (the training signals):
+
+\[
+\mathrm{mean} = \frac{1}{N} \sum_{b=1}^{N} \big[-\log p(x_b)\big], \qquad \mathrm{std} = \Bigg( \frac{1}{N-1} \sum_{b=1}^{N} \Big[-\log p(x_b) - \mathrm{mean}\Big]^2 \Bigg)^{1/2}
+\]
+\begin{lstlisting}
+\mathrm{mean} = \frac{1}{N} \sum_{b=1}^{N} \big[-\log p(x_b)\big], \qquad \mathrm{std} = \Bigg( \frac{1}{N-1} \sum_{b=1}^{N} \Big[-\log p(x_b) - \mathrm{mean}\Big]^2 \Bigg)^{1/2}
+\end{lstlisting}
+\begin{itemize}
+\item \textbf{Table} (per category $c$ of potentials): the same mean and std, applied to the contribution of the category $-\sum_{F \in c} \Theta_F \cdot \phi_F(x_b)$ instead of $-\log p(x_b)$. Computed for each seed ($\Theta$ differs from seed to seed, the data signals are the same), then \emph{averaged over the seeds}.
+\item \textbf{Bar plots}: same quantities; error bars = std over seeds. Third panel: std of the category divided by the std of $-\log p$.
+\item \textbf{Histograms}: $-\log p(x_b) - \mathrm{median}$, the median taken over the signals shown (all data signals, or all generated signals, each with its own median).
+\item \textbf{Gaussian test}: $-\log p(x_b) - \mathrm{mean}$, the mean taken over the samples of its own law (training signals for the exact $-\log p$, generated signals for the MGD one). For $M$ dimensions the exact $-\log p = \chi^2_M/2 + \mathrm{const}$, hence $\mathrm{std} = \sqrt{M/2}$.
+\end{itemize}
+
+\codenote{The sign flip leaves every std unchanged and changes the sign of every mean. Category contributions add up to $-\log p + \mathrm{const}$, but their stds do not add up (covariances between categories). The mean of a category contribution is a level only: a constant added to $\phi_F$ shifts it without changing $p$. Code: \texttt{ddof=1} for every std; \texttt{energy\_table}, \texttt{plot\_energy\_bars}, \texttt{plot\_logp\_histogram}, \texttt{plot\_logp\_gaussian} in \texttt{codes/talk\_figures.py}.}
+\section{Error bands (all figures)}
+Line: the statistic on all signals. Band, \texttt{band=\textquotesingle batch\textquotesingle} (default): min/max of the same statistic over 10 disjoint batches of signals (data and model, as Li et al.). \texttt{band=\textquotesingle seeds\textquotesingle}: model line = mean over independent runs, band = $\pm 1$ std; the data band stays min/max over batches.
+
+\end{document}
