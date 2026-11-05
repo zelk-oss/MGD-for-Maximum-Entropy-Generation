@@ -107,6 +107,18 @@ def build_names(args, M):
             f'_nt{args.nt}_n1_{args.n1}')
     # same tags as the 1D runs: regularised solver, block averaging, energy of Theta_reg
     head += f'_lam{args.lam:g}_{args.reg_solver}_nsub{args.n_subsample}_{resolve_reg_mode(args)}'
+    # per-step ridge / float64 solves change the SDE: never reload a run made with other values
+    if args.regularization != 0.0:
+        head += f'_reg{args.regularization:g}'
+    if args.solve_float64:
+        head += '_f64'
+    # non-uniform grids get their own tag, so a run never reloads the results of another grid
+    if args.schedule == 'two_phase':
+        head += f'_2ph{args.n_bulk}'
+    elif args.schedule == 'adaptive':
+        head += '_adaptive'
+    elif args.schedule_exponent != 1.0:
+        head += f'_pow{args.schedule_exponent:g}'
     tail = f'_terms{terms_hash}' + (f'_{args.label}' if args.label else '')
     return f'{head}{tail}', f'{head}_seed_{args.seed}{tail}'      # group (all seeds), config
 
@@ -223,16 +235,22 @@ def save_diagnostics(x1, res, args, config, fig_dir, logger):
     except Exception as e:
         logger.warning('moment-matching plot failed (%s: %s)', type(e).__name__, e)
 
-    # 4. entropy bound vs equivalent Gaussian (formula of the notebook)
+    # 4. entropy bound vs equivalent Gaussian. H_bound(t_k) = H(p_0) + int dH_t_bound dt, trapezoid over the arrival
+    # times t[1:] on THIS (non-uniform) grid, as codes/utils_entropy.entropy_bound; the notebook's cumsum/nt is only
+    # right for a uniform grid.
+    from scipy.integrate import cumulative_trapezoid
+    t_np = res['t'].detach().cpu().double().numpy()
+    dH_np = res['dH_t_bound'].detach().cpu().double().numpy()
+    assert len(dH_np) == len(t_np) - 1, (len(dH_np), len(t_np))
     d = x1.shape[-2] * x1.shape[-1]
-    nt = len(res['t']) - 1
+    nt = len(t_np) - 1
     H_p_0 = (np.log(2 * np.pi) + 1) * d / 2
-    H_bound = res['dH_t_bound'].cumsum(0).cpu() / nt + H_p_0
-    H_gauss = compute_gaussian_entropy(x1, args.interpolant, res['t'])
+    H_bound = H_p_0 + cumulative_trapezoid(dH_np, t_np[1:], initial=0.0)
+    H_gauss = np.asarray(compute_gaussian_entropy(x1, args.interpolant, res['t']).cpu())
     fig, ax = plt.subplots(figsize=(6, 4))
-    ax.plot(H_bound.numpy(), 'r', label='MGD entropy bound (lower bound)')
-    ax.plot(np.asarray(H_gauss.cpu()), 'k--', label='Gaussian with data covariance')
-    ax.set_xlabel('step'); ax.set_ylabel('entropy'); ax.legend(); ax.set_title(config, fontsize=7)
+    ax.plot(t_np[1:], H_bound, 'r', label='MGD entropy bound (lower bound)')
+    ax.plot(t_np, H_gauss, 'k--', label='Gaussian with data covariance')
+    ax.set_xlabel('t'); ax.set_ylabel('entropy'); ax.legend(); ax.set_title(config, fontsize=7)
     fig.tight_layout(); fig.savefig(fig_dir / 'entropy_bound.png', dpi=130); plt.close(fig)
     summary = {'H_bound_final': float(H_bound[-1]), 'H_gaussian_final': float(H_gauss[-1]),
                'n_potentials': int(res['barphi_e'].shape[1]), 'nt': nt}
@@ -277,9 +295,10 @@ def main():
 
     with logged_run(logger):
         logger.info('x1: %s (n1 maps of %dx%d, standardised)', tuple(x1.shape), M, M)
-        # --schedule power --schedule_exponent 1 is the notebook's uniform grid, except that (like every other
-        # experiment, S&P included) the legacy power schedule drops the final point at t = 1.0000
-        # (codes/time_schedules.build_time_grid), so nt = 1000 means 999 steps ending at t = 0.999.
+        # Grid of the production runs: --schedule two_phase (n_bulk uniform steps up to t_switch, then steps with
+        # constant h/(1-t) down to 1 - gap_end), as in the turbulence runs. The legacy --schedule power
+        # --schedule_exponent 1 is the notebook's uniform grid but, like every other experiment, drops the final
+        # point at t = 1.0000 (codes/time_schedules.build_time_grid): nt = 1000 means 999 steps ending at t = 0.999.
         t, adaptive = build_time_grid(args, logger)
 
         if all(p.exists() for p in paths.values()) and aux_path.exists() and not args.force_rerun:
