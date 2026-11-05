@@ -413,3 +413,50 @@ class Scattering_Fourth_Order_Imag_2d(Potential):
         output = torch.fft.ifft2(filters[:, :-1, None, None]*torch.fft.fft2(intermediate_output)).real
         output = output - torch.transpose(output, 1, 2)
         return output[:, indices[0], indices[1], indices[2]].reshape(x.shape[0], indices.shape[1], x.shape[-2], x.shape[-1])/norm
+
+
+class Scattering_Fourth_Order_Mod2_Real_2d(Potential):
+    """Scattering_Fourth_Order_Real_2d with the SQUARED modulus |W_i x|^2 as envelope (the 'Mod2' of the 1D runs:
+    S&P, turbulence). Same (a <= b, c) index set as the modulus class (diagonal and low-pass coarse filter included),
+    so the two differ only by the envelope. Gradient: with A_i = |a_i|^2, dA_i = 2 Re(conj(a_i) da_i), so the
+    modulus class's x_filtered/|x_filtered| becomes 2 x_filtered."""
+    def __init__(self, J, L, filters):
+        super().__init__()
+        self.J = J
+        self.L = L
+        self.filters = filters
+        self.num_coefficients = int(L*J/12*((2*J**2+1)*L**2+(3*J*(L+3)+3)*L+6))
+
+    def forward(self, x):
+        filters = self.filters.to(x.device)
+        x_filtered = torch.fft.ifft2(filters*torch.fft.fft2(x))
+        x_filtered_abs2 = abs_eps(x_filtered)**2
+        W_Wx = torch.fft.ifft2(filters[:, :, None] * torch.fft.fft2(x_filtered_abs2)[:, None])
+        output = torch.real(W_Wx[:, :, :, None] * W_Wx[:, :, None].conj())
+        output = output.mean(-1).mean(-1)
+        output = output.permute(0, 3, 2, 1)
+        indices = indices_fourth_order(self.J, self.L).long()
+        output = output[:, indices[0], indices[1], indices[2]]
+        return output.reshape(x.shape[0], indices.shape[1])
+
+    def grad(self, x, v=None, precomputed=None, means=None):
+        filters = self.filters.to(x.device)
+        number_filters = filters.shape[1]
+        x_filtered_no_LF = torch.fft.ifft2(filters*torch.fft.fft2(x))[:, :-1]
+        x_filtered_abs2_no_LF = abs_eps(x_filtered_no_LF)**2
+        x_filtered_grad = 2*x_filtered_no_LF
+        x_filtered_abs2_no_LF_filtered_2 = torch.fft.ifft2(torch.fft.fft2(x_filtered_abs2_no_LF)[:, :, None]*filters**2)
+        indices = indices_fourth_order(self.J, self.L)
+        norm = x.shape[-2]*x.shape[-1]
+
+        if v is not None:
+            m = torch.zeros((number_filters-1, number_filters-1, number_filters)).to(x.device)
+            m[indices[0], indices[1], indices[2]] = v
+            m = m + torch.transpose(m, 0, 1)
+            intermediate_output = x_filtered_grad*torch.einsum('ijk, ajkbc -> aibc', m, torch.real(x_filtered_abs2_no_LF_filtered_2))
+            return torch.fft.ifft2(filters[:, :-1]*torch.fft.fft2(intermediate_output)).real.sum(1)[:, None]/norm
+
+        intermediate_output = x_filtered_grad[:, :, None, None]*torch.real(x_filtered_abs2_no_LF_filtered_2)[:, None]
+        output = torch.fft.ifft2(filters[:, :-1, None, None]*torch.fft.fft2(intermediate_output)).real
+        output = output + torch.transpose(output, 1, 2)
+        return output[:, indices[0], indices[1], indices[2]].reshape(x.shape[0], indices.shape[1], x.shape[-2], x.shape[-1])/norm

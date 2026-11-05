@@ -6,12 +6,13 @@ Settings of notebooks/mgd_sampling/mgd_2d_example.ipynb, plus what the other exp
 
     data      Quijote density maps, log(x - min + 0.1), db4 low-pass down-sampled by --fact (2: 256 -> 128),
               first --n1 maps, standardised (codes.utils.normalize)
-    model     2D Morlet bank J=5, Q=1, L=4. Arm "base": L_6 confinement + scattering order 1, 2, 3 (Real and
-              Imag); arm "scat4": the same + order 4 (Real and Imag). Nothing else differs between the arms.
-    SDE       Cos interpolant, sigma = 1, uniform grid of nt steps, ridge --regularization 0.0 (the notebook's
-              regularization=(0,0,0)), one walker and one interpolant per data map, batch_size 20.
-              forward_regularised: same evolution as the notebook's Solver(), plus the saved time-regularised
-              system for the ex-post choice of lam (thomas, moment energy, n_subsample 1)
+    model     2D Morlet bank J=5, Q=1, L=4. Arm "base": L_6 confinement + scattering order 1, 2, 3 (Real only);
+              arm "scat4": the same + order 4 (Real, squared-modulus envelope |Wx|^2 as in S&P / turbulence).
+              Nothing else differs between the arms. (The Imag classes exist but are not used.)
+    SDE       Cos interpolant, sigma = 1, one walker and one interpolant per data map, batch_size 20, time grid
+              two_phase (launcher: n_bulk = nt/2), per-step ridge --regularization 1e-7 with --solve_float64
+              (the notebook had 0). forward_regularised: same evolution as the notebook's Solver(), plus the saved
+              time-regularised system for the ex-post choice of lam (thomas, moment energy)
 
 The seed ONLY changes the initial white noise (x_0 of the interpolants and the starting walkers x_k): the
 data are always the same first --n1 maps, exactly as in the other experiments (jets, turbulence, S&P).
@@ -63,12 +64,12 @@ device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 
 # The two arms differ ONLY by the order-4 terms. The builder creates the potentials in this order
 # (L_6 first: its columns lead Theta, which is what the L_6 sign check reads).
+# Real parts only (the Imag classes exist in potentials_2d.py but are not used: decided 2026-11-05). The order-4 envelope
+# is the squared modulus |W x|^2 ('Mod2'), as in the S&P and turbulence runs.
 ARM_TERMS = {
-    'base':  ['L_6', 'Scattering_First_Order', 'Scattering_Second_Order',
-              'Scattering_Third_Order_Real', 'Scattering_Third_Order_Imag'],
-    'scat4': ['L_6', 'Scattering_First_Order', 'Scattering_Second_Order',
-              'Scattering_Third_Order_Real', 'Scattering_Third_Order_Imag',
-              'Scattering_Fourth_Order_Real', 'Scattering_Fourth_Order_Imag'],
+    'base':  ['L_6', 'Scattering_First_Order', 'Scattering_Second_Order', 'Scattering_Third_Order_Real'],
+    'scat4': ['L_6', 'Scattering_First_Order', 'Scattering_Second_Order', 'Scattering_Third_Order_Real',
+              'Scattering_Fourth_Order_Mod2_Real'],
 }
 
 

@@ -6,8 +6,8 @@
 # 100 maps of 128x128 = fact 2) with three differences decided 2026-11-05: time grid two_phase (as the turbulence
 # runs), per-step ridge REGULARIZATION 1e-7 with float64 solves (the notebook had 0), and
 # what the other experiments have:
-#   base   L_6 confinement + scattering order 1, 2, 3 (Real and Imag)                        nt = 1000
-#   scat4  base + scattering order 4 (Real and Imag); nothing else differs                   nt = 2000
+#   base   L_6 confinement + scattering order 1, 2, 3 (Real only)                            nt = 1000
+#   scat4  base + scattering order 4 (Real, squared-modulus envelope); nothing else differs   nt = 2000
 # The time-regularised system is saved (SAVE_REG_SYSTEM, in-run solve skipped); lam is chosen ex post:
 #   cosmic_web_theta_reg.sh (Theta_reg for a grid of lam, per seed) -> cosmic_web_xseed.sh (cross-seed choice).
 #
@@ -17,9 +17,9 @@
 #   DATA_PATH=... ARM=scat4 GPU=h100 SEEDS=900 QOS=qos_gpu_h100-dev TIME=02:00:00 LABEL=timing_scat4 bash cosmic_web.sh
 # and read "SDE integration finished in" / s/it in the SLURM log. TIME is a cap; the SDE loop aborts cleanly
 # (--time_limit_min) if projected past it.
-# Estimates (not measured): r = 564 (base) / 4294 (scat4) statistics. System on disk ~ 2 float32 r x r blocks per
-# node: base ~2.5 GB, scat4 ~295 GB at nsub 1, nt 2000 -> N_SUBSAMPLE averages fine steps into coarse nodes
-# (SDE evolution unchanged); scat4 defaults to 5 (~59 GB), a choice to confirm. The order-4 gradient builds
+# Estimates (not measured): r = 324 (base) / 2414 (scat4) statistics. System on disk ~ 2 float32 r x r blocks per
+# node: base ~0.8 GB, scat4 ~93 GB at nsub 1, nt 2000 -> N_SUBSAMPLE averages fine steps into coarse nodes
+# (SDE evolution unchanged); scat4 defaults to 5 (~19 GB), a choice to confirm. The order-4 gradient builds
 # (B, 20, 20, 21, 128, 128) complex tensors: 22 GB at B = 20 -> scat4 defaults to BATCH_SIZE 10 on H100 (5 on V100);
 # base uses the notebook's 20. CPUs per task: 24 on H100, 10 on V100.
 #
@@ -42,7 +42,7 @@ case "${ARM}" in
     *) echo "Error: ARM must be base or scat4"; exit 1 ;;
 esac
 # per-step ridge and float64 per-step solves (decided 2026-11-05; the notebook had ridge 0, but the model now has
-# more, possibly collinear, statistics: L_6, Imag parts). The offline Theta_reg ridge (1e-7) is separate.
+# more, possibly collinear, statistics: L_6). The offline Theta_reg ridge (1e-7) is separate.
 REGULARIZATION="${REGULARIZATION:-1e-7}"
 SOLVE_FLOAT64_FLAG=$([ "${SOLVE_FLOAT64:-true}" = "true" ] && echo "--solve_float64")
 NT="${NT:-${NT_DEFAULT}}"

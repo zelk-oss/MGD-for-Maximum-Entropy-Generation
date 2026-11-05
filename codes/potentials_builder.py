@@ -428,6 +428,9 @@ def get_2d_potentials(terms, J, L, filters, parallel=False):
     if 'Scattering_Fourth_Order_Real' in terms:
         potentials['Scattering_Fourth_Order_Real'] = Scattering_Fourth_Order_Real_2d(J, L, filters)
 
+    if 'Scattering_Fourth_Order_Mod2_Real' in terms:
+        potentials['Scattering_Fourth_Order_Mod2_Real'] = Scattering_Fourth_Order_Mod2_Real_2d(J, L, filters)
+
     if 'Scattering_Fourth_Order_Imag' in terms:
         potentials['Scattering_Fourth_Order_Imag'] = Scattering_Fourth_Order_Imag_2d(J, L, filters)
 
