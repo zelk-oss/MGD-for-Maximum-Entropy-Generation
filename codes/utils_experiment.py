@@ -174,6 +174,12 @@ def _config_name_parts(args, M, include_seed=True):
     # data drawn under its own seed (gaussian --data_seed): never reloads a run whose x1 followed --seed
     if getattr(args, 'data_seed', None) is not None:
         parts.append(f'dseed{args.data_seed}')
+    # x1 replaced by a Gaussian with the data spectrum (--gauss_spectrum): never reloads a real-data run
+    if getattr(args, 'gauss_spectrum', False):
+        parts.append('gaussspec')
+    # walkers/interpolants decoupled from the number of data samples (snp_experiment --n_particles)
+    if getattr(args, 'n_particles', None):
+        parts.append(f'np{args.n_particles}')
     # Non-default regularised solver gets its own tag (dense runs keep their old
     # names). Needed because loading matches by name prefix: without it a thomas
     # run would silently reload a dense run with the same parameters.
@@ -431,9 +437,12 @@ def run_experiment(args, M, config, x1, filters, t, logger, outdir, device,
                 print(f"Successfully normalized potential {pot} with attribute fit_micro")
 
 
-    batch_size = args.batch_size or x1.shape[0]
-    nb_workers = x1.shape[0]
-    nb_interpolants = x1.shape[0]
+    # --n_particles (S&P: ONE data series, many walkers/interpolants; x_1 is tiled and the noise x_0 drawn per
+    # interpolant, sde_routines.init_interpolants_and_workers). Default None: as many as data samples, as before.
+    n_particles = getattr(args, 'n_particles', None) or x1.shape[0]
+    batch_size = args.batch_size or n_particles
+    nb_workers = n_particles
+    nb_interpolants = n_particles
 
     # --save_reg_system: dump the regularised system for offline lam re-tuning
     # (codes/resolve_theta_reg.py). --reg_system_dir lets the ~r^2*nt*8-byte dump

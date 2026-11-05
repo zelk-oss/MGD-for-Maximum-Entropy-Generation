@@ -239,6 +239,10 @@ def get_1d_potentials(terms, J, filters, Q=1, filters_Q=None, filters_Phi=None,s
 
     if 'Scattering_Third_Order_Imag' in terms:
         potentials['Scattering_Third_Order_Imag'] = Scattering_Third_Order_Imag_1d(J, filters_Q)
+
+    # without the J structurally-zero low-pass columns (Imag of a real low-pass output), see the class docstring
+    if 'Scattering_Third_Order_Imag_nolp' in terms:
+        potentials['Scattering_Third_Order_Imag_nolp'] = Scattering_Third_Order_Imag_1d(J, filters_Q, include_lowpass=False)
     
     if 'Scattering_Fourth_Order_Real' in terms:
         potentials['Scattering_Fourth_Order_Real'] = Scattering_Fourth_Order_Real_1d(J, Q, filters, filters_Q[:,:-1])
@@ -251,6 +255,13 @@ def get_1d_potentials(terms, J, filters, Q=1, filters_Q=None, filters_Phi=None,s
     # Q = 1 SCATTERING 4TH ORDER 
     if 'Scattering_Fourth_Order_Real_Q1' in terms:
         potentials['Scattering_Fourth_Order_Real_Q1'] = Scattering_Fourth_Order_Real_1d(J, 1, filters, filters[:,:-1])
+
+    # same with the real DIAGONAL s1 == s2 (include_diag=True), as in the MGD paper eq. 41 and Morel's scat_spectra
+    # (21 more real coefficients at J=6: 56 instead of 35). The Imag part of the diagonal is identically zero.
+    if 'Scattering_Fourth_Order_Real_Q1_diag' in terms:
+        potentials['Scattering_Fourth_Order_Real_Q1_diag'] = Scattering_Fourth_Order_Real_1d(J, 1, filters, filters[:,:-1], include_diag=True)
+    if 'Scattering_Fourth_Order_Mod2_Real_Q1_diag' in terms:
+        potentials['Scattering_Fourth_Order_Mod2_Real_Q1_diag'] = Scattering_Fourth_Order_Mod2_Real_1d(J, 1, filters, filters[:,:-1], include_diag=True)
 
     if 'Scattering_Fourth_Order_Imag' in terms:
         potentials['Scattering_Fourth_Order_Imag'] = Scattering_Fourth_Order_Imag_1d(J, Q, filters, filters_Q[:,:-1])

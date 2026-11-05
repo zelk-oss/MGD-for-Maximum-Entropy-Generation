@@ -310,12 +310,24 @@ class Scattering_Third_Order_Imag_1d(Potential):
     expectation vanishes for sign-symmetric data. Gradient: with g_j = ifft(fft(x) |psi_j^|^2),
     Phi_kj = -mean(|W_k x| Im g_j); the Real class has +Re g_j, and the modulus term uses
     the frequency-reversed |psi_j^|^2 because the Imag part is not symmetric in omega.
+
+    include_lowpass=False (2026-11-05, S&P): drop the J columns whose phase filter j is the low-pass (j = J). Their
+    Imag part is identically zero (real, symmetric low-pass output), so their gradient is rounding noise and their
+    Theta is set by the ridge alone (~1e9 at ridge 1e-7); the MGD paper (App. D.1) discards such potentials.
+    Default True: unchanged (bit-identical).
     """
-    def __init__(self, J, filters):
+    def __init__(self, J, filters, include_lowpass=True):
         super().__init__()
         self.J = J
         self.filters = filters
-        self.num_coefficients = int(J*((1+J)/2+1))
+        self.include_lowpass = include_lowpass
+        self.num_coefficients = int(J*((1+J)/2+1)) - (0 if include_lowpass else J)
+
+    def _indices(self):
+        indices = indices_third_order(self.J, 1)
+        if not self.include_lowpass:
+            indices = indices[:, indices[1] < self.J]
+        return indices
 
     def forward(self, x):
         filters = self.filters.to(x.device)
@@ -326,7 +338,7 @@ class Scattering_Third_Order_Imag_1d(Potential):
 
         output = output.mean(-1)
 
-        indices = indices_third_order(self.J, 1).long()
+        indices = self._indices().long()
 
         output = output[:, indices[0], indices[1]]
 
@@ -344,7 +356,7 @@ class Scattering_Third_Order_Imag_1d(Potential):
         x_filtered_abs = abs_eps(x_filtered)
         x_filtered_over_abs = x_filtered/x_filtered_abs
 
-        indices = indices_third_order(self.J, 1)
+        indices = self._indices()
 
         if v!=None:
             m = torch.zeros((number_filters-1, number_filters)).to(x.device)
