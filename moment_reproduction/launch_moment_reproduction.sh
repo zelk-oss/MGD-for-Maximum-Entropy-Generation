@@ -1,5 +1,6 @@
 #!/bin/bash
-# moment_reproduction as a SLURM array on H100 (default QoS, 2 h): one task per model of run_moment_reproduction.py.
+# moment_reproduction as a SLURM array on H100 (default; GPU=v100 for V100), default QoS: one task per model of
+# run_moment_reproduction.py.
 # Results: moment_reproduction/results/<group>/<model>.pkl (load in the notebook with load_results()).
 # Logs: moment_reproduction/results/logs/.
 #

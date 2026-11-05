@@ -1,0 +1,16 @@
+
+=== seed 900: turbulencesynth_M256_J8_Q3_sigma3.5_nt55000_n1_10000_lam0.0_thomas_nsub1_moment_f64_dedupfilt1e-08_seed_900_termse51338f8_turbulence_nested_M3_bicw_20261027_1615
+  n1=10000 M=256 J=8 Q=3 sigma=3.5 terms=['L_6', 'Scalar_psi_gaussianK', 'Scalar_morlet_gaussianK']
+[deduplicate_filters] filters_Q: 25 -> 22 channels for channel-list potentials (dropped duplicates [21, 22, 23], tol=1e-08)
+  check: rebuilt phi on saved samples vs aux barphi_p: median rel 1.0e-07, max 1.3e-06
+1. 150 statistics at t=1 (miss: rel > 0.01); z median 0.67 under independent-sample noise
+  all       n= 150  rel mean 1.10e-03 median 9.61e-08 p90 4.14e-04 max 3.74e-02 | z median 2.2e-06 | sign persistence (1-t<1e-2) median 61%
+  matched   n= 145  rel mean 1.81e-04 median 9.32e-08 p90 2.05e-04 max 6.80e-03 | z median 1.8e-06 | sign persistence (1-t<1e-2) median 60%
+  missed    n=   5  rel mean 2.78e-02 median 3.19e-02 p90 3.65e-02 max 3.74e-02 | z median 4.6 | sign persistence (1-t<1e-2) median 62%
+3. missed statistics (peak/onset along the run; I = Ito term / |e| at 1-t = 1e-2, 1e-3, end)
+stat                                rel    p/e      z persist     peak     @1-t onset 1-t   I(1e-2)   I(1e-3)    I(end)
+Scalar_psi_gaussianK[34]       3.74e-02  1.037     10     73% 8.08e-01  9.7e-01   1.0e+00         -         -         -
+Scalar_psi_gaussianK[78]       3.53e-02  1.035      1     62% 2.24e+00  4.6e-04   6.0e-03         -         -         -
+Scalar_psi_gaussianK[56]       3.19e-02  1.032      1     62% 2.26e+00  4.6e-04   5.8e-03         -         -         -
+Scalar_psi_gaussianK[35]       1.75e-02  1.017      5     73% 9.15e-01  8.9e-01   1.0e+00         -         -         -
+Scalar_morlet_gaussianK[8]     1.70e-02  1.017      5     54% 3.73e-01  1.0e-01   1.0e+00         -         -         -

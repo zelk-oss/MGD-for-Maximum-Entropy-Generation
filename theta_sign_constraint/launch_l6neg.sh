@@ -43,7 +43,14 @@ OUTDIR="${OUTDIR:-${SCRATCH}/MGD-for-Maximum-Entropy-Generation/turbulence/theta
 LOGDIR="${HERE}/results"
 QOS="${QOS-}"
 TIME="${TIME:-20:00:00}"
-CPUS="${CPUS:-24}"
+# GPU=v100 (2026-11-03): gpu_p13, whole-node CPUs by default (RAM comes with CPUs; the solve is CPU/RAM-bound).
+# The H100 queue was stuck at (Priority); B+Scat4 systems are 49 GB, C's 120 GB (C does not fit a V100 node).
+GPU="${GPU:-h100}"
+case "${GPU}" in
+    h100) ACCOUNT="wbg@h100"; PARTITION="gpu_p6";  CONSTRAINT="h100"; MODULE_PRE="arch/h100"; CPUS="${CPUS:-24}" ;;
+    v100) ACCOUNT="wbg@v100"; PARTITION="gpu_p13"; CONSTRAINT="v100"; MODULE_PRE="";          CPUS="${CPUS:-40}" ;;
+    *) echo "GPU must be h100 or v100"; exit 1 ;;
+esac
 
 if [ -n "${DEPEND}" ]; then
     SEED_ARR=(${SEEDS-})
@@ -51,7 +58,7 @@ if [ -n "${DEPEND}" ]; then
     echo "arm ${ARM}, ridge ${RIDGE}: chained after job ${DEPEND} (aftercorr), seeds ${SEED_ARR[*]}"
     echo "  systems resolved at run time: ${REG_SYSTEM_DIR}/*seed_<seed>_*${ARM}*.pt"
     echo "lams ${LAM_LIST[*]} | columns ${COLS} <= -${EPS} nats/sd from t >= ${T_MIN} | ${METHOD}, <= ${MAX_ITER} rounds | -> ${OUTDIR} | logs ${LOGDIR}"
-    echo "QoS ${QOS:-default}, ${CPUS} CPUs, ${TIME}"
+    echo "${GPU}, QoS ${QOS:-default}, ${CPUS} CPUs, ${TIME}, MAX_ITER ${MAX_ITER}"
     if [ -n "${DRY}" ]; then echo "(dry run: nothing submitted)"; exit 0; fi
     mkdir -p "${OUTDIR}" "${LOGDIR}"
     JOB=$(sbatch --parsable --dependency=aftercorr:${DEPEND} --kill-on-invalid-dep=yes <<EOT
@@ -60,15 +67,15 @@ if [ -n "${DEPEND}" ]; then
 #SBATCH --array=0-$(( ${#SEED_ARR[@]} - 1 ))
 #SBATCH --time=${TIME}
 #SBATCH --output=${LOGDIR}/slurm_%x_%A_%a.log
-#SBATCH -A wbg@h100
-#SBATCH --partition=gpu_p6
+#SBATCH -A ${ACCOUNT}
+#SBATCH --partition=${PARTITION}
 ${QOS:+#SBATCH --qos=${QOS}}
-#SBATCH -C h100
+#SBATCH -C ${CONSTRAINT}
 #SBATCH --gres=gpu:1
 #SBATCH --cpus-per-task=${CPUS}
 #SBATCH --hint=nomultithread
 module purge
-module load arch/h100
+${MODULE_PRE:+module load ${MODULE_PRE}}
 module load pytorch-gpu/py3/2.8.0
 cd "${PROJECT_DIR}"
 SEED_ARR=( ${SEED_ARR[@]} )
@@ -96,7 +103,7 @@ shopt -u nullglob
 echo "arm ${ARM}, ridge ${RIDGE}: ${#FILES[@]} systems matching ${REG_SYSTEM_DIR}/${SYSTEM_PATTERN}"
 printf '  %s\n' "${FILES[@]##*/}"
 echo "lams ${LAM_LIST[*]} | columns ${COLS} <= -${EPS} nats/sd from t >= ${T_MIN} | ${METHOD}, <= ${MAX_ITER} rounds | -> ${OUTDIR} | logs ${LOGDIR}"
-echo "QoS ${QOS:-default}, ${CPUS} CPUs, ${TIME}"
+echo "${GPU}, QoS ${QOS:-default}, ${CPUS} CPUs, ${TIME}, MAX_ITER ${MAX_ITER}"
 if [ ${#FILES[@]} -lt 1 ]; then echo "Error: no system file"; exit 1; fi
 if [ -n "${DRY}" ]; then echo "(dry run: nothing submitted)"; exit 0; fi
 mkdir -p "${OUTDIR}" "${LOGDIR}"
@@ -107,15 +114,15 @@ JOB=$(sbatch --parsable <<EOT
 #SBATCH --array=0-$(( ${#FILES[@]} - 1 ))
 #SBATCH --time=${TIME}
 #SBATCH --output=${LOGDIR}/slurm_%x_%A_%a.log
-#SBATCH -A wbg@h100
-#SBATCH --partition=gpu_p6
+#SBATCH -A ${ACCOUNT}
+#SBATCH --partition=${PARTITION}
 ${QOS:+#SBATCH --qos=${QOS}}
-#SBATCH -C h100
+#SBATCH -C ${CONSTRAINT}
 #SBATCH --gres=gpu:1
 #SBATCH --cpus-per-task=${CPUS}
 #SBATCH --hint=nomultithread
 module purge
-module load arch/h100
+${MODULE_PRE:+module load ${MODULE_PRE}}
 module load pytorch-gpu/py3/2.8.0
 cd "${PROJECT_DIR}"
 FILES=( ${FILES[@]} )

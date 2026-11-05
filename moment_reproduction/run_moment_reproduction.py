@@ -55,10 +55,8 @@ EXTRA = [
     'Scalar_psi_gaussianK',                     # marginals, Q bank of the run (= morlet at Q=1: jets duplicate)
     'Scalar_morlet_gaussianK_imag',             # marginals of the imaginary parts
     'Scalar_psi_gaussianK_imag',
-    # 'Scattering_Fourth_Order_Real',           # full Scat4 on the run's Q bank (in the 11-01 local list)
-    # 'Scattering_Fourth_Order_Imag',
-    # 'Scalar_Q4_gaussianK',                    # Q=4 / Q=5 banks: J=7 at M=256 (J=8 not buildable)
-    # 'Scalar_Q5_gaussianK',
+    'Scalar_Q4_gaussianK',                      # marginals, Q=4 / Q=5 banks at the run's J (empty wavelets dropped)
+    'Scalar_Q5_gaussianK',
 ]
 
 OUT = HERE / 'results'
