@@ -9,7 +9,7 @@ Settings of notebooks/mgd_sampling/mgd_2d_example.ipynb, plus what the other exp
     model     2D Morlet bank J=5, Q=1, L=4. Arm "base": L_6 confinement + scattering order 1, 2, 3 (Real only);
               arm "scat4": the same + order 4 (Real, squared-modulus envelope |Wx|^2 as in S&P / turbulence).
               Nothing else differs between the arms. (The Imag classes exist but are not used.)
-    SDE       Cos interpolant, sigma = 1, one walker and one interpolant per data map, batch_size 20, time grid
+    SDE       Cos interpolant, sigma^2 = 5.5 and nt = 2700 in the launcher (paper sec. 6.4; the notebook had sigma = 1), one walker and one interpolant per data map, batch_size 20, time grid
               two_phase (launcher: n_bulk = nt/2), per-step ridge --regularization 1e-7 with --solve_float64
               (the notebook had 0). forward_regularised: same evolution as the notebook's Solver(), plus the saved
               time-regularised system for the ex-post choice of lam (thomas, moment energy)

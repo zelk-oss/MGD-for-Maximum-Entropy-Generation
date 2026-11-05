@@ -3,11 +3,11 @@
 # initial white noise; the data are always the same first N1 maps).
 #
 # Two arms (ARM), settings of notebooks/mgd_sampling/mgd_2d_example.ipynb (J=5 Q=1 L=4, sigma=1, Cos interpolant,
-# 100 maps of 128x128 = fact 2) with three differences decided 2026-11-05: time grid two_phase (as the turbulence
+# 100 maps of 128x128 = fact 2) with differences decided 2026-11-05: sigma^2 = 5.5 and nt = 2700 (paper), and time grid two_phase (as the turbulence
 # runs), per-step ridge REGULARIZATION 1e-7 with float64 solves (the notebook had 0), and
 # what the other experiments have:
-#   base   L_6 confinement + scattering order 1, 2, 3 (Real only)                            nt = 1000
-#   scat4  base + scattering order 4 (Real, squared-modulus envelope); nothing else differs   nt = 2000
+#   base   L_6 confinement + scattering order 1, 2, 3 (Real only)                            nt = 2700
+#   scat4  base + scattering order 4 (Real, squared-modulus envelope); nothing else differs   nt = 2700
 # The time-regularised system is saved (SAVE_REG_SYSTEM, in-run solve skipped); lam is chosen ex post:
 #   cosmic_web_theta_reg.sh (Theta_reg for a grid of lam, per seed) -> cosmic_web_xseed.sh (cross-seed choice).
 #
@@ -37,8 +37,8 @@ CW_DIR="$(cd "${LAUNCH_DIR}/.." && pwd)"
 : "${GPU:?set GPU=v100 or h100 (no default on purpose)}"
 
 case "${ARM}" in
-    base)  NT_DEFAULT=1000; TIME_DEFAULT="03:00:00"; BATCH_DEFAULT=20; NSUB_DEFAULT=1 ;;
-    scat4) NT_DEFAULT=2000; TIME_DEFAULT="20:00:00"; BATCH_DEFAULT=$([ "${GPU}" = "h100" ] && echo 10 || echo 5); NSUB_DEFAULT=5 ;;
+    base)  NT_DEFAULT=2700; TIME_DEFAULT="03:00:00"; BATCH_DEFAULT=20; NSUB_DEFAULT=1 ;;
+    scat4) NT_DEFAULT=2700; TIME_DEFAULT="20:00:00"; BATCH_DEFAULT=$([ "${GPU}" = "h100" ] && echo 10 || echo 5); NSUB_DEFAULT=5 ;;
     *) echo "Error: ARM must be base or scat4"; exit 1 ;;
 esac
 # per-step ridge and float64 per-step solves (decided 2026-11-05; the notebook had ridge 0, but the model now has
@@ -62,7 +62,8 @@ N_BULK="${N_BULK:-$(( NT / 2 ))}"
 T_SWITCH="${T_SWITCH:-0.9}"
 GAP_END="${GAP_END:-5e-5}"
 J=5; Q=1; L=4
-SIGMA=1
+# sigma^2 = 5.5 and 2700 steps: the MGD paper's cosmic-web values (sec. 6.4, App. D.3: samples at sigma^2 = 5.5; steps {1000,1000,1000,1000,2500,2700} for sigma^2 {0.1,0.25,1,2.5,4,5.5}); the notebook had sigma = 1
+SIGMA="${SIGMA:-2.345207879911715}"
 INTERPOLANT=Cos
 SEED_LIST=(${SEEDS:-900 901 902 903 904})
 LABEL="${LABEL:-${ARM}}"
