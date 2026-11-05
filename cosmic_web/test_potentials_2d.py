@@ -24,7 +24,7 @@ print('filters', tuple(filters.shape), 'complex:', filters.is_complex())
 terms = ['L_6', 'Scattering_First_Order', 'Scattering_Second_Order',
          'Scattering_Third_Order_Real', 'Scattering_Third_Order_Imag',
          'Scattering_Fourth_Order_Real', 'Scattering_Fourth_Order_Imag',
-         'Scattering_Fourth_Order_Mod2_Real']
+         'Scattering_Fourth_Order_Mod2_Real', 'Scattering_Fourth_Order_Mod2_Imag']
 pots = get_2d_potentials(terms, J, L, filters)
 x = torch.randn(B, 1, M, M)
 
