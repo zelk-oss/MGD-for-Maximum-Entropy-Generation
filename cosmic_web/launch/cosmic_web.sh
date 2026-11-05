@@ -24,7 +24,8 @@
 # base uses the notebook's 20. CPUs per task: 24 on H100, 10 on V100.
 #
 # Usage (Jean Zay, from cosmic_web/launch/); GPU is mandatory, no default:
-#   DATA_PATH=/path/to/quijote.npy ARM=base  GPU=h100 bash cosmic_web.sh             # seeds 900-904
+#   DATA_PATH=/path/to/quijote.npy ARM=scat4_real GPU=h100 bash cosmic_web.sh        # seeds 900-904
+#   (ARM = base_real, scat4_real: Real parts only; base, scat4: with the Imag terms)
 #   DATA_PATH=...                  ARM=scat4 GPU=h100 bash cosmic_web.sh
 # Other overrides: SEEDS, N1, NT, TIME, QOS, BATCH_SIZE, N_SUBSAMPLE, CPUS, LABEL, REG_SYSTEM_DIR, FACT,
 #   N_BULK, T_SWITCH, GAP_END, REGULARIZATION, SOLVE_FLOAT64.
@@ -33,13 +34,17 @@ LAUNCH_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 CW_DIR="$(cd "${LAUNCH_DIR}/.." && pwd)"
 
 : "${DATA_PATH:?set DATA_PATH to the Quijote .npy}"
-: "${ARM:?set ARM=base or scat4}"
+: "${ARM:?set ARM=base_real, scat4_real, base or scat4}"
 : "${GPU:?set GPU=v100 or h100 (no default on purpose)}"
 
 case "${ARM}" in
+    # Real parts only (the overnight runs). Measured on H100: base_real 0.33 s/step, scat4_real 3.77 s/step (batch 10).
+    # NT 3000: base_real ~17 min, scat4_real ~3.1 h. TIME is a cap: the guard aborts if the projection > 90 % of it.
+    base_real)  NT_DEFAULT=3000; TIME_DEFAULT="02:00:00"; BATCH_DEFAULT=20; NSUB_DEFAULT=1 ;;
+    scat4_real) NT_DEFAULT=3000; TIME_DEFAULT="04:30:00"; BATCH_DEFAULT=$([ "${GPU}" = "h100" ] && echo 10 || echo 5); NSUB_DEFAULT=5 ;;
     base)  NT_DEFAULT=2700; TIME_DEFAULT="03:00:00"; BATCH_DEFAULT=20; NSUB_DEFAULT=1 ;;
     scat4) NT_DEFAULT=2700; TIME_DEFAULT="20:00:00"; BATCH_DEFAULT=$([ "${GPU}" = "h100" ] && echo 10 || echo 5); NSUB_DEFAULT=10 ;;
-    *) echo "Error: ARM must be base or scat4"; exit 1 ;;
+    *) echo "Error: ARM must be base_real, scat4_real, base or scat4"; exit 1 ;;
 esac
 # per-step ridge and float64 per-step solves (decided 2026-11-05; the notebook had ridge 0, but the model now has
 # more, possibly collinear, statistics: L_6). The offline Theta_reg ridge (1e-7) is separate.

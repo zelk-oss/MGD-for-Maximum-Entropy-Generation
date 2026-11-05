@@ -68,6 +68,10 @@ device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 # envelope is the squared modulus |W x|^2 ('Mod2'), as in the S&P and turbulence runs. The Imag terms are not in
 # the paper's r = 2392, which counts Real parts only.
 ARM_TERMS = {
+    # Real parts only (2026-11-05, for the overnight runs: scat4 with the Imag terms measured 8.1 s/step, 3.8 without)
+    'base_real':  ['L_6', 'Scattering_First_Order', 'Scattering_Second_Order', 'Scattering_Third_Order_Real'],
+    'scat4_real': ['L_6', 'Scattering_First_Order', 'Scattering_Second_Order', 'Scattering_Third_Order_Real',
+                   'Scattering_Fourth_Order_Mod2_Real'],
     'base':  ['L_6', 'Scattering_First_Order', 'Scattering_Second_Order',
               'Scattering_Third_Order_Real', 'Scattering_Third_Order_Imag'],
     'scat4': ['L_6', 'Scattering_First_Order', 'Scattering_Second_Order',
