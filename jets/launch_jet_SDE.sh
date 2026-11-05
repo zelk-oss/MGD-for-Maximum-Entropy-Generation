@@ -33,6 +33,7 @@
 #   SEEDS="500" ARM=full bash jets/launch_jet_SDE.sh           # other seeds
 #   ARM=scat2 bash jets/launch_jet_SDE.sh
 #   ARM=scat2_scalar bash jets/launch_jet_SDE.sh
+#   ARM=gauss_spectrum bash jets/launch_jet_SDE.sh             # Gaussian with the Modane spectrum, V100, 1 h
 #   CHAIN_XSEED=false ...                                      # SDE only, no lambda sweep
 #   JOB_TIME=10:00:00 ...                                      # other job time (default 14 h)
 
@@ -92,16 +93,34 @@ case "${ARM}" in
     noscalar) TERMS=("${BASE_TERMS[@]}");                         SCALAR=false ;;
     scat2)        TERMS=(L_6 Scattering_First_Order Scattering_Second_Order);                         SCALAR=false ;;
     scat2_scalar) TERMS=(L_6 Scattering_First_Order Scattering_Second_Order Scalar_morlet_gaussianK); SCALAR=true ;;
-    *) echo "unknown ARM '${ARM}'; use full | noscalar | scat2 | scat2_scalar"; exit 1 ;;
+    gauss_spectrum) TERMS=(Scattering_Second_Order_Q1);                                                SCALAR=false ;;
+    *) echo "unknown ARM '${ARM}'; use full | noscalar | scat2 | scat2_scalar | gauss_spectrum"; exit 1 ;;
 esac
 
 # ── SLURM & JEAN ZAY QOS CONFIG ──────────────────────
 ACCOUNT="wbg@h100"
 CONSTRAINT="h100"
 PARTITION="gpu_p6"
+MODULE_PRE="arch/h100"
 TIME="${JOB_TIME:-14:00:00}"   # job time; loop budget = TIME - 30 min reserve = 13.5 h (loop_budget_s in codes/sde_routines.py)
 CPUS=24
 NGPUS=1
+
+# gauss_spectrum arm (gauss_spectrum/README.md, 2026-11-03): x1 = stationary Gaussian with the Modane
+# spectrum, order-2 scattering (Q = 1 bank) only -> the model is a Gaussian too, so its log p can be
+# checked against the exact one. nt 10000 (user: enough for moment matching at r = 9), n_bulk 2000 as
+# gauss_dim_sweep; gap_end, sigma, ridge, n1, seeds as the other jets arms. V100, no chained lambda sweep:
+# Theta_reg is solved offline with the same lambda / ridge for both data sets (README).
+EXTRA_DATA_FLAGS=""
+if [ "${ARM}" = "gauss_spectrum" ]; then
+    NT=10000
+    SCHEDULE_ARGS="--schedule two_phase --n_bulk 2000 --t_switch 0.9 --gap_end 7.5e-4"
+    GRAM_PREFLIGHT=""
+    CHAIN_XSEED=false
+    EXTRA_DATA_FLAGS=" --gauss_spectrum"
+    ACCOUNT="wbg@v100"; CONSTRAINT="v100"; PARTITION="gpu_p13"; MODULE_PRE=""; CPUS=10
+    TIME="${JOB_TIME:-01:00:00}"
+fi
 
 if [ "${PREFLIGHT_ONLY}" = "true" ]; then
     TIME="00:30:00"
@@ -124,7 +143,7 @@ IFS=: read -r _h _m _s <<< "${TIME}"
 TIME_LIMIT_MIN=$(( 10#${_h} * 60 + 10#${_m} ))
 
 # ── optional flags ───────────────────────────────────
-EXTRA_FLAGS=" --label ${LABEL} ${SCHEDULE_ARGS}"
+EXTRA_FLAGS=" --label ${LABEL} ${SCHEDULE_ARGS}${EXTRA_DATA_FLAGS}"
 [ -n "${BATCH_SIZE}" ]                 && EXTRA_FLAGS+=" --batch_size ${BATCH_SIZE}"
 [ "${SOLVE_FLOAT64}" = "true" ]        && EXTRA_FLAGS+=" --solve_float64"
 [ "${DEDUPLICATE_FILTERS}" = "true" ]  && EXTRA_FLAGS+=" --deduplicate_filters --dedup_tol ${DEDUP_TOL}"
@@ -163,7 +182,7 @@ JOBID=$(sbatch --parsable <<EOT
 #SBATCH --output=${LOG_DIR}/slurm_%x_%A_%a.log
 
 module purge
-module load arch/h100
+${MODULE_PRE:+module load ${MODULE_PRE}}
 module load pytorch-gpu/py3/2.8.0
 cd "${SCRIPT_DIR}"
 export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True

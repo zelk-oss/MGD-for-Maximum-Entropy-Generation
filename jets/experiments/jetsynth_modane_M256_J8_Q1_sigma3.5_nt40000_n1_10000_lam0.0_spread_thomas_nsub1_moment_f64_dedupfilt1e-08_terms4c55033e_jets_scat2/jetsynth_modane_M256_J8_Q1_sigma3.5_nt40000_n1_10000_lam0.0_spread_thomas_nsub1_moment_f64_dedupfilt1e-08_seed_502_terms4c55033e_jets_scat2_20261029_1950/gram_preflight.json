@@ -1,0 +1,42 @@
+{
+ "tol": 1e-06,
+ "n_samples": 2000,
+ "n_stats_before": 26,
+ "n_dropped": 0,
+ "n_zero_gradient": 0,
+ "dropped": [],
+ "smallest_kept_residuals": [
+  [
+   0.13754401276111505,
+   "Scattering_Second_Order[6]"
+  ],
+  [
+   0.13977451272687835,
+   "Scattering_Second_Order[4]"
+  ],
+  [
+   0.14309116569086,
+   "Scattering_Second_Order[5]"
+  ],
+  [
+   0.1670766014802464,
+   "Scattering_Second_Order[3]"
+  ],
+  [
+   0.19293901271048974,
+   "Scattering_Second_Order[2]"
+  ],
+  [
+   0.2076624774104101,
+   "Scattering_Second_Order[7]"
+  ],
+  [
+   0.25904877027689954,
+   "Scattering_Second_Order[1]"
+  ],
+  [
+   0.4960763279597795,
+   "Scattering_Second_Order[0]"
+  ]
+ ]
+}

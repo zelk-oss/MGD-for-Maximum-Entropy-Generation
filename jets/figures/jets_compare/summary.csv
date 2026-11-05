@@ -1,0 +1,29 @@
+family,run,n_points,frac_within_2sigma,median_abs_z
+marginal,full (with Scalar_morlet),152,0.658,1.67
+marginal,noscalar,152,0.539,1.83
+spectrum,full (with Scalar_morlet),129,0.171,5.24
+spectrum,noscalar,129,0.116,9.80
+"structure functions S4,6,8",full (with Scalar_morlet),381,0.738,1.22
+"structure functions S4,6,8",noscalar,381,0.682,1.30
+flatness slope,full (with Scalar_morlet),24,0.750,1.09
+flatness slope,noscalar,24,0.667,1.61
+scaling ratio zeta4/zeta2,full (with Scalar_morlet),24,0.542,1.67
+scaling ratio zeta4/zeta2,noscalar,24,0.583,1.71
+increment PDFs,full (with Scalar_morlet),780,0.331,3.27
+increment PDFs,noscalar,780,0.327,3.69
+time asymmetry: skewness,full (with Scalar_morlet),33,0.636,0.71
+time asymmetry: skewness,noscalar,33,0.636,1.09
+time asymmetry: power-increment PDFs,full (with Scalar_morlet),192,0.411,2.65
+time asymmetry: power-increment PDFs,noscalar,192,0.385,2.76
+C_pq at tau*=20 (paper),full (with Scalar_morlet),381,0.507,1.97
+C_pq at tau*=20 (paper),noscalar,381,0.509,1.98
+wavelet bands,full (with Scalar_morlet),54,0.333,3.40
+wavelet bands,noscalar,54,0.296,4.14
+burst persistence,full (with Scalar_morlet),51,0.098,8.09
+burst persistence,noscalar,51,0.059,10.46
+extremes per signal,full (with Scalar_morlet),12,0.417,3.06
+extremes per signal,noscalar,12,0.333,3.53
+Scat4 statistics,full (with Scalar_morlet),140,1.000,0.00
+Scat4 statistics,noscalar,140,1.000,0.00
+C_pq maps (all lag pairs),full (with Scalar_morlet),1125,0.438,2.37
+C_pq maps (all lag pairs),noscalar,1125,0.468,2.20

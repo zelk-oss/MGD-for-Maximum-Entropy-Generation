@@ -1,0 +1,42 @@
+{
+ "tol": 1e-06,
+ "n_samples": 2000,
+ "n_stats_before": 299,
+ "n_dropped": 0,
+ "n_zero_gradient": 0,
+ "dropped": [],
+ "smallest_kept_residuals": [
+  [
+   0.00402535438825713,
+   "Scattering_Second_Order[4]"
+  ],
+  [
+   0.004087543355424494,
+   "Scattering_Second_Order[6]"
+  ],
+  [
+   0.004215456077628632,
+   "Scalar_morlet_gaussianK[ch7,reg4]"
+  ],
+  [
+   0.011715539742493508,
+   "Scalar_morlet_gaussianK[ch6,reg4]"
+  ],
+  [
+   0.012948303104482695,
+   "Scattering_Second_Order[3]"
+  ],
+  [
+   0.013880211211776072,
+   "Scalar_morlet_gaussianK[ch5,reg4]"
+  ],
+  [
+   0.014180592342878273,
+   "Scattering_Second_Order[7]"
+  ],
+  [
+   0.015329512082626673,
+   "Scalar_morlet_gaussianK[ch3,reg4]"
+  ]
+ ]
+}

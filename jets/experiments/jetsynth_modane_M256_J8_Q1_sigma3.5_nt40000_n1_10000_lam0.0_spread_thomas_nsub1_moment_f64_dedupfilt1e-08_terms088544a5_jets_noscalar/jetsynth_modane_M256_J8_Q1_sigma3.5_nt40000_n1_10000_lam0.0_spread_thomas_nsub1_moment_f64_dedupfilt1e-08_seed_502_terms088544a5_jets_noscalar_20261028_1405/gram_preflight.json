@@ -1,0 +1,42 @@
+{
+ "tol": 1e-06,
+ "n_samples": 2000,
+ "n_stats_before": 254,
+ "n_dropped": 0,
+ "n_zero_gradient": 0,
+ "dropped": [],
+ "smallest_kept_residuals": [
+  [
+   0.053787044175403476,
+   "Scattering_Fourth_Order_Mod2_Real_Q1[38]"
+  ],
+  [
+   0.05911667230340767,
+   "Scattering_Fourth_Order_Mod2_Real_Q1[12]"
+  ],
+  [
+   0.07650037165647672,
+   "Scattering_Fourth_Order_Mod2_Real_Q1[17]"
+  ],
+  [
+   0.07721864252844746,
+   "Scattering_Fourth_Order_Mod2_Real_Q1[83]"
+  ],
+  [
+   0.07944390699612858,
+   "Scattering_Fourth_Order_Mod2_Real_Q1[57]"
+  ],
+  [
+   0.08230350982109991,
+   "Scattering_Fourth_Order_Mod2_Real_Q1[53]"
+  ],
+  [
+   0.08362282637216278,
+   "Scattering_Fourth_Order_Mod2_Real_Q1[42]"
+  ],
+  [
+   0.0977245192691455,
+   "Scattering_Fourth_Order_Mod2_Real_Q1[67]"
+  ]
+ ]
+}

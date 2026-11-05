@@ -1,0 +1,57 @@
+family,run,n_points,frac_within_2sigma,median_abs_z
+marginal,full,152,0.658,1.67
+marginal,scat2,152,0.579,1.80
+marginal,scat2_scalar,152,0.625,1.64
+marginal,noscalar,152,0.539,1.83
+spectrum,full,129,0.171,5.24
+spectrum,scat2,129,0.116,10.28
+spectrum,scat2_scalar,129,0.109,11.01
+spectrum,noscalar,129,0.116,9.80
+"structure functions S4,6,8",full,381,0.738,1.22
+"structure functions S4,6,8",scat2,381,0.199,3.31
+"structure functions S4,6,8",scat2_scalar,381,0.131,3.18
+"structure functions S4,6,8",noscalar,381,0.682,1.30
+flatness slope,full,24,0.750,1.09
+flatness slope,scat2,24,0.500,1.87
+flatness slope,scat2_scalar,24,0.417,2.28
+flatness slope,noscalar,24,0.667,1.61
+scaling ratio zeta4/zeta2,full,24,0.542,1.67
+scaling ratio zeta4/zeta2,scat2,24,0.500,2.00
+scaling ratio zeta4/zeta2,scat2_scalar,24,0.458,2.16
+scaling ratio zeta4/zeta2,noscalar,24,0.583,1.71
+increment PDFs,full,780,0.331,3.27
+increment PDFs,scat2,780,0.106,10.59
+increment PDFs,scat2_scalar,780,0.104,10.15
+increment PDFs,noscalar,780,0.327,3.69
+time asymmetry: skewness,full,33,0.636,0.71
+time asymmetry: skewness,scat2,33,0.242,4.44
+time asymmetry: skewness,scat2_scalar,33,0.242,4.32
+time asymmetry: skewness,noscalar,33,0.636,1.09
+time asymmetry: power-increment PDFs,full,192,0.411,2.65
+time asymmetry: power-increment PDFs,scat2,192,0.344,3.15
+time asymmetry: power-increment PDFs,scat2_scalar,192,0.307,2.97
+time asymmetry: power-increment PDFs,noscalar,192,0.385,2.76
+C_pq at tau*=20 (paper),full,381,0.507,1.97
+C_pq at tau*=20 (paper),scat2,381,0.071,4.73
+C_pq at tau*=20 (paper),scat2_scalar,381,0.068,4.85
+C_pq at tau*=20 (paper),noscalar,381,0.509,1.98
+wavelet bands,full,54,0.333,3.40
+wavelet bands,scat2,54,0.130,7.97
+wavelet bands,scat2_scalar,54,0.148,10.03
+wavelet bands,noscalar,54,0.296,4.14
+burst persistence,full,51,0.098,8.09
+burst persistence,scat2,51,0.020,34.88
+burst persistence,scat2_scalar,51,0.000,37.39
+burst persistence,noscalar,51,0.059,10.46
+extremes per signal,full,12,0.417,3.06
+extremes per signal,scat2,12,0.167,6.14
+extremes per signal,scat2_scalar,12,0.250,6.10
+extremes per signal,noscalar,12,0.333,3.53
+Scat4 statistics,full,140,1.000,0.00
+Scat4 statistics,scat2,140,0.414,4.92
+Scat4 statistics,scat2_scalar,140,0.400,4.70
+Scat4 statistics,noscalar,140,1.000,0.00
+C_pq maps (all lag pairs),full,1125,0.438,2.37
+C_pq maps (all lag pairs),scat2,1125,0.082,8.14
+C_pq maps (all lag pairs),scat2_scalar,1125,0.105,6.54
+C_pq maps (all lag pairs),noscalar,1125,0.468,2.20

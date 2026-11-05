@@ -1,0 +1,16 @@
+"# A = noscalar (5 seeds), B = scat2 (5 seeds); differ = |m_A - m_B| > 2 seed sigma of the difference; A closer = |deviation of A from data| < that of B"
+family,n_points,frac_differ,frac_a_closer_among_differ,median_abs_z,median_abs_diff
+marginal,156,0.000,nan,0.283,0.008
+spectrum,129,0.938,0.314,7.498,0.148
+"structure functions S4,6,8",381,0.955,0.769,5.948,0.237
+flatness slope,24,0.625,0.600,2.340,0.028
+scaling ratio zeta4/zeta2,24,0.625,0.467,2.334,0.047
+increment PDFs,780,0.855,0.819,11.401,0.135
+time asymmetry: skewness,33,0.939,0.968,4.919,0.166
+time asymmetry: power-increment PDFs,192,0.339,0.908,1.357,0.021
+C_pq at tau*=20 (paper),381,1.000,0.811,9.579,0.288
+wavelet bands,54,0.778,0.595,6.449,0.033
+burst persistence,51,1.000,0.980,11.228,0.018
+extremes per signal,12,0.917,0.818,8.440,0.057
+Scat4 statistics,140,0.836,1.000,25.175,0.000
+C_pq maps (all lag pairs),1125,0.993,0.851,13.565,0.261

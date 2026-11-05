@@ -73,6 +73,7 @@ from codes.check_moments import *     # noqa: E402
 from codes.ortho_wavelet.ReadyToUseWavelets import *
 from data.data_loader import *        # noqa: E402
 from codes.time_schedules import add_schedule_args, build_time_grid  # noqa: E402
+from codes.gauss_spectrum import replace_with_gaussian  # noqa: E402
 from jet_data import load_modane_raw, load_modane_windows  # noqa: E402
 
 device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
@@ -273,6 +274,10 @@ def parse_args():
     p.add_argument('--no_save_aux_moments', action='store_true',
                     help='Disable saving of barphi_e / barphi_p aux moments')
     p.add_argument('--seed', type=int, default=0, help='Random seed')
+    p.add_argument('--gauss_spectrum', action='store_true',
+                   help='Replace x1 by n1 draws of the stationary Gaussian with the data spectrum averaged '
+                        'over x1 (codes/gauss_spectrum.py; fixed data seed 0, own name tag gaussspec). '
+                        'S(w) is saved to <exp_dir>/gauss_spectrum.pt for the exact log p.')
     add_schedule_args(p)                             # --schedule power | two_phase | adaptive
 
     return p.parse_args()
@@ -420,6 +425,9 @@ def main():
     x1, _ = load_modane_windows(args.subseries_len, args.target_len, n=args.n1,
                                 spread=args.n1_spread)
     x1 = x1.to(device)
+    gauss_S = None
+    if args.gauss_spectrum:
+        x1, gauss_S = replace_with_gaussian(x1, seed=0)
     pre_len = args.subseries_len
     scales_needed = int(np.log2(pre_len / args.target_len)) if pre_len > args.target_len else 0
     coarse_grained = scales_needed > 0
@@ -437,6 +445,10 @@ def main():
     logger.info('Data: %s record, %d samples', args.dataset, load_modane_raw().size)
     logger.info('Calculated scales applied: %d', scales_needed)
     logger.info('x1 final shape: %s (coarse_grained=%s)', tuple(x1.shape), coarse_grained)
+    if gauss_S is not None:
+        torch.save({'S': gauss_S, 'data_seed': 0}, exp_dir / 'gauss_spectrum.pt')
+        logger.info('gauss_spectrum: x1 replaced by a stationary Gaussian with the data spectrum '
+                    '(var %.4f), S saved to %s', x1.var().item(), exp_dir / 'gauss_spectrum.pt')
 
     with logged_run(logger):
         filters, filters_Phi = return_Filters(M, args.J, 1, device=device, include_phi=True)
