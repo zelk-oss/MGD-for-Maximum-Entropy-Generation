@@ -74,15 +74,18 @@ ARM_TERMS = {
 
 
 # ── data ──────────────────────────────────────────────────────────────────────
-def load_quijote_2d(path, fact=2, n_max=1000):
+def load_quijote_2d(path, fact=2, n_max=1000, apply_log=True):
     """data/data_loader.load_quijote with an explicit file path (same numerics): shift to min 0,
-    log(x + 0.1), then keep the db4 'periodization' approximation at level log2(fact)."""
+    log(x + 0.1), then keep the db4 'periodization' approximation at level log2(fact).
+    apply_log=False: the file is ALREADY a log field (the 100-map quijote.npy of 2026-11-05: min -2.99, 70 % negative,
+    exp(min) = 0.0501): skip the shift and the log, keep the coarse graining."""
     import pywt
     if fact < 1 or (fact & (fact - 1)) != 0:
         raise ValueError(f'--fact must be a power of two, got {fact}')
     data = np.load(path)[:n_max]
-    data = data - data.min()
-    data = np.log(data + 1e-1)
+    if apply_log:
+        data = data - data.min()
+        data = np.log(data + 1e-1)
     if fact == 1:
         return torch.from_numpy(data)[:, None]
     n, h, w = data.shape
@@ -108,6 +111,8 @@ def build_names(args, M):
             f'_nt{args.nt}_n1_{args.n1}')
     # same tags as the 1D runs: regularised solver, block averaging, energy of Theta_reg
     head += f'_lam{args.lam:g}_{args.reg_solver}_nsub{args.n_subsample}_{resolve_reg_mode(args)}'
+    if args.data_is_log:                  # different preprocessing = different data: never reload the other
+        head += '_dlog'
     # per-step ridge / float64 solves change the SDE: never reload a run made with other values
     if args.regularization != 0.0:
         head += f'_reg{args.regularization:g}'
@@ -135,6 +140,8 @@ def parse_args():
     # data
     p.add_argument('--data_path', type=str, default=None, help='Quijote_Fidu_15000_256.npy')
     p.add_argument('--fact', type=int, default=2, help='down-sampling factor (2: 256 -> 128)')
+    p.add_argument('--data_is_log', action='store_true',
+                   help='the .npy is already a log field: skip the notebook\'s shift-to-0 and log(x+0.1)')
     p.add_argument('--n1', type=int, default=100, help='number of data maps (the first n1)')
     p.add_argument('--smoke_data', action='store_true', help='SMOKE TEST: smoothed Gaussian maps instead of Quijote')
     p.add_argument('--smoke_size', type=int, default=32)
@@ -271,7 +278,7 @@ def main():
     if args.smoke_data:
         Data = smoke_data(args.n1, args.smoke_size)
     else:
-        Data = load_quijote_2d(args.data_path, fact=args.fact)
+        Data = load_quijote_2d(args.data_path, fact=args.fact, apply_log=not args.data_is_log)
     if Data.shape[0] < args.n1:
         raise ValueError(f'only {Data.shape[0]} maps available, --n1 = {args.n1}')
     x1 = normalize(Data[:args.n1]).to(device)

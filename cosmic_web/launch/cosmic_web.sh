@@ -51,6 +51,10 @@ BATCH_SIZE="${BATCH_SIZE:-${BATCH_DEFAULT}}"
 N_SUBSAMPLE="${N_SUBSAMPLE:-${NSUB_DEFAULT}}"
 N1="${N1:-100}"
 FACT="${FACT:-2}"
+# quijote.npy (100 maps 256x256, uploaded 2026-11-05) is ALREADY a log field (min -2.99, exp(min) = 0.0501), not the
+# notebook's log(x - min + 0.1) (whose floor is -2.303): skip the shift+log, keep the db4 coarse graining (FACT=2).
+# DATA_IS_LOG=false for a raw-density file.
+DATA_IS_LOG_FLAG=$([ "${DATA_IS_LOG:-true}" = "true" ] && echo "--data_is_log")
 # time grid (codes/time_schedules.py two_phase, as the turbulence runs): N_BULK uniform steps on [0, T_SWITCH], then
 # NT - N_BULK steps with constant h/(1-t) down to 1 - GAP_END. Default N_BULK = NT/2 (a choice: bulk h 1.8e-3 and
 # 348 steps in the last 1 % of t at NT = 1000); same cost per step as the uniform grid.
@@ -109,7 +113,7 @@ srun python "${CW_DIR}/run_SDE.py" \
     --arm ${ARM} \
     --label ${LABEL} \
     --data_path "${DATA_PATH}" \
-    --fact ${FACT} \
+    --fact ${FACT} ${DATA_IS_LOG_FLAG} \
     --n1 ${N1} \
     --J ${J} --Q ${Q} --L ${L} \
     --sigma ${SIGMA} \
