@@ -72,6 +72,7 @@ from codes.check_moments import *     # noqa: E402
 from codes.ortho_wavelet.ReadyToUseWavelets import *
 from codes.ortho_wavelet.periodic_dwt import PeriodicDWT
 from codes.time_schedules import add_schedule_args, build_time_grid  # noqa: E402
+from codes.gauss_spectrum import replace_with_gaussian  # noqa: E402
 from data.data_loader import *        # noqa: E402
 from data_loader import *             # noqa: E402
 
@@ -294,6 +295,10 @@ def parse_args():
     p.add_argument('--no_save_aux_moments', action='store_true',
                     help='Disable saving of barphi_e / barphi_p aux moments')
     p.add_argument('--seed', type=int, default=0, help='Random seed')
+    p.add_argument('--gauss_spectrum', action='store_true',
+                   help='Replace x1 by n1 draws of the stationary Gaussian with the data spectrum averaged '
+                        'over x1 (codes/gauss_spectrum.py; fixed data seed 0, own name tag gaussspec). '
+                        'S(w) is saved to <exp_dir>/gauss_spectrum.pt for the exact log p.')
     add_schedule_args(p)                             # --schedule power | two_phase | adaptive
 
     return p.parse_args()
@@ -470,6 +475,9 @@ def main():
     else:
         x1_raw = data_tensor[:args.n1]
     x1 = normalize(x1_raw).to(device)
+    gauss_S = None
+    if args.gauss_spectrum:
+        x1, gauss_S = replace_with_gaussian(x1, seed=0)
     B, channels, M = x1.shape
 
     config, exp_dir, fig_dir, potentials_dir, logger, loaded = resolve_or_setup_experiment_output(
@@ -483,6 +491,10 @@ def main():
     logger.info('Data original shape: %s', raw_data.shape)
     logger.info('Calculated scales applied: %d', scales_needed)
     logger.info('x1 final shape: %s (coarse_grained=%s)', tuple(x1.shape), coarse_grained)
+    if gauss_S is not None:
+        torch.save({'S': gauss_S, 'data_seed': 0}, exp_dir / 'gauss_spectrum.pt')
+        logger.info('gauss_spectrum: x1 replaced by a stationary Gaussian with the data spectrum '
+                    '(var %.4f), S saved to %s', x1.var().item(), exp_dir / 'gauss_spectrum.pt')
 
     with logged_run(logger):
         filters, filters_Phi = return_Filters(M, args.J, 1, device=device, include_phi=True,

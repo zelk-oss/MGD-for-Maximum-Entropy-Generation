@@ -33,6 +33,14 @@ COLS="${COLS:-0:8}"
 REG_DIR="${SCRATCH}/MGD-for-Maximum-Entropy-Generation/turbulence/reg_system/${LABEL}"
 # QoS of the log p job: dev by default (max 10 queued dev jobs per user); LOGP_QOS="" = default t3 queue
 LOGP_QOS="${LOGP_QOS-qos_gpu_h100-dev}"
+# GPU=v100 (2026-11-03): also passed to launch_l6neg.sh (inherited env); log p job on gpu_p13, 10 CPUs.
+# The H100 dev QoS name is invalid on V100, so set LOGP_QOS="" (default queue) or qos_gpu-dev with GPU=v100.
+GPU="${GPU:-h100}"
+case "${GPU}" in
+    h100) LP_ACCOUNT="wbg@h100"; LP_PARTITION="gpu_p6";  LP_CONSTRAINT="h100"; LP_MODULE_PRE="arch/h100"; LP_CPUS=24 ;;
+    v100) LP_ACCOUNT="wbg@v100"; LP_PARTITION="gpu_p13"; LP_CONSTRAINT="v100"; LP_MODULE_PRE="";          LP_CPUS=10 ;;
+    *) echo "GPU must be h100 or v100"; exit 1 ;;
+esac
 
 # L6_ID=<job id>: the L_6<0 job is already submitted; only queue the log p job behind it
 if [ -z "${L6_ID-}" ]; then
@@ -53,17 +61,17 @@ POST_ID=$(sbatch --parsable --dependency=aftercorr:${L6_ID} --kill-on-invalid-de
 #!/bin/bash
 #SBATCH --job-name=logp_${LABEL}
 #SBATCH --array=0-$(( ${#SEED_ARR[@]} - 1 ))
-#SBATCH -A wbg@h100
-#SBATCH --partition=gpu_p6
-#SBATCH -C h100
+#SBATCH -A ${LP_ACCOUNT}
+#SBATCH --partition=${LP_PARTITION}
+#SBATCH -C ${LP_CONSTRAINT}
 ${LOGP_QOS:+#SBATCH --qos=${LOGP_QOS}}
 #SBATCH --gres=gpu:1
-#SBATCH --cpus-per-task=24
+#SBATCH --cpus-per-task=${LP_CPUS}
 #SBATCH --hint=nomultithread
 #SBATCH --time=01:00:00
 #SBATCH --output=${LOG_DIR}/slurm_%x_%A_%a.log
 module purge
-module load arch/h100
+${LP_MODULE_PRE:+module load ${LP_MODULE_PRE}}
 module load pytorch-gpu/py3/2.8.0
 cd "${PROJECT_DIR}"
 SEED_ARR=( ${SEED_ARR[@]} )

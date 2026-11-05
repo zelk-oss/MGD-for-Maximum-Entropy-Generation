@@ -1,0 +1,42 @@
+{
+ "tol": 1e-06,
+ "n_samples": 2000,
+ "n_stats_before": 45,
+ "n_dropped": 0,
+ "n_zero_gradient": 0,
+ "dropped": [],
+ "smallest_kept_residuals": [
+  [
+   0.0010099950686606185,
+   "Scalar_dwt_gaussianK[ch8,reg4]"
+  ],
+  [
+   0.0030738142377311206,
+   "Scalar_dwt_gaussianK[ch0,reg4]"
+  ],
+  [
+   0.004242258441349289,
+   "Scalar_dwt_gaussianK[ch1,reg4]"
+  ],
+  [
+   0.015926893135584375,
+   "Scalar_dwt_gaussianK[ch7,reg4]"
+  ],
+  [
+   0.03339246817096797,
+   "Scalar_dwt_gaussianK[ch5,reg4]"
+  ],
+  [
+   0.04066292013921513,
+   "Scalar_dwt_gaussianK[ch4,reg4]"
+  ],
+  [
+   0.05326265901233662,
+   "Scalar_dwt_gaussianK[ch2,reg4]"
+  ],
+  [
+   0.054212973360582506,
+   "Scalar_dwt_gaussianK[ch3,reg4]"
+  ]
+ ]
+}

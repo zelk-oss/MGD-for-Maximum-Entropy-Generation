@@ -1,0 +1,42 @@
+{
+ "tol": 1e-06,
+ "n_samples": 2000,
+ "n_stats_before": 53,
+ "n_dropped": 0,
+ "n_zero_gradient": 0,
+ "dropped": [],
+ "smallest_kept_residuals": [
+  [
+   0.0013591962396390933,
+   "Scalar_morlet_gaussianK[ch8,reg4]"
+  ],
+  [
+   0.0030116424187323076,
+   "Scalar_morlet_gaussianK[ch0,reg4]"
+  ],
+  [
+   0.0037372867672089694,
+   "Scalar_morlet_gaussianK[ch1,reg4]"
+  ],
+  [
+   0.017111000213672733,
+   "Scalar_morlet_gaussianK[ch6,reg4]"
+  ],
+  [
+   0.018090471483163006,
+   "Scalar_morlet_gaussianK[ch2,reg4]"
+  ],
+  [
+   0.031335133762172784,
+   "Scalar_morlet_gaussianK[ch5,reg4]"
+  ],
+  [
+   0.03181073682667612,
+   "Scalar_morlet_gaussianK[ch7,reg4]"
+  ],
+  [
+   0.0337182427789644,
+   "Scalar_morlet_gaussianK[ch4,reg4]"
+  ]
+ ]
+}

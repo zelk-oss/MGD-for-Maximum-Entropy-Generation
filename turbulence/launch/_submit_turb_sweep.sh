@@ -25,6 +25,7 @@
 #   legacy power schedule), REG_MODE (legacy|moment; empty = run_SDE default, moment
 #   with thomas), COND_EVERY (log the per-step Gram conditioning every N steps),
 #   POTENTIALS_FROM (fitted_potentials/ dir of another run: reuse its fit, --potentials_from),
+#   GAUSS_SPECTRUM (true: x1 = stationary Gaussian with the data spectrum, --gauss_spectrum),
 #   QOS (e.g. qos_gpu_h100-dev: starts at once, max 2 h, max 10 jobs incl. array tasks), PROFILE (true: run under cProfile with CUDA_LAUNCH_BLOCKING=1 so GPU time is
 #   charged to the Python call that launched it; stats written next to the SLURM log
 #   as profile_<exp>_<jobid>_<task>.prof -- timings are for attribution, not speed)
@@ -63,7 +64,7 @@ MODULE_PRE="${MODULE_PRE:-}"          # loaded before MODULE, e.g. arch/h100 on 
 
 # ── paths ────────────────────────────────────────────
 LAUNCH_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-TURB_DIR="$(cd "${LAUNCH_DIR}/.." && pwd)"
+TURB_DIR="${SWEEP_DIR:-$(cd "${LAUNCH_DIR}/.." && pwd)}"   # SWEEP_DIR: another experiment folder with its own run_SDE.py (snp_experiment)
 PYTHON_SCRIPT="${TURB_DIR}/run_SDE.py"
 OUTDIR="${TURB_DIR}"
 LOG_DIR="${OUTDIR}/saved_results/logs"
@@ -89,6 +90,8 @@ EXTRA_FLAGS=""
 [ -n "${GRAM_PREFLIGHT}" ] && EXTRA_FLAGS+=" --gram_preflight ${GRAM_PREFLIGHT}"
 [ "${PREFLIGHT_ONLY}" = "true" ] && EXTRA_FLAGS+=" --preflight_only"
 [ -n "${POTENTIALS_FROM}" ] && EXTRA_FLAGS+=" --potentials_from ${POTENTIALS_FROM}"
+[ "${GAUSS_SPECTRUM}" = "true" ] && EXTRA_FLAGS+=" --gauss_spectrum"
+[ -n "${N_PARTICLES}" ] && EXTRA_FLAGS+=" --n_particles ${N_PARTICLES}"   # snp_experiment/run_SDE.py only
 [ -n "${EXTRA_CORRECTOR_MAX}" ] && EXTRA_FLAGS+=" --extra_corrector_max ${EXTRA_CORRECTOR_MAX} --extra_corrector_tau ${EXTRA_CORRECTOR_TAU:-1.0} --extra_corrector_tail ${EXTRA_CORRECTOR_TAIL:-0.1}"
 [ -n "${GGD_TAIL_QUANTILE}" ]     && EXTRA_FLAGS+=" --ggd_tail_quantile ${GGD_TAIL_QUANTILE}"
 [ -n "${GGD_NUM_REGIONS}" ]       && EXTRA_FLAGS+=" --ggd_num_regions ${GGD_NUM_REGIONS}"

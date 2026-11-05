@@ -1,0 +1,169 @@
+{
+ "tol": 1e-06,
+ "n_samples": 2000,
+ "n_stats_before": 529,
+ "n_dropped": 7,
+ "n_zero_gradient": 0,
+ "dropped": [
+  {
+   "stat": "Scalar_psi_gaussianK_imag[ch16,reg5]",
+   "residual": 5.626465993113783e-08,
+   "like": [
+    [
+     "Scalar_psi_gaussianK[ch16,reg5]",
+     0.9986
+    ],
+    [
+     "Scalar_psi_gaussianK[ch16,reg4]",
+     -0.0035
+    ],
+    [
+     "Scalar_psi_gaussianK[ch16,reg6]",
+     0.0021
+    ]
+   ]
+  },
+  {
+   "stat": "Scalar_psi_gaussianK_imag[ch18,reg5]",
+   "residual": 1.492509782430318e-09,
+   "like": [
+    [
+     "Scalar_psi_gaussianK[ch18,reg5]",
+     0.9999
+    ],
+    [
+     "Scalar_psi_gaussianK[ch20,reg4]",
+     -0.0024
+    ],
+    [
+     "Scalar_psi_gaussianK[ch18,reg4]",
+     -0.0017
+    ]
+   ]
+  },
+  {
+   "stat": "Scalar_psi_gaussianK_imag[ch20,reg5]",
+   "residual": 2.2326585025211898e-13,
+   "like": [
+    [
+     "Scalar_psi_gaussianK[ch20,reg5]",
+     1.0003
+    ],
+    [
+     "Scalar_morlet_gaussianK[ch7,reg6]",
+     -0.0002
+    ],
+    [
+     "Scalar_psi_gaussianK[ch20,reg6]",
+     -0.0001
+    ]
+   ]
+  },
+  {
+   "stat": "Scalar_psi_gaussianK_imag[ch16,reg6]",
+   "residual": 5.7061627090071454e-08,
+   "like": [
+    [
+     "Scalar_psi_gaussianK[ch16,reg6]",
+     0.9993
+    ],
+    [
+     "Scalar_psi_gaussianK[ch20,reg4]",
+     -0.0038
+    ],
+    [
+     "Scalar_psi_gaussianK_imag[ch15,reg6]",
+     -0.0025
+    ]
+   ]
+  },
+  {
+   "stat": "Scalar_psi_gaussianK_imag[ch18,reg6]",
+   "residual": 1.1384322373686473e-09,
+   "like": [
+    [
+     "Scalar_psi_gaussianK[ch18,reg6]",
+     1.0018
+    ],
+    [
+     "Scalar_psi_gaussianK[ch18,reg5]",
+     -0.0025
+    ],
+    [
+     "Scalar_psi_gaussianK[ch18,reg4]",
+     -0.0011
+    ]
+   ]
+  },
+  {
+   "stat": "Scalar_psi_gaussianK_imag[ch20,reg6]",
+   "residual": 1.284528039491306e-13,
+   "like": [
+    [
+     "Scalar_psi_gaussianK[ch20,reg6]",
+     1.0004
+    ],
+    [
+     "Scalar_morlet_gaussianK[ch7,reg6]",
+     -0.0004
+    ],
+    [
+     "Scalar_psi_gaussianK[ch20,reg5]",
+     -0.0003
+    ]
+   ]
+  },
+  {
+   "stat": "Scalar_morlet_gaussianK_imag[ch7,reg6]",
+   "residual": 5.766811175256237e-07,
+   "like": [
+    [
+     "Scalar_morlet_gaussianK_imag[ch7,reg5]",
+     1.1222
+    ],
+    [
+     "Scalar_psi_gaussianK[ch20,reg5]",
+     -1.0453
+    ],
+    [
+     "Scalar_psi_gaussianK[ch20,reg6]",
+     0.9175
+    ]
+   ]
+  }
+ ],
+ "smallest_kept_residuals": [
+  [
+   1.0519503186312562e-06,
+   "Scalar_psi_gaussianK_imag[ch20,reg4]"
+  ],
+  [
+   1.1553176737510995e-06,
+   "Scalar_morlet_gaussianK_imag[ch7,reg5]"
+  ],
+  [
+   1.2676752030316152e-06,
+   "Scalar_morlet_gaussianK_imag[ch7,reg4]"
+  ],
+  [
+   2.1783414255738265e-06,
+   "Scalar_psi_gaussianK_imag[ch14,reg6]"
+  ],
+  [
+   2.5292859284764546e-06,
+   "Scalar_psi_gaussianK_imag[ch15,reg6]"
+  ],
+  [
+   2.584022175566858e-06,
+   "Scalar_psi_gaussianK_imag[ch15,reg10]"
+  ],
+  [
+   3.87397032464154e-06,
+   "Scalar_psi_gaussianK_imag[ch11,reg6]"
+  ],
+  [
+   8.316352426596119e-06,
+   "Scalar_morlet_gaussianK_imag[ch7,reg10]"
+  ]
+ ]
+}

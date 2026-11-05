@@ -90,8 +90,11 @@ def increment_stats(x_np, max_tau, tau_star, eps=1e-8):
     return taus, sf, cpq
 
 
-def curves(x, marg_bins, tau_star):
-    """Every panel's curve for one set of signals x, (B, 1, T) float tensor on CPU."""
+def curves(x, marg_bins, tau_star, skew_mode='power'):
+    """Every panel's curve for one set of signals x, (B, 1, T) float tensor on CPU.
+    skew_mode: check_moments._increment mode of the skewness panel. 'power' (default, as the draft and
+    cross_scale_compare*.py) = skewness of (v(t+tau)-v(t)) v(t), NONZERO for time-reversible signals; 'exact' =
+    skewness of the energy increment v(t+tau)^2/2 - v(t)^2/2, zero for reversible signals."""
     x_np = x.numpy()
     T = x.shape[-1]
     max_tau = T // 2
@@ -119,7 +122,7 @@ def curves(x, marg_bins, tau_star):
         inc.append(h / (h.max() + 1e-12))       # peak 1; the 10^-k shift is applied at plot time
     out['inc'] = np.stack(inc)
 
-    _, out['skew'] = skewness_vs_tau(x, log_spaced_taus(max_tau, num_points=SKEW_POINTS), mode='power')
+    _, out['skew'] = skewness_vs_tau(x, log_spaced_taus(max_tau, num_points=SKEW_POINTS), mode=skew_mode)
     return out
 
 

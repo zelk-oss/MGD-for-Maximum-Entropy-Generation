@@ -1,0 +1,79 @@
+{
+ "tol": 1e-06,
+ "n_samples": 2000,
+ "n_stats_before": 160,
+ "n_dropped": 2,
+ "n_zero_gradient": 0,
+ "dropped": [
+  {
+   "stat": "Scalar_psi_gaussianK[ch20,reg4]",
+   "residual": 6.091434778809912e-07,
+   "like": [
+    [
+     "Scalar_morlet_gaussianK[ch7,reg4]",
+     1.0133
+    ],
+    [
+     "Scalar_morlet_gaussianK[ch7,reg3]",
+     -1.0029
+    ],
+    [
+     "Scalar_psi_gaussianK[ch20,reg3]",
+     0.9905
+    ]
+   ]
+  },
+  {
+   "stat": "Scalar_psi_gaussianK[ch21,reg4]",
+   "residual": 2.5237942291589377e-08,
+   "like": [
+    [
+     "Scalar_psi_gaussianK[ch21,reg3]",
+     0.9876
+    ],
+    [
+     "Scalar_morlet_gaussianK[ch8,reg4]",
+     0.943
+    ],
+    [
+     "Scalar_morlet_gaussianK[ch8,reg3]",
+     -0.9307
+    ]
+   ]
+  }
+ ],
+ "smallest_kept_residuals": [
+  [
+   2.0937500707640666e-06,
+   "Scalar_psi_gaussianK[ch21,reg3]"
+  ],
+  [
+   2.2965679284947527e-06,
+   "Scalar_psi_gaussianK[ch20,reg3]"
+  ],
+  [
+   9.709329774088005e-05,
+   "Scalar_psi_gaussianK[ch21,reg2]"
+  ],
+  [
+   0.001359196239642202,
+   "Scalar_morlet_gaussianK[ch8,reg4]"
+  ],
+  [
+   0.0024849080067792517,
+   "Scalar_psi_gaussianK[ch1,reg4]"
+  ],
+  [
+   0.002496081111630244,
+   "Scalar_psi_gaussianK[ch0,reg4]"
+  ],
+  [
+   0.002631924595464241,
+   "Scalar_psi_gaussianK[ch5,reg4]"
+  ],
+  [
+   0.0027412905425515666,
+   "Scalar_psi_gaussianK[ch4,reg4]"
+  ]
+ ]
+}

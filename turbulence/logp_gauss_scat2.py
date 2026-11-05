@@ -53,6 +53,7 @@ from filters_bank import return_Filters                                         
 from potentials_builder import get_1d_potentials                                # noqa: E402
 # same helpers run_SDE uses to build x1 (it star-imports them from codes/ and data/)
 from run_SDE import split_periodize_reshape, load_turbulence_1d, DefineWavelet  # noqa: E402
+from gauss_spectrum import sample_gaussian_spectrum, true_log_p                 # noqa: E402
 
 
 # ---------------------------------------------------------------- loading
@@ -68,10 +69,26 @@ def build_pots(cfg, device):
                              dedup_tol=cfg.get('dedup_tol') or 1e-12)
 
 
-def load_data_x1(cfg, device):
+def load_gauss_spectrum(exp_dir):
+    """S (C, M) float64 saved by run_SDE / run_jet_SDE --gauss_spectrum, or None for a real-data run."""
+    f = exp_dir / 'gauss_spectrum.pt'
+    if not f.exists():
+        return None, None
+    blob = torch.load(f, map_location='cpu', weights_only=False)
+    return blob['S'], int(blob.get('data_seed', 0))
+
+
+def load_data_x1(cfg, device, exp_dir=None):
     """x1 exactly as run_SDE builds it (non-spread branch): load_turbulence_1d,
     split_periodize_reshape to subseries_len, Db3 coarse-graining down to target_len,
-    first n1, normalise."""
+    first n1, normalise.
+    --gauss_spectrum runs (turbulence or jets): x1 is redrawn from the saved spectrum S with the
+    same generator and seed, so it is bit-identical to the run's x1 (codes/gauss_spectrum.py)."""
+    if cfg.get('gauss_spectrum'):
+        S, data_seed = load_gauss_spectrum(exp_dir)
+        if S is None:
+            raise FileNotFoundError(f'gauss_spectrum run without {exp_dir}/gauss_spectrum.pt')
+        return sample_gaussian_spectrum(S, int(cfg['n1']), seed=data_seed).float().to(device)
     if cfg.get('n1_spread'):
         raise NotImplementedError('n1_spread runs: data selection not reproduced here')
     raw = load_turbulence_1d().to(device)
@@ -138,12 +155,26 @@ def one_seed(exp_dir, args, x_data, sweep_root):
     r = dict(seed=seed, theta=theta_1.numpy(), shift=shift,
              logp_model=tp_model - shift, logp_data=tp_data - shift,
              filters=filters_of(pots))
+    extra = {}
+    S, _ = load_gauss_spectrum(exp_dir)
+    if S is not None:
+        # exact log p of the true Gaussian, relative to its mean over the true law's own samples
+        # (x1), as the MGD log p is relative to its mean over the model's own samples
+        ex_data = true_log_p(x_data.cpu(), S).numpy()
+        ex_model = true_log_p(xt.reshape(xt.shape[0], 1, -1).cpu(), S).numpy()
+        ex_shift = ex_data.mean()
+        r['exact_data'], r['exact_model'] = ex_data - ex_shift, ex_model - ex_shift
+        extra = dict(exact_data=r['exact_data'], exact_model=r['exact_model'])
     np.savez(args.outdir / f'{name}_logp.npz', seed=seed, theta=r['theta'],
              logp_model=r['logp_model'], logp_data=r['logp_data'],
-             theta_phi_model_mean=shift, theta_reg_file=fname)
+             theta_phi_model_mean=shift, theta_reg_file=fname, **extra)
     print(f'  seed {seed}: {fname} | model std {r["logp_model"].std():7.3f} | '
           f'data std {r["logp_data"].std():7.3f}, mean {r["logp_data"].mean():+8.2f}, '
           f'min {r["logp_data"].min():+9.2f}')
+    if extra:
+        print(f'           exact log p: on data std {r["exact_data"].std():7.3f} | on model samples std '
+              f'{r["exact_model"].std():7.3f}, mean {r["exact_model"].mean():+8.2f} (0 = as typical as the data)'
+              f' | Pearson(MGD, exact) on data {pearsonr(r["logp_data"], r["exact_data"])[0]:.4f}')
     return r
 
 
@@ -275,7 +306,7 @@ def main():
     if not seed_dirs:
         return
     cfg0 = json.loads((seed_dirs[0] / 'config.json').read_text()); cfg0 = cfg0.get('args', cfg0)
-    x_data = load_data_x1(cfg0, args.device)
+    x_data = load_data_x1(cfg0, args.device, seed_dirs[0])
     M = int(cfg0['M'])
     print(f'data x1 {tuple(x_data.shape)}; theory: std(log p) on model samples = '
           f'sqrt(M/2) = {np.sqrt(M / 2):.3f}')
@@ -306,10 +337,12 @@ def main():
         print(f'\nPearson on data in [{R[iu].min():.3f}, {R[iu].max():.3f}]; '
               f'KS on model in [{K[iu].min():.3f}, {K[iu].max():.3f}]')
 
+    exact = {k: np.stack([r[k] for r in res]) for k in ('exact_data', 'exact_model')
+             if all(k in r for r in res)}
     np.savez(args.outdir / 'all_seeds.npz', seeds=np.array(seeds), M=M,
              theta=np.stack([r['theta'] for r in res]),
              logp_model=np.stack([r['logp_model'] for r in res]),
-             logp_data=np.stack([r['logp_data'] for r in res]))
+             logp_data=np.stack([r['logp_data'] for r in res]), **exact)
     with open(args.outdir / 'summary.csv', 'w', newline='') as fh:
         w = csv.writer(fh)
         w.writerow(['seed', 'kind', 'n', 'mean', 'std', 'min', 'max', 'std_minus_sqrt_M_over_2'])
