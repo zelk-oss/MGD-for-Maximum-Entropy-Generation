@@ -409,6 +409,10 @@ def get_2d_potentials(terms, J, L, filters, parallel=False):
 
     potentials = {}
 
+    # confinement first, so its columns lead the Theta vector (the L_6 sign check reads the first F columns)
+    if 'L_6' in terms:
+        potentials['L_6'] = L2p_norm_2d(3, filters)
+
     if 'Scattering_First_Order' in terms:
         potentials['Scattering_First_Order'] = Scattering_First_Order_2d(filters)
     
@@ -418,8 +422,14 @@ def get_2d_potentials(terms, J, L, filters, parallel=False):
     if 'Scattering_Third_Order_Real' in terms:
         potentials['Scattering_Third_Order_Real'] = Scattering_Third_Order_Real_2d(J, L, filters)
 
+    if 'Scattering_Third_Order_Imag' in terms:
+        potentials['Scattering_Third_Order_Imag'] = Scattering_Third_Order_Imag_2d(J, L, filters)
+
     if 'Scattering_Fourth_Order_Real' in terms:
         potentials['Scattering_Fourth_Order_Real'] = Scattering_Fourth_Order_Real_2d(J, L, filters)
+
+    if 'Scattering_Fourth_Order_Imag' in terms:
+        potentials['Scattering_Fourth_Order_Imag'] = Scattering_Fourth_Order_Imag_2d(J, L, filters)
 
     if parallel:
         for i in range(len(order_terms_potentials)):

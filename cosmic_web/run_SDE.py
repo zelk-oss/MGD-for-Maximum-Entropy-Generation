@@ -2,16 +2,16 @@
 """
 run_SDE.py -- CLI launcher for the 2D cosmic-web (Quijote) MGD experiment.
 
-Science and settings are those of notebooks/mgd_sampling/mgd_2d_example.ipynb, unchanged:
+Settings of notebooks/mgd_sampling/mgd_2d_example.ipynb, plus what the other experiments (S&P, turbulence, jets) have:
 
     data      Quijote density maps, log(x - min + 0.1), db4 low-pass down-sampled by --fact (2: 256 -> 128),
               first --n1 maps, standardised (codes.utils.normalize)
-    model     2D Morlet bank J=5, Q=1, L=4; terms Scattering_{Second,First,Third_Order_Real}
-              (arm "base", 303 potentials) and the same + Scattering_Fourth_Order_Real (arm "scat4")
-    SDE       Cos interpolant, sigma = 1, uniform grid of nt steps, no regularisation (0,0,0),
-              (scalar ridge --regularization 0.0 in this SDE version), plain predictor-corrector
-              Solver() (not forward_regularised), batch_size 20,
-              one walker and one interpolant per data map
+    model     2D Morlet bank J=5, Q=1, L=4. Arm "base": L_6 confinement + scattering order 1, 2, 3 (Real and
+              Imag); arm "scat4": the same + order 4 (Real and Imag). Nothing else differs between the arms.
+    SDE       Cos interpolant, sigma = 1, uniform grid of nt steps, ridge --regularization 0.0 (the notebook's
+              regularization=(0,0,0)), one walker and one interpolant per data map, batch_size 20.
+              forward_regularised: same evolution as the notebook's Solver(), plus the saved time-regularised
+              system for the ex-post choice of lam (thomas, moment energy, n_subsample 1)
 
 The seed ONLY changes the initial white noise (x_0 of the interpolants and the starting walkers x_k): the
 data are always the same first --n1 maps, exactly as in the other experiments (jets, turbulence, S&P).
@@ -32,7 +32,8 @@ import time as timer
 from pathlib import Path
 
 import matplotlib
-matplotlib.use('Agg')
+if 'ipykernel' not in sys.modules:      # a notebook importing this file must keep its inline backend
+    matplotlib.use('Agg')
 import matplotlib.pyplot as plt
 import numpy as np
 import torch
@@ -55,14 +56,19 @@ from codes.check_moments import *             # noqa: E402
 from codes.utils_entropy import compute_gaussian_entropy        # noqa: E402
 from codes.filters_bank import return_Filters  # noqa: E402
 from codes.potentials_builder import get_2d_potentials          # noqa: E402
+from codes.time_schedules import add_schedule_args, build_time_grid   # noqa: E402
+from codes.utils_experiment import resolve_reg_mode             # noqa: E402
 
 device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 
-# terms of the two arms (the notebook's list, and the same with order 4)
+# The two arms differ ONLY by the order-4 terms. The builder creates the potentials in this order
+# (L_6 first: its columns lead Theta, which is what the L_6 sign check reads).
 ARM_TERMS = {
-    'base':  ['Scattering_Second_Order', 'Scattering_First_Order', 'Scattering_Third_Order_Real'],
-    'scat4': ['Scattering_Second_Order', 'Scattering_First_Order', 'Scattering_Third_Order_Real',
-              'Scattering_Fourth_Order_Real'],
+    'base':  ['L_6', 'Scattering_First_Order', 'Scattering_Second_Order',
+              'Scattering_Third_Order_Real', 'Scattering_Third_Order_Imag'],
+    'scat4': ['L_6', 'Scattering_First_Order', 'Scattering_Second_Order',
+              'Scattering_Third_Order_Real', 'Scattering_Third_Order_Imag',
+              'Scattering_Fourth_Order_Real', 'Scattering_Fourth_Order_Imag'],
 }
 
 
@@ -99,6 +105,8 @@ def build_names(args, M):
     terms_hash = hashlib.md5('|'.join(sorted(args.terms)).encode()).hexdigest()[:8]
     head = (f'cosmicweb_quijote_M{M}_J{args.J}_Q{args.Q}_L{args.L}_sigma{args.sigma:g}'
             f'_nt{args.nt}_n1_{args.n1}')
+    # same tags as the 1D runs: regularised solver, block averaging, energy of Theta_reg
+    head += f'_lam{args.lam:g}_{args.reg_solver}_nsub{args.n_subsample}_{resolve_reg_mode(args)}'
     tail = f'_terms{terms_hash}' + (f'_{args.label}' if args.label else '')
     return f'{head}{tail}', f'{head}_seed_{args.seed}{tail}'      # group (all seeds), config
 
@@ -131,6 +139,21 @@ def parse_args():
                         '(the older SDE took a tuple; this one a scalar)')
     p.add_argument('--time_limit_min', type=float, default=None,
                    help='abort cleanly if the SDE loop is projected past this (set by the launcher)')
+    # time grid: --schedule power --schedule_exponent 1 = uniform (as the S&P runs; see note in main())
+    add_schedule_args(p)
+    p.add_argument('--schedule_exponent', type=float, default=1.0, help='power schedule: t = 1-(1-s)^exponent')
+    # regularised Theta (same options and meaning as turbulence/run_SDE.py). lam never enters the SDE evolution,
+    # so lam is chosen ex post from the saved system (codes/resolve_theta_reg.py).
+    p.add_argument('--lam', type=float, default=0.0, help='lambda of the in-run Theta_reg solve (0: none)')
+    p.add_argument('--n_subsample', type=int, default=1, help='coarse time grid: average this many fine steps')
+    p.add_argument('--reg_solver', choices=['dense', 'thomas'], default='thomas')
+    p.add_argument('--reg_mode', choices=['legacy', 'moment'], default=None, help='default: moment with thomas')
+    p.add_argument('--reg_ridge', type=float, default=0.0)
+    p.add_argument('--reg_schedule', choices=['uniform', 'guth'], default='uniform')
+    p.add_argument('--save_reg_system', action='store_true', help='save the regularised system for the offline lam sweep')
+    p.add_argument('--reg_system_dir', type=str, default=None, help='default <outdir>/saved_results/reg_system')
+    p.add_argument('--skip_reg_solve', action='store_true', help='needs --save_reg_system; solve offline')
+    p.add_argument('--solve_float64', action='store_true', help='per-step eta/theta solves in float64')
     # io
     p.add_argument('--outdir', type=str, default=None, help='default: this folder')
     p.add_argument('--force_rerun', action='store_true')
@@ -143,6 +166,8 @@ def parse_args():
         args.label = args.arm
     if not args.smoke_data and not args.data_path:
         p.error('--data_path is required (or --smoke_data for a smoke test)')
+    if args.skip_reg_solve and not args.save_reg_system:
+        p.error('--skip_reg_solve needs --save_reg_system')
     return args
 
 
@@ -252,7 +277,10 @@ def main():
 
     with logged_run(logger):
         logger.info('x1: %s (n1 maps of %dx%d, standardised)', tuple(x1.shape), M, M)
-        t = torch.linspace(0, 1, args.nt + 1)
+        # --schedule power --schedule_exponent 1 is the notebook's uniform grid, except that (like every other
+        # experiment, S&P included) the legacy power schedule drops the final point at t = 1.0000
+        # (codes/time_schedules.build_time_grid), so nt = 1000 means 999 steps ending at t = 0.999.
+        t, adaptive = build_time_grid(args, logger)
 
         if all(p.exists() for p in paths.values()) and aux_path.exists() and not args.force_rerun:
             logger.info('Loaded existing results for %s (use --force_rerun to recompute)', config)
@@ -268,15 +296,30 @@ def main():
 
             Solver = SDE(x1, n1, n1, t, args.sigma, potentials, args.batch_size, device=device,
                          regularization=args.regularization, interpolant=args.interpolant, x_0=None, x_k=None,
-                         potentials_save_dir=exp_dir / 'fitted_potentials')
+                         potentials_save_dir=exp_dir / 'fitted_potentials',
+                         solve_float64=args.solve_float64)
             logger.info('The model has %d potentials', Solver.num_potentials)
+
+            reg_system_path = None
+            if args.save_reg_system:
+                reg_dir = Path(args.reg_system_dir) if args.reg_system_dir else base / 'reg_system'
+                reg_system_path = reg_dir / f'{config}.pt'
+                logger.info('Regularised system will be saved to %s', reg_system_path)
             t0 = timer.time()
-            xt, barphi_e, barphi_p, eta_t, theta_t, dH_t_bound = Solver(time_limit_min=args.time_limit_min)
+            # forward_regularised leaves the SDE evolution unchanged (same predictor-corrector as Solver());
+            # it also stores the per-node system so that Theta_reg(lam) can be solved offline for any lam.
+            xt, barphi_e, barphi_p, eta_t, theta_t, dH_t_bound, Theta_reg, t_reg = Solver.forward_regularised(
+                lam=args.lam, n_subsample=args.n_subsample, time_limit_min=args.time_limit_min,
+                reg_solver=args.reg_solver, reg_ridge=args.reg_ridge, reg_system_path=reg_system_path,
+                solve_reg=not args.skip_reg_solve, adaptive=adaptive, reg_mode=resolve_reg_mode(args),
+                reg_schedule=args.reg_schedule)
             logger.info('SDE integration finished in %.1f s', timer.time() - t0)
+            if adaptive is not None:
+                t = Solver.t
 
             make_result_dirs(base)
             (base / 'aux_moments').mkdir(parents=True, exist_ok=True)
-            save_results(xt, theta_t, dH_t_bound, t, outdir, config)
+            save_results_theta_reg(xt, theta_t, dH_t_bound, t, outdir, config, Theta_reg=Theta_reg, t_reg=t_reg)
             torch.save({'barphi_e': barphi_e.detach().cpu(), 'barphi_p': barphi_p.detach().cpu()}, aux_path)
             res = {'xt': xt.detach(), 'dH_t_bound': dH_t_bound, 't': t,
                    'barphi_e': barphi_e.detach().cpu(), 'barphi_p': barphi_p.detach().cpu()}
