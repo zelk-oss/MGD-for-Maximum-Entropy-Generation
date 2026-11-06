@@ -686,7 +686,7 @@ def plot_wavelet_single(M, J, Q, name, k=None, cut=0.01, pad=1.15, size=(6.2, 4.
 
 def plot_wavelet_tiling(M, J, Q, name):
     """All the band-pass filters of the model's bank in Fourier space (finest = darkest; low-pass not shown), against
-    omega (radians / sample, log axis from 2 pi / M to pi). Exact values on the M-point frequency grid, a dot at each
+    omega (radians / sample, linear axis from 0 to pi). Exact values on the M-point frequency grid, a dot at each
     grid frequency: the coarse wavelets are resolved by only a few frequencies at M = 256."""
     from matplotlib.ticker import FixedLocator, FuncFormatter, NullLocator
     f = _bank(M, J, Q)
@@ -698,9 +698,8 @@ def plot_wavelet_tiling(M, J, Q, name):
         on = y > 2e-3                                                # skip the flat zero part (no dots there)
         ax.plot(om, y, color=c, lw=1.8)
         ax.plot(om[on], y[on], 'o', color=c, ms=3.2)
-    ax.set_xscale('log')
-    ax.set_xlim(om[0] * 0.9, np.pi * 1.02)
-    ax.xaxis.set_major_locator(FixedLocator([np.pi / 2 ** i for i in range(0, 8, 1)]))
+    ax.set_xlim(0, np.pi * 1.02)                                     # linear axis: the width of each wavelet is to scale
+    ax.xaxis.set_major_locator(FixedLocator([np.pi * k / 8 for k in range(9)]))
     ax.xaxis.set_major_formatter(FuncFormatter(_pi_label))
     ax.xaxis.set_minor_locator(NullLocator())
     ax.set_ylim(0, 1.08)
@@ -782,7 +781,6 @@ def _draw_energy_table(blocks, cols, name, corner=''):
     """Draw a table in booktabs style (horizontal rules only). blocks = [(title or None, T)], T from energy_table;
     per block: optional bold title line, the number of moments (small grey italics: a count, not a result), then
     mean and std of -log p (± std over seeds). corner: text in the top-left cell. Values in nats."""
-    LW, CW, RH = 4.3, 2.35, 0.5                                      # label column, value column, row height (inches)
     lines = []                                                       # (kind, label, cells)
     for title, T in blocks:
         if title:
@@ -798,6 +796,14 @@ def _draw_energy_table(blocks, cols, name, corner=''):
             lines.append(('value', lab, ['—' if k == 0 or not np.isfinite(a) else _pm(a, x) for k, a, x in zip(n, v, e)]))
         lines.append(('gap', None, None))
     lines.pop()
+    _render_table(lines, cols, name, corner, 'nats; ± = std over seeds')
+
+
+def _render_table(lines, cols, name, corner, footer, shade_last=False, cw=2.35):
+    """Booktabs-style drawing of lines = [(kind, label, cells)], kind in title / count / value / gap; one column per
+    entry of cols; footer: small grey text under the bottom rule, right-aligned; shade_last: grey band behind the last
+    column (a quantity of a different kind than the other columns)."""
+    LW, CW, RH = 4.3, cw, 0.5                                        # label column, value column, row height (inches)
     H = RH * (1.3 + sum(0.75 if k == 'count' else 0.45 if k == 'gap' else 1.0 for k, _, _ in lines)) + 0.3
     W = LW + CW * len(cols)
     fig = plt.figure(figsize=(W, H))
@@ -836,7 +842,9 @@ def _draw_energy_table(blocks, cols, name, corner=''):
         y += h
     y += 0.1
     rule(y, 1.6)
-    ax.text(W - 0.1, y + 0.12, 'nats; ± = std over seeds', ha='right', va='top', fontsize=12, color='#77766f')
+    if shade_last:
+        ax.add_patch(plt.Rectangle((LW + CW * (len(cols) - 1), 0.15), CW, y - 0.15, color=GREY, alpha=0.2, lw=0, zorder=0))
+    ax.text(W - 0.1, y + 0.12, footer, ha='right', va='top', fontsize=12, color='#77766f')
     _save(fig, name)
 
 
@@ -854,10 +862,282 @@ def plot_energy_table_single(T, name, title):
     cols = [c for c in T.columns if T.loc['number of moments', c] > 0]
     _draw_energy_table([(None, T)], cols, name, corner=title)
 
+
+# ---- Var/2 tables: variance of -log10 p / d per category (the width of the histograms, related to the KL divergence) ----
+KL_ROWS = ('number of moments', 'Var/2', '± Var/2', 'std of total')
+STD_COL = 'std(−log p)'                                   # last column: a different quantity, drawn shaded
+
+
+def kl_table(C, widths, d, name=None):
+    """First-order KL per dimension of each category of ENERGY_CATEGORIES (columns), in log10 units (digits / dimension,
+    the units of the u = -log10 p / d axis): Var(ln p_k) / (2 d ln10), row 'Var/2'. Then the column STD_COL: the std of the
+    total u = -log10 p / d over the signals (the width of the histogram), a different quantity, in row 'std of total'.
+    C = {family: (seeds, signals)} contributions theta_F . phi_F(x) to ln p (nats, as stored; 'TOTAL' ignored);
+    d = length of the signals; widths = {family: number of statistics}. Per seed: variance over the signals of the
+    category's -log10 p / d (ddof = 1), divided by 2; the table gives the mean over seeds, '± Var/2' = std over seeds
+    (NaN with one seed); the std column is the mean over seeds of the per-seed std (ddof = 1).
+    Units: (log10 per point)^2 for Var/2, log10 per point for the std. Saved as <name>.csv in the output folder."""
+    import pandas as pd
+    fams = [f for f in C if f.lower() != 'total']
+    cat = {}
+    for f in fams:
+        hit = [c for c, pat in ENERGY_CATEGORIES if re.search(pat, f)]
+        assert len(hit) == 1, f'family {f!r} matches {hit} (expected exactly one category)'
+        cat[f] = hit[0]
+    miss = [f for f in fams if f not in widths]
+    assert not miss, f'no number of statistics for {miss}'
+    sc = neglogp_scale(d)
+    cols = [c for c, _ in ENERGY_CATEGORIES] + [STD_COL]
+    out = {r: [] for r in KL_ROWS}
+    n_seeds = None
+    Etot = -sum(np.atleast_2d(np.asarray(C[f], dtype=np.float64)) for f in fams) * sc      # (seeds, signals), all families
+    vtot = float(Etot.var(1, ddof=1).mean())
+    for c in cols:
+        fs = fams if c == STD_COL else [f for f in fams if cat[f] == c]
+        if not fs:
+            out['number of moments'].append(0)
+            for r in KL_ROWS[1:]:
+                out[r].append(np.nan)
+            continue
+        E = -sum(np.atleast_2d(np.asarray(C[f], dtype=np.float64)) for f in fs) * sc    # (seeds, signals), -log10 p / d
+        n_seeds = E.shape[0]
+        # first-order KL per dimension, in log10 units (digits / dimension, the units of the u axis):
+        # Var(ln p_k) / (2 d ln10) = (d ln10) Var(u_k) / 2.  A KL changes unit LINEARLY (nats -> digits: / ln10),
+        # while a variance would change by ln10^2; and Var(ln p_k) grows like d, so dividing by d (not d^2) is intensive.
+        v = d * np.log(10.0) * E.var(1, ddof=1) / 2                                      # per seed
+        out['number of moments'].append(int(sum(widths[f] for f in fs)))
+        out['Var/2'].append(np.nan if c == STD_COL else float(v.mean()))
+        out['± Var/2'].append(float(v.std(ddof=1)) if n_seeds > 1 and c != STD_COL else np.nan)
+        out['std of total'].append(float(E.std(1, ddof=1).mean()) if c == STD_COL else np.nan)
+        if c != STD_COL:             # diagnostic: share of Var(total) carried by the category, Cov(C, total) / Var(total)
+            cov = ((E - E.mean(1, keepdims=True)) * (Etot - Etot.mean(1, keepdims=True))).sum(1) / (E.shape[1] - 1)
+            print(f'  {c:18s} Var(C)/Var(total) = {float(E.var(1, ddof=1).mean()) / vtot:8.2f} | '
+                  f'Cov(C, total)/Var(total) = {float(cov.mean()) / vtot:6.2f}   (shares sum to 1; > 1 or < 0: families cancel)')
+    T = pd.DataFrame(out, index=cols).T
+    print(f'Var/2 table over {n_seeds} seed(s), d = {d}; ± = std over seeds')
+    if name and _OUT is not None:
+        T.to_csv(_OUT / f'{name}.csv')
+    return T
+
+
+def _pm_sci(a, e):
+    """'(a ± e) x 10^k', e to 1 significant digit (2 if it starts with 1), a rounded to the same decimal place; each cell
+    has its own power of ten. With few seeds the error itself is uncertain (35 % for 5), so more digits would be false. The values of the
+    categories span several orders of magnitude, so one common power of ten per table does not read."""
+    if not np.isfinite(a) or a == 0:
+        return '0'
+    k = int(np.floor(np.log10(abs(a))))
+    if not np.isfinite(e) or e == 0:
+        if round(a / 10 ** k, 2) >= 10:                                    # 9.999 rounds to 10.0: next power of ten
+            k += 1
+        return rf'${a / 10 ** k:.3g}\times10^{{{k}}}$'
+    for _ in range(2):
+        am, em = a / 10 ** k, e / 10 ** k
+        ke = int(np.floor(np.log10(abs(em))))
+        dec = max(0, -ke + (1 if abs(em) / 10 ** ke < 2 else 0))          # error to 1 significant digit (2 if it starts with 1)
+        if round(am, dec) < 10:
+            break
+        k += 1                                                             # 9.999 -> 10.00: write 1.000 x 10^(k+1)
+    return rf'$({am:.{dec}f} \pm {em:.{dec}f})\times10^{{{k}}}$'          # mean rounded to the decimal place of the error
+
+
+def _sci_parts(a, e=np.nan):
+    """(text, k) of a cell: text = 'a ± e' (e to 1 significant digit, 2 if it starts with 1, a rounded to the same
+    decimal place; just 'a' to 3 digits without e) and the power of ten k of the cell, drawn on a second line."""
+    if not np.isfinite(a) or a == 0:
+        return '0', None
+    k = int(np.floor(np.log10(abs(a))))
+    if not np.isfinite(e) or e == 0:
+        if round(a / 10 ** k, 2) >= 10:                                    # 9.999 rounds to 10.0: next power of ten
+            k += 1
+        return f'{a / 10 ** k:.3g}', k
+    for _ in range(2):
+        am, em = a / 10 ** k, e / 10 ** k
+        ke = int(np.floor(np.log10(abs(em))))
+        dec = max(0, -ke + (1 if abs(em) / 10 ** ke < 2 else 0))
+        if round(am, dec) < 10:
+            break
+        k += 1
+    return f'{am:.{dec}f} ± {em:.{dec}f}', k
+
+
+def _wrap_header(c):
+    """Two-line column header: 'scalar multiscale' -> 'scalar' / 'multiscale', 'order 3 Re' -> 'order 3' / 'Re'."""
+    return c if ('(' in c or ' ' not in c) else '\n'.join(c.rsplit(' ', 1))
+
+
+def _render_kl_table(blocks, cols, name, foot, corner='', shade_last=False, val_label=r'Var$/2d$'):
+    """Slide table. blocks = [(title or None, counts (strings), cells (text, k))]; per cell the value in large type with
+    its power of ten on a second, smaller line; wrapped headers, little padding; shade_last: grey band behind the last
+    column (a different quantity)."""
+    LW, CW = 2.0, 3.25                                                   # label column, value column (inches)
+    HEAD, TITLE, COUNT, VAL, GAP, FOOT, TOP = 1.0, 0.6, 0.45, 0.8, 0.25, 0.45, 0.12
+    H = TOP + HEAD + sum((TITLE if t else 0) + COUNT + VAL for t, _, _ in blocks) + GAP * (len(blocks) - 1) + FOOT
+    W = LW + CW * len(cols)
+    fig = plt.figure(figsize=(W, H))
+    ax = fig.add_axes([0, 0, 1, 1])
+    ax.set_xlim(0, W)
+    ax.set_ylim(H, 0)
+    ax.axis('off')
+    xc = [LW + CW * (i + 0.5) for i in range(len(cols))]
+    rule = lambda y, lw, col=DATA: ax.plot([0.1, W - 0.1], [y, y], color=col, lw=lw, solid_capstyle='butt')
+    MUTED = '#77766f'
+    y = TOP
+    rule(y, 1.8)
+    ax.text(0.15, y + HEAD / 2, corner, ha='left', va='center', fontsize=24, weight='bold')
+    for x, c in zip(xc, cols):
+        ax.text(x, y + HEAD / 2, _wrap_header(c), ha='center', va='center', fontsize=19, weight='bold', linespacing=1.05)
+    y += HEAD
+    rule(y, 1.0)
+    for i, (title, counts, cells) in enumerate(blocks):
+        if i:
+            y += GAP / 2
+            rule(y, 0.8, GREY)
+            y += GAP / 2
+        if title:
+            ax.text(0.15, y + TITLE / 2, title, ha='left', va='center', fontsize=24, weight='bold')
+            y += TITLE
+        ax.text(0.25, y + COUNT / 2, 'number of moments', ha='left', va='center', fontsize=13, style='italic', color=MUTED)
+        for x, s in zip(xc, counts):
+            ax.text(x, y + COUNT / 2, s, ha='center', va='center', fontsize=15, style='italic', color=MUTED)
+        y += COUNT
+        ax.text(0.25, y + VAL / 2, val_label, ha='left', va='center', fontsize=21)
+        for x, (txt, k) in zip(xc, cells):                               # value and power of ten on ONE line, same size
+            if k is None:
+                s = txt
+            elif '±' in txt:
+                s = rf'$({txt.replace("±", chr(92) + "pm")})\times10^{{{k}}}$'
+            else:
+                s = rf'${txt}\times10^{{{k}}}$'
+            ax.text(x, y + VAL / 2, s, ha='center', va='center', fontsize=20)
+        y += VAL
+    y += 0.05
+    rule(y, 1.8)
+    if shade_last:
+        ax.add_patch(plt.Rectangle((LW + CW * (len(cols) - 1), TOP), CW, y - TOP, color=GREY, alpha=0.2, lw=0, zorder=0))
+    ax.text(W - 0.1, y + 0.1, foot, ha='right', va='top', fontsize=12, color=MUTED)
+    _save(fig, name)
+
+
+def _draw_kl_table(blocks, cols, name, corner='', note=''):
+    """blocks = [(title or None, T)], T from kl_table. Per block: number of moments (small grey italics), Var/2 with
+    its error (each cell with its own power of ten, on a second line). The last column (STD_COL, shaded) is another
+    quantity: the std of the total -log10 p / d, written in the same row."""
+    rb = []
+    for title, T in blocks:
+        n = T.loc['number of moments', cols].to_numpy(dtype=float)
+        v, e = (T.loc[r, cols].to_numpy(dtype=float) for r in ('Var/2', '± Var/2'))
+        s = T.loc['std of total', cols].to_numpy(dtype=float)
+        cells = [_sci_parts(a) if c == STD_COL and np.isfinite(a) else
+                 (('—', None) if m == 0 or not np.isfinite(b) else _sci_parts(b, x))
+                 for c, m, a, b, x in zip(cols, n, s, v, e)]
+        rb.append((title, ['—' if a == 0 else f'{int(a)}' for a in n], cells))
+    foot = r'Var$(\ln p_k)/(2d\ln 10)$ in digits per dimension, mean ± std over seeds'
+    if STD_COL in cols:
+        foot += r'; shaded: std of $-\log_{10}p/d$'
+    if note:
+        foot = f'{note}  |  {foot}'
+    _render_kl_table(rb, cols, name, foot, corner=corner, shade_last=STD_COL in cols)
+
+
+CONF_COL = 'confinement'
+
+
+def plot_kl_table(tables, name, std=True, note='', confinement=False):
+    """tables = {title: kl_table(...)}: one table, one block of rows per dataset (the overall table).
+    std=False: no shaded std(-log p) column, only the Var/2 of the categories. note: text added to the footer.
+    confinement=False (default): the confinement column is left out (own table: plot_confinement_table)."""
+    cols = [c for c in next(iter(tables.values())).columns
+            if any(T.loc['number of moments', c] > 0 for T in tables.values())
+            and (std or c != STD_COL) and (confinement or c != CONF_COL)]
+    _draw_kl_table(list(tables.items()), cols, name, note=note)
+
+
+def plot_kl_table_single(T, name, title, std=True, note='', confinement=False):
+    """One dataset alone (title in the top-left corner): only the columns with moments; std=False: no std column;
+    confinement=False (default): no confinement column."""
+    cols = [c for c in T.columns if T.loc['number of moments', c] > 0 and (std or c != STD_COL)
+            and (confinement or c != CONF_COL)]
+    _draw_kl_table([(None, T)], cols, name, corner=title, note=note)
+
+
+IM_RE_COLS = (('order 3 Im/Re', 'order 3 Im', 'order 3 Re'), ('order 4 Im/Re', 'order 4 Im', 'order 4 Re'))
+
+
+def im_re_ratio(C, widths, d):
+    """Imaginary / real ratio of the Var/2 of the order-3 and of the order-4 category (ENERGY_CATEGORIES), same
+    contributions as kl_table (C = {family: (seeds, signals)} of theta_F . phi_F(x), widths = {family: number of
+    statistics}). Per seed: Var over the signals (ddof = 1) of the category's -log10 p / d, Im over Re (the factor
+    d ln10 / 2 of Var/2 cancels); the table gives the mean over seeds and the std over seeds (NaN with one seed).
+    Returns {column: (mean, std, n_im, n_re)}; None for an order the model has no Re/Im terms of."""
+    fams = [f for f in C if f.lower() != 'total']
+    cat = {}
+    for f in fams:
+        hit = [c for c, pat in ENERGY_CATEGORIES if re.search(pat, f)]
+        assert len(hit) == 1, f'family {f!r} matches {hit} (expected exactly one category)'
+        cat[f] = hit[0]
+    out = {}
+    for col, c_im, c_re in IM_RE_COLS:
+        var, n = {}, {}
+        if not all(any(cat[f] == c for f in fams) for c in (c_im, c_re)):
+            print(f'  {col}: the model has no {c_im!r} / {c_re!r} terms -> no ratio')
+            out[col] = None
+            continue
+        for c in (c_im, c_re):
+            fs = [f for f in fams if cat[f] == c]
+            E = -sum(np.atleast_2d(np.asarray(C[f], dtype=np.float64)) for f in fs) * neglogp_scale(d)
+            var[c], n[c] = E.var(1, ddof=1), int(sum(widths[f] for f in fs))
+        r = var[c_im] / var[c_re]                                           # (seeds,)
+        out[col] = (float(r.mean()), float(r.std(ddof=1)) if len(r) > 1 else np.nan, n[c_im], n[c_re])
+    return out
+
+
+def plot_im_re_table(ratios, name):
+    """ratios = {dataset title: im_re_ratio(...)}: one block per dataset, columns order 3 Im/Re and order 4 Im/Re;
+    per cell the ratio mean ± std over seeds (power of ten on the same line, as the Var/2 tables), above it the number
+    of moments (Im / Re). Saved as <name>.png and <name>.csv in the output folder."""
+    import pandas as pd
+    cols = [c for c, _, _ in IM_RE_COLS]
+    blocks, rows = [], {}
+    for title, R in ratios.items():
+        counts = ['—' if R[c] is None else f'{R[c][2]} / {R[c][3]}' for c in cols]
+        cells = [('—', None) if R[c] is None else _sci_parts(R[c][0], R[c][1]) for c in cols]
+        blocks.append((title, counts, cells))
+        rows[title] = {c: np.nan if R[c] is None else R[c][0] for c in cols}
+        rows[title + ' (std over seeds)'] = {c: np.nan if R[c] is None else R[c][1] for c in cols}
+    foot = r'Var$(\ln p_k)$ of the imaginary over the real category, per seed, mean ± std over seeds; moments: Im / Re'
+    _render_kl_table(blocks, cols, name, foot, val_label='Im / Re')
+    if _OUT is not None:
+        pd.DataFrame(rows).T.to_csv(_OUT / f'{name}.csv')
+
+
+def plot_confinement_table(tables, name):
+    """Only the confinement term (L^6): one column per dataset that has it (number of moments, Var/2 with its error).
+    tables = {title: kl_table(...)}; datasets without a confinement term are left out."""
+    have = {t: T for t, T in tables.items() if CONF_COL in T.columns and T.loc['number of moments', CONF_COL] > 0}
+    if not have:
+        print('confinement table: no dataset has a confinement term')
+        return
+    counts = [str(int(T.loc['number of moments', CONF_COL])) for T in have.values()]
+    cells = [_sci_parts(T.loc['Var/2', CONF_COL], T.loc['± Var/2', CONF_COL]) for T in have.values()]
+    _render_kl_table([(None, counts, cells)], list(have), name,
+                     r'Var$(\ln p_k)/(2d\ln 10)$ in digits per dimension, confinement term, mean ± std over seeds',
+                     corner='confinement')
+
 # -------------------------------------------------------------------- log p ----
-def plot_logp_histogram(logp, name, rare=None, bins=100, rare_label='rare signals', min_freq=None, neg=True, note=None):
-    """Histogram of -log p over signals (logp = log p as stored, i.e. Theta . phi), shifted by its median (log p is
-    known up to a constant); log y. Legend without counts (they do not add up once the tail is cut).
+def neglogp_scale(d):
+    """Factor that turns nats into log10 per point: -log10 p / d = (-ln p) / (d ln 10)."""
+    return 1.0 / (d * np.log(10.0))
+
+
+NLP_LABEL = r'$-\log_{10} p(x)\,/\,d$'
+
+
+def plot_logp_histogram(logp, name, rare=None, bins=100, rare_label='rare signals', min_freq=None, neg=True, note=None,
+                        d=256, center='mean'):
+    """Histogram of -log10 p / d over signals (logp = ln p as stored, i.e. Theta . phi; d = length of the signal),
+    centred at zero by subtracting its mean (center='median' for the median; log p is known up to a constant),
+    normalised to unit area (density); log y. Legend without counts (they do not add up once the tail is cut).
     rare (bool mask): those signals in red, drawn in front of the light histogram of all signals (both
     normalised by the total number of signals, so the red area = fraction of rare signals).
     min_freq: cut the non-significant tail as plot_ranked_signals does (logp_support: walking out from the most
@@ -866,14 +1146,15 @@ def plot_logp_histogram(logp, name, rare=None, bins=100, rare_label='rare signal
     neg=True (default): plot -log p (rare signals on the right); neg=False: +log p.
     note: text written below the plot, under a thin line and a blank band, so it can be cropped off."""
     v = np.asarray(logp, dtype=np.float64)
-    v = v - np.median(v)
+    v = v - (v.mean() if center == 'mean' else np.median(v))
     if neg:
         v = -v
+    v = v * neglogp_scale(d)                                         # nats -> log10 per point
     N = len(v)
     if min_freq:
         lo, hi, *_ = logp_support(v, bins, min_freq)
         keep = (v >= lo) & (v <= hi)
-        print(f'log p histogram: tail cut at freq >= {min_freq:g} -> [{lo:+.1f}, {hi:+.1f}] nats; '
+        print(f'log p histogram: tail cut at freq >= {min_freq:g} -> [{lo:+.3f}, {hi:+.3f}] (log10 p / d); '
               f'{(v < lo).sum()} below, {(v > hi).sum()} above of {N} signals left out')
         v = v[keep]
         rare = None if rare is None else np.asarray(rare, bool)[keep]
@@ -887,8 +1168,8 @@ def plot_logp_histogram(logp, name, rare=None, bins=100, rare_label='rare signal
         ax.hist(v[rare], edges, weights=w[rare], color=RARE, label=rare_label, zorder=3)
     ax.set_yscale('log')
     ax.set_ylim(0.5 * w[0], None)
-    ax.set_xlabel((r'$-\log p(x)$' if neg else r'$\log p(x)$') + r' $-$ median (nats)', labelpad=8)
-    ax.set_ylabel('density', labelpad=8)
+    ax.set_xlabel('', labelpad=8)                                    # no axis labels (stated in the caption / by the speaker)
+    ax.set_ylabel('', labelpad=8)
     ax.legend(loc='lower left', bbox_to_anchor=(0.0, 1.02), ncol=1, borderaxespad=0, handlelength=1.4,
               fontsize=14)                                               # above the axes: never on the bars
     fig.tight_layout()
@@ -900,6 +1181,68 @@ def plot_logp_histogram(logp, name, rare=None, bins=100, rare_label='rare signal
     _save(fig, name)
 
 
+def plot_logp_gumbel(logp, name, d=256, bins=30, min_freq=1e-4, center='mean'):
+    """-log10 p / d histogram in the style of the S&P figure (light blue, density, log y, no axis labels) with a
+    maximum-likelihood Gumbel fit in red (scipy gumbel_r: long tail on the right, as -log p).
+    logp = ln p as stored (negated here), one value per signal, centred as plot_logp_histogram (center='mean'|'median');
+    pool several seeds by centring each first and concatenating. The fit uses ALL signals; the histogram and the
+    curve are drawn only over the support left after the tail cut (logp_support: frequency per bin >= min_freq);
+    density normalised by all signals. Location and scale are printed and written in the legend."""
+    v = np.asarray(logp, dtype=np.float64)
+    v = -(v - (v.mean() if center == 'mean' else np.median(v)))
+    v = v * neglogp_scale(d)                                         # nats -> log10 per point
+    N = len(v)
+    loc, scale = stats.gumbel_r.fit(v)
+    lo, hi, *_ = logp_support(v, bins, min_freq)
+    keep = (v >= lo) & (v <= hi)
+    print(f'Gumbel fit of -log10 p / d: loc {loc:.4f}, scale {scale:.4f} | tail cut -> [{lo:+.3f}, {hi:+.3f}]: '
+          f'{(v < lo).sum()} below, {(v > hi).sum()} above of {N} signals left out')
+    v = v[keep]
+    edges = np.linspace(v.min(), v.max(), bins + 1)
+    w = np.full(len(v), 1.0 / (N * (edges[1] - edges[0])))
+    xs = np.linspace(edges[0], edges[-1], 400)
+    fig, ax = plt.subplots(figsize=(8, 4.6))
+    ax.hist(v, edges, weights=w, color=MODEL, alpha=0.25)
+    ax.plot(xs, stats.gumbel_r.pdf(xs, loc, scale), color=RARE, lw=2.4, label=f'Gumbel fit (scale {scale:.3g})')
+    ax.set_yscale('log')
+    ax.set_ylim(0.5 * w[0], None)
+    ax.legend()                                                      # no axis labels
+    fig.tight_layout()
+    _save(fig, name)
+    return loc, scale
+
+
+def plot_logp_widths(sets, name, bins=40, colors=None):
+    """-log10 p / d histograms of several datasets, one separate figure each (saved as <name>_1, <name>_2, ...), all
+    with the SAME x and y limits (log y), to see which concentrates more. sets: {label: (nlp, d)}, nlp = -log p in nats of the generated signals,
+    (seeds, signals) or (signals,); d = signal length. Convention of plot_logp_histogram: each seed centred on its
+    own mean, nats -> log10 per point (neglogp_scale(d)), density (unit area), log y. Every histogram has `bins` bins
+    over its own range (a narrow one still gets resolved); the std of each is written in its panel."""
+    cols = colors or [MODEL, RARE, DATA, GREY]
+    vals = {}
+    for lab, (nlp, d) in sets.items():
+        a = np.atleast_2d(np.asarray(nlp, dtype=np.float64))
+        vals[lab] = ((a - a.mean(1, keepdims=True)) * neglogp_scale(d)).ravel()
+    lo = min(v.min() for v in vals.values()); hi = max(v.max() for v in vals.values())
+    H = {}
+    for lab, v in vals.items():
+        edges = np.linspace(v.min(), v.max(), bins + 1)
+        H[lab] = (edges, np.histogram(v, edges, density=True)[0])
+    ymin = 0.5 * min(h[h > 0].min() for _, h in H.values()); ymax = 2.0 * max(h.max() for _, h in H.values())
+    for k, ((lab, v), col) in enumerate(zip(vals.items(), cols)):          # one figure per dataset, same x and y limits
+        edges, h = H[lab]
+        fig, ax = plt.subplots(figsize=(9, 3.6))
+        ax.hist(v, edges, density=True, color=col, alpha=0.55)
+        ax.hist(v, edges, density=True, histtype='step', color=col, lw=1.6)
+        ax.set_yscale('log'); ax.set_xlim(lo, hi); ax.set_ylim(ymin, ymax)
+        ax.text(0.98, 0.92, f'{lab}\nstd {v.std():.3g}', transform=ax.transAxes, ha='right', va='top', fontsize=15)
+        fig.tight_layout()
+        _save(fig, f'{name}_{k + 1}')
+    stds = {k: float(v.std()) for k, v in vals.items()}
+    print('std of -log10 p / d:', {k: round(s, 5) for k, s in stds.items()})
+    return stds
+
+
 def plot_logp_gaussian(npz, name, seed_index=0, bins=80, n_scatter=3000):
     """-log p for the Gaussian with the data spectrum (gauss_spectrum/, all_seeds.npz of logp_gauss_scat2.py; the npz
     stores +log p, negated here). Left: on the Gaussian training signals, the exact (black) and the MGD (blue), each relative to the
@@ -908,31 +1251,29 @@ def plot_logp_gaussian(npz, name, seed_index=0, bins=80, n_scatter=3000):
     training signals, one point per signal; on the dashed line MGD gives a signal exactly its true log p."""
     z = np.load(npz)
     M, s = int(z['M']), int(z['seeds'][seed_index])
-    ex, mg = -z['exact_data'][seed_index], -z['logp_data'][seed_index]          # -log p
-    sd = np.sqrt(M / 2)
+    ex, mg = -z['exact_data'][seed_index], -z['logp_data'][seed_index]          # -log p (nats)
+    sc = neglogp_scale(M)                                                       # nats -> log10 per point, d = M
+    ex, mg = ex * sc, mg * sc
+    sd = np.sqrt(M / 2) * sc
     fig, (a, b) = plt.subplots(1, 2, figsize=(13, 5))
     edges = np.linspace(*np.quantile(np.r_[ex, mg], [0.0005, 0.9995]), bins + 1)
-    a.hist(ex, edges, density=True, histtype='step', color=DATA, lw=2, label=f'exact (std {ex.std():.2f})')
-    a.hist(mg, edges, density=True, histtype='step', color=MODEL, lw=2, label=f'MGD (std {mg.std():.2f})')
+    a.hist(ex, edges, density=True, histtype='step', color=DATA, lw=2, label=f'exact (std {ex.std():.4f})')
+    a.hist(mg, edges, density=True, histtype='step', color=MODEL, lw=2, label=f'MGD (std {mg.std():.4f})')
     g = np.linspace(edges[0], edges[-1], 400)
-    a.plot(g, stats.norm.pdf(g, 0, sd), color=GREY, ls='--', lw=1.5, label=f'N(0, M/2), std {sd:.2f}')
-    a.set_xlabel(r'$-\log p(x)$ $-$ mean over own samples (nats)')
-    a.set_ylabel('density')
+    a.plot(g, stats.norm.pdf(g, 0, sd), color=GREY, ls='--', lw=1.5, label=f'N(0, M/2), std {sd:.4f}')
     a.set_title(f'Gaussian training signals ({len(ex)}), seed {s}')
     a.legend(loc='upper left')
     idx = np.random.default_rng(0).choice(len(ex), min(n_scatter, len(ex)), replace=False)
     b.scatter(ex[idx], mg[idx], s=4, alpha=0.35, color=MODEL)
     lim = [min(ex.min(), mg.min()), max(ex.max(), mg.max())]
     b.plot(lim, lim, color=DATA, ls='--', lw=1.2, label='MGD = exact')
-    b.set_xlabel(r'exact $-\log p$ (nats)')
-    b.set_ylabel(r'MGD $-\log p$ (nats)')
     b.set_title(f'same signals: Pearson {stats.pearsonr(ex, mg)[0]:.3f}')
     b.legend(loc='upper left')
     fig.tight_layout()
     _save(fig, name)
     stds = z['logp_data'].std(1)
     print(f'MGD std on training signals over seeds {list(z["seeds"])}: {np.round(stds, 2)} | '
-          f'exact {z["exact_data"].std(1).round(2)} | on generated: {z["logp_model"].std(1).round(2)} (theory {sd:.2f})')
+          f'exact {z["exact_data"].std(1).round(2)} | on generated: {z["logp_model"].std(1).round(2)} (theory {np.sqrt(M / 2):.2f}), nats')
 
 
 def ranked_indices(logp, n=10):
@@ -963,9 +1304,11 @@ def logp_support(v, bins=80, min_freq=1e-3):
     return lo, hi, a, b, edges, freq
 
 
-def plot_ranked_signals(signals, logp, name, n=10, ncol=5, bins=80, min_freq=1e-3, truncate=True):
-    """Left: histogram of -log p over all the signals (relative to its median; logp = log p as stored, negated here),
-    as a frequency (fraction of the signals per bin), with an arrow at the -log p of each of n signals: for n evenly
+def plot_ranked_signals(signals, logp, name, n=10, ncol=5, bins=80, min_freq=1e-3, truncate=True, center='mean',
+                        random=False, seed=None):
+    """Left: histogram of -log10 p / d over all the signals (centred at zero by its mean, or median with
+    center='median'; logp = ln p as stored, negated here; d = length of the signals), normalised to unit area
+    (density; min_freq still acts on the fraction of signals per bin), with an arrow at the -log p of each of n signals: for n evenly
     spaced values across the support, the signal closest to it. Right: those signals, framed with the colour of their
     arrow, -log p on top (same y-scale everywhere), from the most typical (left of the histogram, light) to the rarest
     (right, dark).
@@ -974,15 +1317,33 @@ def plot_ranked_signals(signals, logp, name, n=10, ncol=5, bins=80, min_freq=1e-
     histogram, shaded. min_freq=None (or 0) uses the full range, as before. Note the frequency is per bin, so the
     cap depends on `bins`.
     truncate=True (with min_freq): the histogram is also cut at the cap: only the bins inside it are drawn (no shaded
-    outer part, no threshold line); truncate=False keeps the whole histogram with the outside shaded."""
+    outer part, no threshold line); truncate=False keeps the whole histogram with the outside shaded.
+    random=True: instead of the single closest signal, each of the n slots takes a random signal among those within
+    half a slot spacing of its target (inside the support), so the arrows stay evenly spread but the signals change
+    at every call (seed=None: new draw each time; an int fixes it). The chosen indices are printed."""
     from matplotlib import gridspec
     v = np.asarray(logp, dtype=np.float64)
-    v = -(v - np.median(v))                                          # -log p - median
-    lo, hi, a, b, edges, freq = logp_support(v, bins, min_freq)
+    v = -(v - (v.mean() if center == 'mean' else np.median(v)))      # -log p, centred at zero (nats)
+    lo, hi, a, b, edges, freq = logp_support(v, bins, min_freq)      # support cut on the fraction per bin
     if min_freq:
         print(f'ranked signals: support capped at freq >= {min_freq:g} -> [{lo:+.1f}, {hi:+.1f}] nats; '
               f'{(v < lo).sum()} below, {(v > hi).sum()} above of {v.size} signals left out')
-    idx = np.array([np.argmin(np.abs(v - t)) for t in np.linspace(lo, hi, n)])
+    sc = neglogp_scale(_np(signals).shape[-1])                       # nats -> log10 per point, d = signal length
+    v, lo, hi, edges = v * sc, lo * sc, hi * sc, edges * sc
+    binw = edges[1] - edges[0]
+    dens = freq / binw                                               # unit area
+    targets = np.linspace(lo, hi, n)
+    if random:
+        rng = np.random.default_rng(seed)
+        half = 0.5 * (hi - lo) / max(n - 1, 1)                           # half a slot spacing
+        idx = []
+        for t in targets:
+            cand = np.flatnonzero((np.abs(v - t) <= half) & (v >= lo) & (v <= hi))
+            idx.append(int(rng.choice(cand)) if len(cand) else int(np.argmin(np.abs(v - t))))
+        idx = np.array(idx)
+        print('ranked signals: random choice, indices', idx.tolist())
+    else:
+        idx = np.array([np.argmin(np.abs(v - t)) for t in targets])
     s = _np(signals)[idx]
     colors = plt.get_cmap('plasma')(np.linspace(0.85, 0.0, n))       # light (typical, left) -> dark (rare, right)
     nrow = int(np.ceil(n / ncol))
@@ -991,13 +1352,13 @@ def plot_ranked_signals(signals, logp, name, n=10, ncol=5, bins=80, min_freq=1e-
     ax = fig.add_subplot(gs[:, 0])
     ax.set_yscale('log')
     if min_freq and truncate:
-        ax.stairs(freq[a:b + 1], edges[a:b + 2], fill=True, color=GREY, alpha=0.6)
+        ax.stairs(dens[a:b + 1], edges[a:b + 2], fill=True, color=GREY, alpha=0.6)
         ax.set_xlim(edges[a], edges[b + 1])
-        ax.set_ylim(bottom=min_freq / 2)
+        ax.set_ylim(bottom=min_freq / binw / 2)
     else:
-        ax.stairs(freq, edges, fill=True, color=GREY, alpha=0.6)
+        ax.stairs(dens, edges, fill=True, color=GREY, alpha=0.6)
     if min_freq and not truncate:
-        ax.axhline(min_freq, color=GREY, ls='--', lw=1)
+        ax.axhline(min_freq / binw, color=GREY, ls='--', lw=1)
         for x0, x1 in ((edges[0], lo), (hi, edges[-1])):
             if x1 > x0:
                 ax.axvspan(x0, x1, color=GREY, alpha=0.12, lw=0)
@@ -1005,8 +1366,6 @@ def plot_ranked_signals(signals, logp, name, n=10, ncol=5, bins=80, min_freq=1e-
         ax.annotate('', xy=(x, 0), xytext=(x, -0.08), xycoords=ax.get_xaxis_transform(),
                     arrowprops=dict(arrowstyle='->', color=c, lw=2), annotation_clip=False)
     ax.tick_params(axis='x', pad=30)                                   # tick labels below the arrows
-    ax.set_xlabel(r'$-\log p(x)$ $-$ median (nats)')
-    ax.set_ylabel('frequency')
     lim = 1.05 * np.abs(s).max()
     for k in range(n):
         a = fig.add_subplot(gs[k // ncol, 2 + k % ncol])
@@ -1019,7 +1378,7 @@ def plot_ranked_signals(signals, logp, name, n=10, ncol=5, bins=80, min_freq=1e-
             sp.set_visible(True)
             sp.set_color(colors[k])
             sp.set_linewidth(3)
-        a.set_title(f'{v[idx[k]]:+.0f}', fontsize=16)
+        a.set_title(f'{v[idx[k]]:+.3f}', fontsize=16)
     _save(fig, name)
 
 
