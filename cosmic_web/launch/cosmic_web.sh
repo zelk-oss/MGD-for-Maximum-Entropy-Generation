@@ -55,6 +55,10 @@ TIME="${TIME:-${TIME_DEFAULT}}"
 BATCH_SIZE="${BATCH_SIZE:-${BATCH_DEFAULT}}"
 N_SUBSAMPLE="${N_SUBSAMPLE:-${NSUB_DEFAULT}}"
 N1="${N1:-100}"
+# N_PARTICLES (a multiple of N1): more walkers than data maps. Default = N1 (production). With 100 walkers the walker
+# covariance C of the time-regularised solve has rank <= 99 < r = 324, so the time coupling misses ~225 directions;
+# N_PARTICLES >= r makes it full rank (test: ARM=base_real N_PARTICLES=400 LABEL=base_real_np400).
+NPART_FLAG=$([ -n "${N_PARTICLES}" ] && echo "--n_particles ${N_PARTICLES}")
 FACT="${FACT:-2}"
 # quijote.npy (100 maps 256x256, uploaded 2026-11-05) is ALREADY a log field (min -2.99, exp(min) = 0.0501), not the
 # notebook's log(x - min + 0.1) (whose floor is -2.303): skip the shift+log, keep the db4 coarse graining (FACT=2).
@@ -66,7 +70,13 @@ DATA_IS_LOG_FLAG=$([ "${DATA_IS_LOG:-true}" = "true" ] && echo "--data_is_log")
 N_BULK="${N_BULK:-$(( NT / 2 ))}"
 T_SWITCH="${T_SWITCH:-0.9}"
 GAP_END="${GAP_END:-5e-5}"
-J=5; Q=1; L=4
+# SCHEDULE=uniform: --schedule power --schedule_exponent 1 (the S&P grid; ends at t = 1 - 1/NT, not 1 - GAP_END)
+case "${SCHEDULE:-two_phase}" in
+    two_phase) SCHED_ARGS="--schedule two_phase --n_bulk ${N_BULK} --t_switch ${T_SWITCH} --gap_end ${GAP_END}" ;;
+    uniform)   SCHED_ARGS="--schedule power --schedule_exponent 1" ;;
+    *) echo "Error: SCHEDULE must be two_phase or uniform"; exit 1 ;;
+esac
+J="${J:-5}"; Q=1; L=4     # J=3 for FACT=16 (16x16 maps)
 # sigma^2 = 5.5 and 2700 steps: the MGD paper's cosmic-web values (sec. 6.4, App. D.3: samples at sigma^2 = 5.5; steps {1000,1000,1000,1000,2500,2700} for sigma^2 {0.1,0.25,1,2.5,4,5.5}); the notebook had sigma = 1
 SIGMA="${SIGMA:-2.345207879911715}"
 INTERPOLANT=Cos
@@ -89,7 +99,7 @@ IFS=: read -r _h _m _s <<< "${TIME}"
 TIME_LIMIT_MIN=$(( 10#${_h} * 60 + 10#${_m} ))
 NTASKS=${#SEED_LIST[@]}
 
-echo "Submitting cosmic_web ${ARM}: seeds (${SEED_LIST[*]}), n1=${N1}, nt=${NT}, batch ${BATCH_SIZE}, nsub ${N_SUBSAMPLE}, ${GPU}, time ${TIME}"
+echo "Submitting cosmic_web ${ARM}: fact ${FACT}, J ${J}, ${SCHEDULE:-two_phase}, seeds (${SEED_LIST[*]}), n1=${N1}, particles=${N_PARTICLES:-${N1}}, nt=${NT}, batch ${BATCH_SIZE}, nsub ${N_SUBSAMPLE}, ${GPU}, time ${TIME}"
 echo "  reg systems -> ${REG_SYSTEM_DIR}"
 
 JOBID=$(sbatch --parsable ${QOS:+--qos=${QOS}} <<EOT
@@ -105,8 +115,12 @@ JOBID=$(sbatch --parsable ${QOS:+--qos=${QOS}} <<EOT
 #SBATCH --output=${LOG_DIR}/slurm_%x_%A_%a.log
 
 module purge
+# V100 submitted from an H100 login node (jzxh*): drop the H100 stack if purge kept it (job 2172641, 11-09)
+$([ "${GPU}" = "v100" ] && echo "module unload arch/h100 2>/dev/null")
 ${MODULE_PRE:+module load ${MODULE_PRE}}
 module load ${MODULE}
+module list 2>&1 | tail -n +1
+python -c "import torch; (torch.ones(1, device='cuda') + 1).item()" || { echo "PyTorch build has no kernels for this GPU (${GPU}): use GPU=h100 or submit from a non-H100 login node"; exit 1; }
 cd "${CW_DIR}"
 python -c "import torch; print('GPU:', torch.cuda.get_device_name(0))"
 export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
@@ -120,12 +134,12 @@ srun python "${CW_DIR}/run_SDE.py" \
     --label ${LABEL} \
     --data_path "${DATA_PATH}" \
     --fact ${FACT} ${DATA_IS_LOG_FLAG} \
-    --n1 ${N1} \
+    --n1 ${N1} ${NPART_FLAG} \
     --J ${J} --Q ${Q} --L ${L} \
     --sigma ${SIGMA} \
     --interpolant ${INTERPOLANT} \
     --nt ${NT} \
-    --schedule two_phase --n_bulk ${N_BULK} --t_switch ${T_SWITCH} --gap_end ${GAP_END} \
+    ${SCHED_ARGS} \
     --batch_size ${BATCH_SIZE} \
     --regularization ${REGULARIZATION} ${SOLVE_FLOAT64_FLAG} \
     --lam 0.0 --n_subsample ${N_SUBSAMPLE} --reg_solver thomas --reg_ridge 0.0 \

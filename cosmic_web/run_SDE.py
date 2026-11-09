@@ -120,6 +120,8 @@ def build_names(args, M):
     head += f'_lam{args.lam:g}_{args.reg_solver}_nsub{args.n_subsample}_{resolve_reg_mode(args)}'
     if args.data_is_log:                  # different preprocessing = different data: never reload the other
         head += '_dlog'
+    if args.n_particles and args.n_particles != args.n1:     # other number of walkers = other run (default: n1, no tag)
+        head += f'_np{args.n_particles}'
     # per-step ridge / float64 solves change the SDE: never reload a run made with other values
     if args.regularization != 0.0:
         head += f'_reg{args.regularization:g}'
@@ -150,6 +152,10 @@ def parse_args():
     p.add_argument('--data_is_log', action='store_true',
                    help='the .npy is already a log field: skip the notebook\'s shift-to-0 and log(x+0.1)')
     p.add_argument('--n1', type=int, default=100, help='number of data maps (the first n1)')
+    p.add_argument('--n_particles', type=int, default=None,
+                   help='number of walkers (and interpolants), a multiple of --n1; the data maps are repeated cyclically. '
+                        'Default: n1 (the production runs). More walkers than statistics make the walker covariance C '
+                        '(time coupling of Theta_reg) full rank: with 100 walkers rank(C) <= 99 < r')
     p.add_argument('--smoke_data', action='store_true', help='SMOKE TEST: smoothed Gaussian maps instead of Quijote')
     p.add_argument('--smoke_size', type=int, default=32)
     # model
@@ -195,6 +201,8 @@ def parse_args():
         p.error('--data_path is required (or --smoke_data for a smoke test)')
     if args.skip_reg_solve and not args.save_reg_system:
         p.error('--skip_reg_solve needs --save_reg_system')
+    if args.n_particles is not None and (args.n_particles < args.n1 or args.n_particles % args.n1 != 0):
+        p.error('--n_particles must be a multiple of --n1 (equal weight for every data map)')
     return args
 
 
@@ -328,7 +336,9 @@ def main():
             potentials = get_2d_potentials(args.terms, args.J, args.L, filters, parallel=False)
             logger.info('terms: %s', args.terms)
 
-            Solver = SDE(x1, n1, n1, t, args.sigma, potentials, args.batch_size, device=device,
+            n_part = args.n_particles or n1
+            logger.info('walkers / interpolants: %d (data maps %d)', n_part, n1)
+            Solver = SDE(x1, n_part, n_part, t, args.sigma, potentials, args.batch_size, device=device,
                          regularization=args.regularization, interpolant=args.interpolant, x_0=None, x_k=None,
                          potentials_save_dir=exp_dir / 'fitted_potentials',
                          solve_float64=args.solve_float64)
