@@ -111,57 +111,45 @@ def histedges_equalN(x, nbin):
                      np.arange(npt),
                      np.sort(x))
 
-def compute_gaussian_entropy(x1, interpolant, t):
-    
-    """Closed-form entropy of the Gaussian interpolant marginal along ``t``.
- 
-    Assumes a single channel. The data spectrum is the value variance (1D case,
-    ``len(x1.shape) == 2``) or the diagonal of the Fourier covariance (2D). With
-    base entropy ``H_p_0 = (log(2 pi) + 1) d / 2`` (``d`` the dimension), returns
-    ``H_p_0 + 0.5 * sum_k log(var_t,k)`` where the per-mode variance follows the
-    chosen interpolant schedule (Linear / VarPreserv / Sqrt / Cos).
- 
-    Parameters
-    ----------
-    x1 : torch.Tensor
-        Data samples, shape (B, T) or (B, M, N).
-    interpolant : str
-        Interpolant schedule.
-    t : torch.Tensor
-        Times, shape (n_t, 1).
- 
-    Returns
-    -------
-    torch.Tensor
-        Gaussian entropy at each time, shape (n_t,).
-    """
+def resample_spectrum(s, n, dim=-1):
+    L = s.shape[dim]
+    u = torch.arange(n, device=s.device) * (L / n)
+    i0 = u.floor().long(); f = (u - i0).to(s.dtype)
+    shape = [1] * s.dim(); shape[dim] = n; f = f.reshape(shape)
+    return s.index_select(dim, i0 % L) * (1 - f) + s.index_select(dim, (i0 + 1) % L) * f
 
-    # assume the number of channels to be 1
+def compute_gaussian_entropy(x1, interpolant, t, L=None):
+    if x1.dim() == 4:                       # (N, 1, H, W) -> (N, H, W)
+        x1 = x1.squeeze(1)
+    x1 = x1 - x1.mean(0, keepdim=True)      # dataset-mean centering
+    full = x1.shape[1:]
+    d = int(np.prod(full))
 
+    if L is None:                                                          # plain full-FFT estimate
+        xf = torch.fft.fftn(x1, dim=tuple(range(1, x1.dim())), norm="ortho")
+        spectrum_x1 = (xf.abs()**2).mean(0)
+    else:                                                                  # Welch estimate
+        w = torch.hann_window(L, device=x1.device, dtype=x1.dtype)
+        if x1.dim() == 2:
+            xf = torch.fft.fft(x1.unfold(-1, L, L // 2) * w, norm="ortho")
+            spectrum_x1 = (xf.abs()**2).mean((0, 1)) / (w**2).mean()
+        else:
+            w2 = w[:, None] * w[None]
+            xf = torch.fft.fft2(x1.unfold(1, L, L // 2).unfold(2, L, L // 2) * w2, norm="ortho")
+            spectrum_x1 = (xf.abs()**2).mean((0, 1, 2)) / (w2**2).mean()
+        for dim, n in enumerate(full):                                     # back to full-FFT shape
+            spectrum_x1 = resample_spectrum(spectrum_x1, n, dim=dim)
+    spectrum_x1 = spectrum_x1.reshape(-1).cpu().clamp_min(1e-12)           # (d,)
 
-    if len(x1.shape)==2:
-        spectrum_x1 = torch.var(x1.flatten()).cpu()
-        
-        d = x1.shape[-1]
-        
-    else:
-        x1_fourier = torch.fft.fft2(x1)
-        cov_x1 = (x1_fourier.reshape(x1.shape[0], x1.shape[-2]*x1.shape[-1]).T@x1_fourier.reshape(x1.shape[0], x1.shape[-2]*x1.shape[-1])).cpu()
-        spectrum_x1 = torch.diag(cov_x1)/(x1.shape[-2]*x1.shape[-1]*np.sqrt(x1.shape[0]))
-    
-        d = x1.shape[-2]*x1.shape[-1]
-    
-    H_p_0 = (np.log(2*np.pi)+1)*d/2
-
-    match interpolant:
-        case 'Linear':
-            return H_p_0 + torch.log(spectrum_x1.abs()[None]*t[:,None]**2+(1-t[:,None])**2).sum(1)/2
-        case 'VarPreserv':
-            return H_p_0 + torch.log(spectrum_x1.abs()[None]*t[:,None]+(1-t[:,None])).sum(1)/2
-        case 'Sqrt':
-            return H_p_0 + torch.log(spectrum_x1.abs()[None]*t[:,None]+(1-np.sqrt(t[:,None]))**2).sum(1)/2
-        case 'Cos':
-            return H_p_0 + torch.log(spectrum_x1.abs()[None]*np.sin(np.pi * t[:,None] / 2)**2+np.cos(np.pi * t[:,None] / 2)**2).sum(1)/2
+    H_p_0 = (np.log(2 * np.pi) + 1) * d / 2
+    t = t[:, None].to(spectrum_x1)
+    a, b = {
+        'Linear':     (1 - t,           t),
+        'VarPreserv': ((1 - t).sqrt(),  t.sqrt()),
+        'Sqrt':       (1 - t.sqrt(),    t.sqrt()),
+        'Cos':        (torch.cos(torch.pi * t / 2), torch.sin(torch.pi * t / 2)),
+    }[interpolant]
+    return H_p_0 + torch.log(a**2 + b**2 * spectrum_x1[None]).sum(1) / 2
 
 
     ## ----------------------------------------------------- MGD lower bound on log Z -----------------------------------------------------

@@ -8,7 +8,8 @@ same order as the notebook). The constant is unknown, so only differences betwee
 plots -log p relative to the median.
 
 Usage (repo root, GPU node on Jean Zay, ~1 min per seed):  python jets/logp_generated_jets.py
-Output: jets/figures/logp_jets/logp_generated_<arm>.npz  (logp (seeds, n_generated), seeds, lam)
+Output: jets/figures/logp_jets/logp_generated_<arm>.npz  (logp (seeds, n_generated), seeds, lam, and the contribution of
+each family: C (seeds, families + total, n_generated) with families = names as in logp_jets.npz, total last)
 """
 import argparse
 import json
@@ -24,10 +25,12 @@ def main(arm, window, out):
     from logp_family_contrib import load_potentials, phi_matrix
     from run_comparison import _find_exp_dir, load_config
     from logp_seed_check import XSEED, theta_file
+    from check_potentials import theta_column_map
+    from logp_jets import short                                        # the same abbreviations as logp_jets.npz
     device = 'cuda' if torch.cuda.is_available() else 'cpu'
     xs = torch.load(XSEED / f'xseed_{arm}.pt', map_location='cpu', weights_only=False)
     lam = xs['selected'][window]
-    logps, seeds = [], []
+    logps, seeds, Cs, fams = [], [], [], None
     for config, f_sel in xs['theta_files'][window].items():
         exp = _find_exp_dir(HERE, config)
         assert exp is not None, f'no experiments/ folder for {config}'
@@ -37,16 +40,22 @@ def main(arm, window, out):
         theta = sol['Theta_reg'][-1].double().numpy()
         xt = load_config(config, HERE, label=arm, extras=False)['xt']
         xt = xt.reshape(xt.shape[0], 1, -1).to(device)
-        phi = phi_matrix(load_potentials(exp, cfg, device), xt)
+        pots = load_potentials(exp, cfg, device)
+        phi = phi_matrix(pots, xt)
         assert phi.shape[1] == theta.shape[0], (phi.shape, theta.shape)
         lp = phi @ theta
+        cmap = theta_column_map(pots, theta.shape[0])                  # per family, as logp_jets.py (same order and names)
+        Cs.append(np.stack([phi[:, a:a + d] @ theta[a:a + d] for a, d in cmap.values()] + [lp]))   # (families + total, n)
+        assert fams is None or fams == [short(k) for k in cmap], 'families differ between seeds'
+        fams = [short(k) for k in cmap]
         seeds.append(int(cfg['seed']))
         logps.append(lp)
         print(f'seed {seeds[-1]}: generated {tuple(xt.shape)} | log p median {np.median(lp):.4g}, '
               f'min {lp.min():.4g}, max {lp.max():.4g}')
     out.mkdir(parents=True, exist_ok=True)
     f = out / f'logp_generated_{arm}.npz'
-    np.savez_compressed(f, logp=np.stack(logps), seeds=np.array(seeds), lam=lam)
+    np.savez_compressed(f, logp=np.stack(logps), seeds=np.array(seeds), lam=lam,
+                        C=np.stack(Cs), families=np.array(fams))       # C: (seeds, families + total, n_generated)
     print(f'lam {lam:g} -> {f}')
 
 

@@ -17,6 +17,7 @@ HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_DIR="$(cd "${HERE}/../.." && pwd)"
 
 MODEL="${MODEL:?set MODEL=M0|M1|M2|M3}"
+[ "${L6:-0}" = "1" ] && LABEL_SUFFIX="${LABEL_SUFFIX:-_L6}"
 ARM="snp_${MODEL}${LABEL_SUFFIX}"
 SEED_LIST=(${SEEDS:-900 901 902 903 904})
 LAM_LIST=(${LAMS:-0 1e-6 1e-5 1e-4 5e-4 1e-3 1e-2 1e-1 1})
@@ -40,7 +41,7 @@ echo "  systems ${REG_SYSTEM_DIR}/*seed_<seed>_*.pt, Theta_reg sweep ${OUTDIR} -
 if [ -n "${DRY}" ]; then echo "(dry run: nothing submitted)"; exit 0; fi
 mkdir -p "${XOUT}" "${LOGDIR}"
 
-JOB=$(sbatch --parsable ${DEPEND:+--dependency=afterok:${DEPEND} --kill-on-invalid-dep=yes} <<EOT
+JOB=$(sbatch --parsable ${QOS:+--qos=${QOS}} ${DEPEND:+--dependency=afterok:${DEPEND} --kill-on-invalid-dep=yes} <<EOT
 #!/bin/bash
 #SBATCH --job-name=snp_xseed_${ARM}
 #SBATCH --time=${TIME}

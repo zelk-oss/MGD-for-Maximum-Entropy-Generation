@@ -51,8 +51,31 @@ def true_log_p(x, S):
     return -0.5 * quad - 0.5 * torch.log(2 * math.pi * S / M).sum()
 
 
-def replace_with_gaussian(x1, seed=0):
-    """(x1 Gaussian with the spectrum of x1 [same shape, dtype, device], S (C, M) float64 cpu)."""
-    S = average_spectrum(x1).cpu()
+def welch_spectrum(x, nperseg):
+    """Welch estimate of S (C, M), float64, on the length-M FFT grid, in the convention of average_spectrum
+    (S(w) = E |FFT(x)(w)|^2). For ONE long series (S&P: M = 6062, n1 = 1) the raw periodogram of average_spectrum
+    scatters like chi2_2 around the true spectrum; Welch (Hann segments of length nperseg, 50 % overlap, periodograms
+    averaged) smooths it, as the MGD paper does for its covariance determinants (App. D.3, Welch 1967).
+    PSD (two-sided, fs = 1) is evaluated on nperseg frequencies, interpolated linearly on |f| = min(k, M-k)/M
+    (symmetric, so the IFFT of sample_gaussian_spectrum stays real) and multiplied by M."""
+    import numpy as np
+    from scipy.signal import welch
+    xn = x.detach().cpu().double().numpy()
+    M = xn.shape[-1]
+    f, P = welch(xn, fs=1.0, window='hann', nperseg=nperseg, noverlap=nperseg // 2, detrend=False,
+                 return_onesided=True, scaling='density', axis=-1)           # (B, C, nperseg//2+1), one-sided
+    P = P.copy()
+    P[..., 1:(nperseg + 1) // 2] /= 2.0                                      # one-sided -> two-sided density
+    P = P.mean(0)                                                            # (C, nf)
+    k = np.arange(M)
+    fk = np.minimum(k, M - k) / M
+    S = np.stack([np.interp(fk, f, Pc) for Pc in P]) * M
+    return torch.from_numpy(S)
+
+
+def replace_with_gaussian(x1, seed=0, nperseg=None):
+    """(x1 Gaussian with the spectrum of x1 [same shape, dtype, device], S (C, M) float64 cpu).
+    nperseg=None: raw mean periodogram over the batch; else Welch-smoothed (welch_spectrum)."""
+    S = average_spectrum(x1).cpu() if nperseg is None else welch_spectrum(x1, nperseg)
     xg = sample_gaussian_spectrum(S, x1.shape[0], seed=seed)
     return xg.to(dtype=x1.dtype, device=x1.device), S

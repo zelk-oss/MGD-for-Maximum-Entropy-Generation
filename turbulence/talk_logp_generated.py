@@ -2,8 +2,8 @@
 least rare). Same Theta_reg(t = 1) as logp_family_contrib.py: the L_6<0 file (SCRATCH, else the fswork backup
 theta_reg_backup/theta_reg_l6neg), else the unconstrained sweep file. log p = Theta . phi(x) + const.
 
-Output: turbulence/figures/data/talk_logp_generated_<label>.npz (logp per generated signal, Theta(t = 1) and its
-file name).
+Output: turbulence/figures/data/talk_logp_generated_<label>[_seed<N>].npz (logp per generated signal, Theta(t = 1) and
+its file name, and the contribution of each family theta_F . phi_F(x) to log p, same keys as logp_C_*.npz + TOTAL).
 Usage (repo root, GPU node on Jean Zay):
     python turbulence/talk_logp_generated.py --label turbulence_ggd_mass_final
 """
@@ -16,6 +16,7 @@ import numpy as np
 import torch
 
 from logp_family_contrib import HERE, newest, find_theta, load_potentials, phi_matrix
+from check_potentials import theta_column_map                        # on sys.path once logp_family_contrib is imported
 from run_comparison import load_config
 
 
@@ -38,11 +39,16 @@ def main(label, seed, lam, ridge, eps):
     phi = phi_matrix(pots, xt)
     assert phi.shape[1] == theta.shape[0], (phi.shape, theta.shape)
     logp = phi @ theta
+    # contribution of each family to log p on the generated signals, same keys as logp_family_contrib.py (data)
+    cmap = theta_column_map(pots, theta.shape[0])
+    C = {k: phi[:, a:a + w] @ theta[a:a + w] for k, (a, w) in cmap.items()}
+    C['TOTAL'] = logp
+    assert np.allclose(sum(C[k] for k in cmap), logp, rtol=1e-8, atol=1e-6 * np.abs(logp).max())
 
     stag = '' if seed == 900 else f'_seed{seed}'                       # as logp_family_contrib.py
     out = HERE / 'figures' / 'data' / f'talk_logp_generated_{label}{stag}.npz'
     out.parent.mkdir(parents=True, exist_ok=True)
-    np.savez(out, logp=logp, theta=theta, theta_desc=desc, config=config)
+    np.savez(out, logp=logp, theta=theta, theta_desc=desc, config=config, **C)
     print(f'log p: median {np.median(logp):.4g}, min {logp.min():.4g}, max {logp.max():.4g}\n-> {out}')
 
 

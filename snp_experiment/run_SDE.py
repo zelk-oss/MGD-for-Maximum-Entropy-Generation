@@ -34,6 +34,7 @@ base = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(base)
 
 from snp_loader import load_snp_returns  # noqa: E402
+from codes.gauss_spectrum import replace_with_gaussian  # noqa: E402
 
 device = base.device
 
@@ -42,10 +43,14 @@ def parse_args():
     pre = argparse.ArgumentParser(add_help=False)
     pre.add_argument('--n_particles', type=int, default=None,
                      help='walkers = interpolants (MGD paper: 100). Default: as many as data samples (here 1).')
+    pre.add_argument('--welch_nperseg', type=int, default=512,
+                     help='with --gauss_spectrum: Welch segment length for the S&P spectrum (Hann, 50%% overlap). '
+                          '0 = raw periodogram.')
     known, rest = pre.parse_known_args()
     sys.argv = [sys.argv[0]] + rest
     args = base.parse_args()
     args.n_particles = known.n_particles
+    args.welch_nperseg = known.welch_nperseg
     return args
 
 
@@ -90,7 +95,7 @@ def save_diagnostics_snp(x1, res, t, args, config, fig_dir, logger):
 
 def main():
     args = parse_args()
-    for flag in ('n1_spread', 'gauss_spectrum', 'potentials_from'):
+    for flag in ('n1_spread', 'potentials_from'):
         if getattr(args, flag, None):
             raise NotImplementedError(f'--{flag} is not wired in snp_experiment/run_SDE.py')
     if args.n1 != 1:
@@ -104,6 +109,9 @@ def main():
     # ---- data: one standardized series ----
     x1, raw, dates = load_snp_returns()
     x1 = x1.to(device)
+    gauss_S = None
+    if args.gauss_spectrum:     # x1 = ONE stationary Gaussian series with the Welch spectrum of the S&P (data seed 0)
+        x1, gauss_S = replace_with_gaussian(x1, seed=0, nperseg=args.welch_nperseg or None)
     B, channels, M = x1.shape
 
     config, exp_dir, fig_dir, potentials_dir, logger, loaded = base.resolve_or_setup_experiment_output(
@@ -119,6 +127,10 @@ def main():
                 M, dates[0].date(), dates[-1].date(), tuple(x1.shape), x1.std().item(), args.n_particles)
     with open(exp_dir / 'snp_dates.json', 'w') as f:
         json.dump([str(d.date()) for d in dates], f)
+    if gauss_S is not None:
+        torch.save({'S': gauss_S, 'data_seed': 0, 'welch_nperseg': args.welch_nperseg}, exp_dir / 'gauss_spectrum.pt')
+        logger.info('gauss_spectrum: x1 replaced by a Gaussian with the S&P Welch spectrum (nperseg %s, var %.4f)',
+                    args.welch_nperseg, x1.var().item())
 
     with base.logged_run(logger):
         filters, filters_Phi = base.return_Filters(M, args.J, 1, device=device, include_phi=True,

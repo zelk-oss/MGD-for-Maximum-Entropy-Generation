@@ -18,6 +18,7 @@ HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_DIR="$(cd "${HERE}/../.." && pwd)"
 
 MODEL="${MODEL:?set MODEL=M0|M1|M2|M3}"
+[ "${L6:-0}" = "1" ] && LABEL_SUFFIX="${LABEL_SUFFIX:-_L6}"      # arms with L_6 (snp_models.sh L6=1): sign check with the L_6 block
 ARM="snp_${MODEL}${LABEL_SUFFIX}"
 SEED_LIST=(${SEEDS:-900 901 902 903 904})
 LAM_LIST=(${LAMS:-0 1e-6 1e-5 1e-4 5e-4 1e-3 1e-2 1e-1 1})
@@ -39,7 +40,7 @@ echo "  systems: ${REG_SYSTEM_DIR}/*seed_<seed>_*.pt  ->  ${OUTDIR}   | ${GPU}, 
 if [ -n "${DRY}" ]; then echo "(dry run: nothing submitted)"; exit 0; fi
 mkdir -p "${OUTDIR}" "${LOGDIR}"
 
-JOB=$(sbatch --parsable ${DEPEND:+--dependency=aftercorr:${DEPEND} --kill-on-invalid-dep=yes} <<EOT
+JOB=$(sbatch --parsable ${QOS:+--qos=${QOS}} ${DEPEND:+--dependency=aftercorr:${DEPEND} --kill-on-invalid-dep=yes} <<EOT
 #!/bin/bash
 #SBATCH --job-name=snp_thetareg_${ARM}
 #SBATCH --array=0-$(( ${#SEED_LIST[@]} - 1 ))
@@ -65,7 +66,7 @@ fi
 echo "seed \${SEED}: \${FILES[0]}"
 python -u codes/resolve_theta_reg.py "\${FILES[0]}" --lams ${LAM_LIST[@]} \
     --ridge ${RIDGE} --schedule uniform --mask auto --diagnose 0 --outdir "${OUTDIR}"
-python -u snp_experiment/check_sign.py --model ${MODEL} --J 6 "${OUTDIR}"/*seed_\${SEED}_*/lam*.pt
+python -u snp_experiment/check_sign.py --model ${MODEL} --J 6 $([ "${L6:-0}" = "1" ] && echo --l6) "${OUTDIR}"/*seed_\${SEED}_*/lam*.pt
 EOT
 )
 if [ -z "${JOB}" ]; then echo "Error: sbatch returned no job id"; exit 1; fi

@@ -43,13 +43,15 @@ from paper_figures import STYLE, COLOR_1, LS_DATA, LS_SYNTH, _to_np, _apply_styl
 
 TAU_ETA = 2.1e-2 / 2.25e-3     # Kolmogorov time in samples (Li et al. Table 1), ~ 9.33
 MAX_LAG = 1024                 # paper's zeta grid: tau = 1 .. 1024
-ORDERS = (2, 4, 6, 8)          # even orders only (odd S_p ~ 0 by symmetry, as in the paper)
+# S_p = <|delta_tau x|^p>. Even orders as the paper; odd / non-integer orders (Valadao's slides) use |delta x|, so they
+# are moments of |delta x|, not the signed moments (those vanish for a symmetric PDF). Appended: indices of 2..8 unchanged.
+ORDERS = (2, 4, 6, 8, 4.5, 5, 5.5, 6.5)
 BAND_ALPHA = 0.3
 
 
 # ------------------------------------------------------------ moments cache ----
 class PerSampleMomentCache:
-    """Per-trajectory increment moments m[b, p, tau] = mean_t (delta_tau x_b)^p, for ORDERS.
+    """Per-trajectory increment moments m[b, p, tau] = mean_t |delta_tau x_b|^p, for ORDERS.
 
     Batch statistics are means of m over a subset of rows (every row has the same number of
     pairs at a given lag), so the whole set and every batching come from one pass over the lags.
@@ -71,7 +73,8 @@ class PerSampleMomentCache:
             for i, tau in enumerate(taus):
                 d2 = (x[..., tau:] - x[..., :-tau]) ** 2
                 for j, p in enumerate(ORDERS):
-                    m[:, j, i] = (d2 ** (p // 2)).mean(dim=(1, 2))
+                    e = p // 2 if p % 2 == 0 else p / 2          # integer power for even p (as before), |d|^p = (d^2)^(p/2) else
+                    m[:, j, i] = (d2 ** e).mean(dim=(1, 2))
             self.cache[key] = (data, taus, m.cpu().numpy())
         return self.cache[key][1], self.cache[key][2]
 

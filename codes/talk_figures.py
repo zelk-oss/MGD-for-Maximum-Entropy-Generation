@@ -34,13 +34,18 @@ def set_output(folder):
 def _save(fig, name):
     """Save as PNG, then show it in the notebook as an image: works with any matplotlib backend (Agg included, which
     other modules may have selected at import) and never twice (the figure is closed)."""
+    import io
     if _OUT is not None:
         fig.savefig(_OUT / f'{name}.png')
     try:
         from IPython import get_ipython
-        from IPython.display import display
+        from IPython.display import Image, display
         if get_ipython() is not None:
-            display(fig)
+            # PNG bytes, not display(fig): a Figure is only rendered as an image when the inline backend registered its
+            # formatter (%matplotlib inline); under Agg it would print '<Figure size ...>'
+            buf = io.BytesIO()
+            fig.savefig(buf, format='png')
+            display(Image(data=buf.getvalue()))
     finally:
         plt.close(fig)
 
@@ -256,9 +261,12 @@ def _top_legend(fig, ax, ncol=2):
     fig.legend(h, l, loc='upper center', ncol=ncol, bbox_to_anchor=(0.5, 1.0))
 
 
-def _curve(ax, t, y, lo, hi, color, label):
+MK_D, MK_M = 'o', 'x'      # markers on lag curves: one per computed lag (data / model); lines between them = interpolation
+
+
+def _curve(ax, t, y, lo, hi, color, label, marker=None):
     ax.fill_between(t, lo, hi, color=color, alpha=0.12, lw=0)
-    ax.plot(t, y, color=color, label=label)
+    ax.plot(t, y, color=color, label=label, marker=marker, ms=3.5, mew=1.0)
 
 
 def plot_increment_pdfs(data, model, tau_eta, name, tau_ratios=(1, 2, 5), shift_decades=3, n_bins=161,
@@ -468,8 +476,8 @@ def plot_structure_functions(data, model, tau_eta, max_lag, name, orders=(2, 4, 
     fig, ax = plt.subplots(figsize=(6.5, 6))
     for k, p in enumerate(orders):
         sh = 10.0 ** (-shift_decades * k)
-        _curve(ax, t, yd[k] * sh, ld[k] * sh, hd[k] * sh, DATA, lab_d if k == 0 else None)
-        _curve(ax, t, ym[k] * sh, lm[k] * sh, hm[k] * sh, MODEL, lab_m if k == 0 else None)
+        _curve(ax, t, yd[k] * sh, ld[k] * sh, hd[k] * sh, DATA, lab_d if k == 0 else None, MK_D)
+        _curve(ax, t, ym[k] * sh, lm[k] * sh, hm[k] * sh, MODEL, lab_m if k == 0 else None, MK_M)
         ax.text(t[-1] * 1.08, yd[k][-1] * sh, f'$p = {p}$', va='center', fontsize=15)
     ax.set_xscale('log')
     ax.set_yscale('log')
@@ -487,14 +495,39 @@ def plot_flatness(data, model, tau_eta, max_lag, name, orders=(4, 6, 8), n_batch
     t = taus / tau_eta
     fig, ax = plt.subplots(figsize=(6.5, 6))
     for k, p in enumerate(orders):
-        _curve(ax, t, yd[k], ld[k], hd[k], DATA, lab_d if k == 0 else None)
-        _curve(ax, t, ym[k], lm[k], hm[k], MODEL, lab_m if k == 0 else None)
+        _curve(ax, t, yd[k], ld[k], hd[k], DATA, lab_d if k == 0 else None, MK_D)
+        _curve(ax, t, ym[k], lm[k], hm[k], MODEL, lab_m if k == 0 else None, MK_M)
         ax.text(t[-1] * 1.08, yd[k][-1], f'$p = {p}$', va='center', fontsize=15)
     ax.set_xscale('log')
     ax.set_yscale('log')
     ax.set_xlabel(r'$\tau / \tau_\eta$')
     ax.set_ylabel(r'$F_p(\tau) = S_p / S_2^{\,p/2}$')
     _top_legend(fig, ax)
+    _save(fig, name)
+
+
+def plot_compensated_sf(data, model, tau_eta, max_lag, name, orders=(4, 4.5, 5, 5.5, 6, 6.5), n_batches=10, band=None,
+                        ncol=3):
+    """S_p^(2/p) / S_2 = F_p^(2/p), S_p = <|delta_tau x|^p>, one panel per order (Valadao's slides, p. 4); dotted: the
+    Gaussian value (2^(p/2) Gamma((p+1)/2) / sqrt(pi))^(2/p) (sqrt 3 for p = 4). Bands as plot_structure_functions."""
+    from math import gamma, pi, sqrt
+    from paper_figures_li import _flat
+    f = lambda S, t: np.stack([_flat(S, p) ** (2 / p) for p in orders])
+    taus, lab_d, lab_m, (yd, ld, hd), (ym, lm, hm) = _li_curves(data, model, f, n_batches, max_lag, band, positive=True)
+    t = taus / tau_eta
+    nrow = int(np.ceil(len(orders) / ncol))
+    fig, axes = plt.subplots(nrow, ncol, figsize=(5 * ncol, 4.2 * nrow), squeeze=False)
+    for k, (ax, p) in enumerate(zip(axes.flat, orders)):
+        _curve(ax, t, yd[k], ld[k], hd[k], DATA, lab_d, MK_D)
+        _curve(ax, t, ym[k], lm[k], hm[k], MODEL, lab_m, MK_M)
+        ax.axhline((2 ** (p / 2) * gamma((p + 1) / 2) / sqrt(pi)) ** (2 / p), color=GREY, ls=':', lw=1.6)
+        ax.set_xscale('log')
+        ax.set_xlabel(r'$\tau / \tau_\eta$')
+        ax.set_title(rf'$p = {p:g}$')
+        ax.set_ylabel(rf'$S_{{{p:g}}}^{{2/{p:g}}} / S_2$')
+    for ax in list(axes.flat)[len(orders):]:
+        ax.axis('off')
+    _top_legend(fig, axes.flat[0])
     _save(fig, name)
 
 
@@ -507,8 +540,8 @@ def plot_local_exponents(data, model, tau_eta, max_lag, name, orders=(4, 6, 8), 
     t = taus / tau_eta
     fig, axes = plt.subplots(1, len(orders), figsize=(5 * len(orders), 4.5))
     for k, (ax, p) in enumerate(zip(np.atleast_1d(axes), orders)):
-        _curve(ax, t, yd[k], ld[k], hd[k], DATA, lab_d)
-        _curve(ax, t, ym[k], lm[k], hm[k], MODEL, lab_m)
+        _curve(ax, t, yd[k], ld[k], hd[k], DATA, lab_d, MK_D)
+        _curve(ax, t, ym[k], lm[k], hm[k], MODEL, lab_m, MK_M)
         ax.axhline(p / 2, color=GREY, ls=':', lw=1.6)
         ax.set_ylim(p / 4, 1.1 * p / 2)
         ax.set_xscale('log')
@@ -1243,6 +1276,46 @@ def plot_logp_widths(sets, name, bins=40, colors=None):
     return stds
 
 
+def plot_logp_overlay(sets, name, bins=40, colors=None, chi2_dof=None):
+    """-log10 p / d histograms of several datasets on ONE axis (concentration of -log p of the generated signals:
+    real data model vs an exactly Gaussian data set). sets: {label: (nlp, d)}, nlp = -log p in nats of the generated
+    signals, (seeds, signals) or (signals,); d = signal length. Same convention as plot_logp_widths: each seed centred
+    on its own mean (log p is known up to a constant), nats -> log10 per point (neglogp_scale(d)), density (unit area),
+    log y. All sets share the SAME bin edges (so the heights are comparable); the std of each is in the legend
+    (in log10 per point and in nats). No axis labels (stated in the caption / by the speaker)."""
+    cols = colors or [MODEL, '#e8a33d', RARE, GREY]
+    vals, nats = {}, {}
+    for lab, (nlp, d) in sets.items():
+        a = np.atleast_2d(np.asarray(nlp, dtype=np.float64))
+        centred = a - a.mean(1, keepdims=True)
+        vals[lab] = (centred * neglogp_scale(d)).ravel()
+        nats[lab] = float(centred.std())
+    lo = min(v.min() for v in vals.values()); hi = max(v.max() for v in vals.values())
+    edges = np.linspace(lo, hi, bins + 1)
+    fig, ax = plt.subplots(figsize=(9, 5.5))
+    for (lab, v), col in zip(vals.items(), cols):
+        ax.hist(v, edges, density=True, color=col, alpha=0.30)
+        ax.hist(v, edges, density=True, histtype='step', color=col, lw=1.8,
+                label=f'{lab}: std {v.std():.3g} ({nats[lab]:.0f} nats)')
+    if chi2_dof:
+        # exact Gaussian: -ln p = chi2_k / 2 + const (k = d real dimensions), so with the centring (mean 0) and the
+        # nats -> log10-per-point factor c, v = (chi2 - k) * c / 2, chi2 = k + 2 v / c, density_v = pdf_chi2 * 2 / c
+        k = chi2_dof
+        c = neglogp_scale(next(iter(sets.values()))[1])
+        xs = np.linspace(lo, hi, 600)
+        ax.plot(xs, stats.chi2.pdf(k + 2 * xs / c, k) * 2 / c, color=DATA, ls='--', lw=1.8,
+                label=rf'$\chi^2$, {k} dof (exact Gaussian): std {np.sqrt(k / 2) * c:.3g} ({np.sqrt(k / 2):.0f} nats)')
+    ax.set_yscale('log')
+    H = [np.histogram(v, edges, density=True)[0] for v in vals.values()]      # y range = the histograms, not the
+    ax.set_ylim(0.5 * min(h[h > 0].min() for h in H), 2.0 * max(h.max() for h in H))   # far tail of the chi2 curve
+    ax.legend(loc='lower left', bbox_to_anchor=(0.0, 1.02), ncol=1, borderaxespad=0, handlelength=1.4, fontsize=12)
+    fig.tight_layout()
+    _save(fig, name)
+    print('std of -log10 p / d (nats in brackets):',
+          {k: (round(float(v.std()), 5), round(nats[k], 1)) for k, v in vals.items()})
+    return {k: float(v.std()) for k, v in vals.items()}
+
+
 def plot_logp_gaussian(npz, name, seed_index=0, bins=80, n_scatter=3000):
     """-log p for the Gaussian with the data spectrum (gauss_spectrum/, all_seeds.npz of logp_gauss_scat2.py; the npz
     stores +log p, negated here). Left: on the Gaussian training signals, the exact (black) and the MGD (blue), each relative to the
@@ -1488,14 +1561,14 @@ def _fig6_panel(ax, st, key, tau_eta=None, shift_decades=1.0, legend=False):
     pos = lambda c: tuple(np.where(v > 0, v, np.nan) for v in c)
     clip = lambda c, f: (c[0], np.maximum(c[1], f * c[0]), c[2])            # band floor on log axes
 
-    def pair(x, dd, mm):
-        _curve(ax, x, *dd, DATA, st['lab_d'])
-        _curve(ax, x, *mm, MODEL, st['lab_m'])
+    def pair(x, dd, mm, points=True):                           # points: markers at the computed lags
+        _curve(ax, x, *dd, DATA, st['lab_d'], MK_D if points else None)
+        _curve(ax, x, *mm, MODEL, st['lab_m'], MK_M if points else None)
 
     if key == 'marg':
         b = st['bins']
         c = 0.5 * (b[1:] + b[:-1])
-        pair(c, pos(D), pos(clip(Mo, 1e-2)))
+        pair(c, pos(D), pos(clip(Mo, 1e-2)), points=False)
         keep = c[(D[0] > pfe.Y_FLOOR) | (Mo[0] > pfe.Y_FLOOR)]
         pad = 0.05 * (keep.max() - keep.min())
         ax.set_xlim(keep.min() - pad, keep.max() + pad)
@@ -1506,7 +1579,7 @@ def _fig6_panel(ax, st, key, tau_eta=None, shift_decades=1.0, legend=False):
     elif key == 'psd':
         om = np.fft.rfftfreq(T)
         k = (om > 0) & (om <= pfe.OMEGA_MAX)
-        pair(om[k], tuple(v[k] for v in D), tuple(v[k] for v in clip(Mo, 1e-2)))
+        pair(om[k], tuple(v[k] for v in D), tuple(v[k] for v in clip(Mo, 1e-2)), points=False)
         ax.set_xscale('log'); ax.set_yscale('log')
         ax.set_xlabel(r'$\omega$ (cycles / sample)')
         ax.set_ylabel('power spectrum')
@@ -1514,8 +1587,8 @@ def _fig6_panel(ax, st, key, tau_eta=None, shift_decades=1.0, legend=False):
         t = np.arange(1, max_tau) / u
         for i, p in enumerate(pfe.SF_ORDERS):
             sh = 10.0 ** (-shift_decades * i)
-            _curve(ax, t, *(v[i] * sh for v in D), DATA, st['lab_d'] if i == 0 else None)
-            _curve(ax, t, *(v[i] * sh for v in clip(Mo, 1e-2)), MODEL, st['lab_m'] if i == 0 else None)
+            _curve(ax, t, *(v[i] * sh for v in D), DATA, st['lab_d'] if i == 0 else None, MK_D)
+            _curve(ax, t, *(v[i] * sh for v in clip(Mo, 1e-2)), MODEL, st['lab_m'] if i == 0 else None, MK_M)
             ax.text(t[0] * 0.85, D[0][i][0] * sh, f'$p = {p}$', ha='right', va='center', fontsize=15)
         ax.set_xscale('log'); ax.set_yscale('log')
         ax.set_xlim(t[0] * 0.25, None)                                   # room for the p labels on the left

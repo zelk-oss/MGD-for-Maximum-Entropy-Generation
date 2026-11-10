@@ -7,7 +7,9 @@
 #   M1  M0 + scalar Morlet (Scalar_morlet_gaussianK, Q=1 bank)
 #   M2  scat1 + scat2 + scalar
 #   M3  scat1 + scat2
-# No L_6, no Q=3 bank, no raw-signal marginal. scat2 keeps the low-pass (Morel / MGD convention).
+# L6=1 adds the L_6 confinement potential (L2p_norm(3), J+1 = 7 columns, FIRST in Theta) and the default label suffix _L6
+# (arms snp_M0_L6, snp_M1_L6: the Eulerian-turbulence construction; Theta_reg then needs the L_6<0 gate, snp_chain_l6.sh).
+# Without L6: no L_6 (the first four arms, unconstrained). No Q=3 bank, no raw-signal marginal. scat2 keeps the low-pass (Morel / MGD convention).
 # Conventions = Morel's scat_spectra on this series at J=6 (checked by running their analyze(): 1+6+7+27+56 complex
 # coefficients): scat3 = Scattering_Third_Order_Real/Imag (27: diagonal j=k and low-pass column included; its Imag
 # low-pass columns are identically zero and are switched off by the live/dead mechanism), scat4 WITH the real
@@ -43,9 +45,17 @@ case "${MODEL}" in
     M1) TERMS=(${SCAT1} ${SCAT2} ${SCAT3} ${SCAT4} ${SCALAR}) ;;
     M2) TERMS=(${SCAT1} ${SCAT2} ${SCALAR}) ;;
     M3) TERMS=(${SCAT1} ${SCAT2}) ;;
-    *) echo "MODEL must be M0|M1|M2|M3"; exit 1 ;;
+    M4) TERMS=(${SCAT2}) ;;       # scat2 only (Scattering_Second_Order_Q1), as the earlier Gaussian-spectrum runs
+    *) echo "MODEL must be M0|M1|M2|M3|M4"; exit 1 ;;
 esac
 
+# GAUSS=1: x1 = ONE Gaussian series with the Welch spectrum of the S&P (Hann segments WELCH_NPERSEG, default 512),
+# data seed 0 (same x1 for all seeds); label suffix _gauss (arm snp_M4_gauss). Use with MODEL=M4.
+if [ "${GAUSS:-0}" = "1" ]; then
+    GAUSS_SPECTRUM=true; WELCH_NPERSEG="${WELCH_NPERSEG:-512}"; LABEL_SUFFIX="${LABEL_SUFFIX:-_gauss}"
+fi
+
+if [ "${L6:-0}" = "1" ]; then TERMS=(L_6 "${TERMS[@]}"); LABEL_SUFFIX="${LABEL_SUFFIX:-_L6}"; fi
 EXP_NAME="snp_${MODEL}${LABEL_SUFFIX}"
 LABEL="${EXP_NAME}"
 SEED_LIST=(${SEEDS:-900 901 902 903 904})

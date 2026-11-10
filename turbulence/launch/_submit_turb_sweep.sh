@@ -92,6 +92,7 @@ EXTRA_FLAGS=""
 [ -n "${POTENTIALS_FROM}" ] && EXTRA_FLAGS+=" --potentials_from ${POTENTIALS_FROM}"
 [ "${GAUSS_SPECTRUM}" = "true" ] && EXTRA_FLAGS+=" --gauss_spectrum"
 [ -n "${N_PARTICLES}" ] && EXTRA_FLAGS+=" --n_particles ${N_PARTICLES}"   # snp_experiment/run_SDE.py only
+[ -n "${WELCH_NPERSEG}" ] && EXTRA_FLAGS+=" --welch_nperseg ${WELCH_NPERSEG}"   # snp_experiment/run_SDE.py only (with --gauss_spectrum)
 [ -n "${EXTRA_CORRECTOR_MAX}" ] && EXTRA_FLAGS+=" --extra_corrector_max ${EXTRA_CORRECTOR_MAX} --extra_corrector_tau ${EXTRA_CORRECTOR_TAU:-1.0} --extra_corrector_tail ${EXTRA_CORRECTOR_TAIL:-0.1}"
 [ -n "${GGD_TAIL_QUANTILE}" ]     && EXTRA_FLAGS+=" --ggd_tail_quantile ${GGD_TAIL_QUANTILE}"
 [ -n "${GGD_NUM_REGIONS}" ]       && EXTRA_FLAGS+=" --ggd_num_regions ${GGD_NUM_REGIONS}"

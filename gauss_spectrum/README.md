@@ -25,6 +25,13 @@ a mixture of Gaussians). S is saved to `<exp_dir>/gauss_spectrum.pt`; the exact 
 
 Theta_reg offline from the saved systems, same lambda / ridge for both data sets (lambda 5e-4,
 ridge 1e-4 as `turbulence_final_gauss_scat2`). Then log p = Theta_reg(t_end) . phi(x) on model
-samples and on x1, compared with the exact log p (analysis script: to be written once runs exist).
+samples and on x1, compared with the exact log p.
+
+Entropy check (2026-11-06): `turbulence/logz_gauss_benchmark.py`, per seed:
+(1) MGD H_bound(t) vs the exact H(p_t) of the Gaussian interpolant marginal (`codes/utils_entropy.compute_gaussian_entropy`,
+upstream-corrected version); (2) log Z exact (Fourier) vs the MGD bound H_bound + theta_end . m(t_end), theta_end =
+Theta_reg[-1] or theta_t[-1]; (3) E[-log p] = log Z - mean(Theta_reg . phi) on data / generated, each log Z, vs H(p_1).
+Outputs `logz_benchmark.csv`, `path_seed*.npz`. Sigma sweep: `launch_sigma_sweep.sh` (nt = max(2000, 300 sigma^2),
+36 runs: SDE + Theta_reg per task, then `finish_sigma_sweep.sh` -> benchmark per group + `sigma_sweep_summary.py`).
 
 Smoke-tested locally 2026-11-03 (n1 40, nt 20): both entry points run, S saved, name tag `gaussspec`.

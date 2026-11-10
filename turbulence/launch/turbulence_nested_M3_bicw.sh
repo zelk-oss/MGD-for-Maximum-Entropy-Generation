@@ -29,6 +29,8 @@
 #   ONLY=bicw_rich RICH_TIME=18:00:00 CPUS=48 NGPUS=2 bash ...              # model C, full grid (~240 GB RAM)
 #   ONLY=bicw_allmass_scat4 NT=6000 N_BULK=1000 SCAT4_TIME=02:00:00 QOS=qos_gpu_h100-dev bash ...  # B+Scat4 timing
 #   ONLY=bicw_allmass_scat4 SEEDS="900 901 902 903 904" bash ...            # B+Scat4, 5 seeds (~18.6 h each)
+#   ONLY=bicw_allmass_scat4 SIGMA=6 NT=27500 N_BULK=2500 POTENTIALS_FROM=<run>/fitted_potentials bash ...
+#                                     # sigma x nt check of the entropy bound (2026-11-10), windows frozen
 
 LAUNCH_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
@@ -50,7 +52,7 @@ SUBSERIES_LEN=512
 TARGET_LEN=256
 J=8
 Q=3
-SIGMA=3.5
+SIGMA="${SIGMA:-3.5}"
 NT="${NT:-55000}"
 SCHEDULE_ARGS="--schedule two_phase --n_bulk ${N_BULK:-5000} --t_switch 0.9 --gap_end 5e-5"
 BATCH_SIZE=5000
@@ -91,6 +93,10 @@ MODULE_PRE="arch/h100"
 TAG=""
 [ "${BIC_C}" != "1" ] && TAG+="_C${BIC_C}"
 [ "${NOISE_REF_GAP}" != "1e-2" ] && TAG+="_gap${NOISE_REF_GAP}"
+# POTENTIALS_FROM (fitted_potentials/ dir of another run): reuse its windows instead of refitting. Needed when
+# sigma or nt change: the constrained-BIC window bound uses the run's own step noise, so a refit would change the
+# statistics (and the max-ent model). Label gets _pf so these runs are told apart from fitted ones.
+[ -n "${POTENTIALS_FROM:-}" ] && TAG+="_pf"
 
 for arm in ${ONLY}; do
     TERMS=("${BASE_TERMS[@]}"); GGD_TAIL_QUANTILE=0.99; GGD_NUM_REGIONS=""; DROP_STATS="${BASE_DROP_STATS}"
