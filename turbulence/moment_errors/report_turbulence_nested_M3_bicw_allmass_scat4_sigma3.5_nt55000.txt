@@ -1,0 +1,22 @@
+
+=== seed 900: turbulencesynth_M256_J8_Q3_sigma3.5_nt55000_n1_10000_lam0.0_thomas_nsub1_moment_f64_dedupfilt1e-08_seed_900_terms9296e719_turbulence_nested_M3_bicw_allmass_scat4_20261101_1714
+  n1=10000 M=256 J=8 Q=3 sigma=3.5 terms=['L_6', 'Scalar_psi_gaussianK', 'Scalar_morlet_gaussianK', 'Scattering_Fourth_Order_Mod2_Real_Q1', 'Scattering_Fourth_Order_Mod2_Imag_Q1']
+[deduplicate_filters] filters_Q: 25 -> 22 channels for channel-list potentials (dropped duplicates [21, 22, 23], tol=1e-08)
+  check: rebuilt phi on saved samples vs aux barphi_p: median rel 1.8e-07, max 1.0e-05
+1. 341 statistics at t=1 (miss: rel > 0.01); z median 0.67 under independent-sample noise
+  all       n= 341  rel mean 5.03e-04 median 1.14e-07 p90 9.29e-05 max 3.70e-02 | z median 2.3e-06 | sign persistence (1-t<1e-2) median 62%
+  matched   n= 336  rel mean 1.03e-04 median 1.12e-07 p90 7.95e-05 max 6.72e-03 | z median 2.2e-06 | sign persistence (1-t<1e-2) median 61%
+  missed    n=   5  rel mean 2.74e-02 median 3.16e-02 p90 3.62e-02 max 3.70e-02 | z median 4.4 | sign persistence (1-t<1e-2) median 72%
+2. Ito term, 192 Scalar statistics (Spearman of |I_n| with rel_n across statistics):
+   1-t= 1e-2 h=1.52e-06: Spearman +0.74 (p 7e-35); |I| median missed 1.81e+01 vs matched 1.26e-04
+   1-t= 1e-3 h=1.52e-07: Spearman +0.74 (p 7e-35); |I| median missed 1.81e+00 vs matched 1.26e-05
+   1-t=  end h=7.60e-09: Spearman +0.74 (p 7e-35); |I| median missed 9.07e-02 vs matched 6.29e-07
+   sign(p - e) == sign(I) for 100% of the 5 missed Scalar statistics
+3. missed statistics (peak/onset along the run; I = Ito term / |e| at 1-t = 1e-2, 1e-3, end)
+stat                                rel    p/e      z persist     peak     @1-t onset 1-t   I(1e-2)   I(1e-3)    I(end)
+Scalar_psi_gaussianK[34]       3.70e-02  1.037     10     72% 3.43e-01  1.0e+00   1.0e+00  1.29e+02  1.29e+01  6.47e-01
+Scalar_psi_gaussianK[78]       3.50e-02  1.035      1     62% 2.24e+00  4.5e-04   5.3e-03  1.62e+01  1.62e+00  8.12e-02
+Scalar_psi_gaussianK[56]       3.16e-02  1.032      1     63% 2.25e+00  4.7e-04   5.2e-03  1.48e+01  1.48e+00  7.39e-02
+Scalar_psi_gaussianK[35]       1.72e-02  1.017      5     73% 5.09e-01  1.0e-01   1.0e+00  7.14e+01  7.14e+00  3.57e-01
+Scalar_morlet_gaussianK[8]     1.63e-02  1.016      4     74% 6.18e-02  3.2e-04   9.9e-01  1.81e+01  1.81e+00  9.07e-02
+  wrote /lustre/fswork/projects/rech/wbg/ukv59en/MGD-for-Maximum-Entropy-Generation/turbulence/moment_errors/turbulencesynth_M256_J8_Q3_sigma3.5_nt55000_n1_10000_lam0.0_thomas_nsub1_moment_f64_dedupfilt1e-08_seed_900_terms9296e719_turbulence_nested_M3_bicw_allmass_scat4_20261101_1714.csv (341 statistics)

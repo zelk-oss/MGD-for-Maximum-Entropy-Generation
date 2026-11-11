@@ -23,6 +23,9 @@ experiments/<group>/<config>/{config.json,fitted_potentials/}. Data: TURBULENCE_
 Usage (repo root on Jean Zay; CPU is enough, a few minutes per n1=10000 run):
     python turbulence/moment_error_variance.py --label turbulence_ggd_mass_L6_2b --seeds 900
     python turbulence/moment_error_variance.py --label turbulence_nested_M2 --seeds 900 901 902 903 904
+One run of a sweep + a per-statistic CSV of all statistics (2026-11-11):
+    python turbulence/moment_error_variance.py --label turbulence_nested_M3_bicw_allmass_scat4_pf \\
+        --config _sigma3.5_ _nt27500_ --dump turbulence/moment_errors
 """
 import argparse
 import json
@@ -81,12 +84,16 @@ def scalar_laplacian(pt, x, batch=250):
     return torch.cat(out).numpy()
 
 
-def analyse(label, seed, root, with_ito=True):
-    """All per-statistic quantities of one run (dict of arrays + metadata)."""
+def analyse(label, seed, root, with_ito=True, config=None):
+    """All per-statistic quantities of one run (dict of arrays + metadata).
+    config: optional substring (e.g. '_nt27500_') the run folder name must contain, to pick one run
+    when a label holds several (sigma / nt sweeps)."""
     res = root / 'saved_results'
     # newest run folder of this label/seed that has results (pre-flight-only runs share the label)
     exps = sorted((root / 'experiments').glob(f'*/*_seed_{seed}_*{label}_2*'), key=lambda f: f.stat().st_mtime)
     exps = [x for x in exps if (res / 'aux_moments' / f'{x.name}_aux_moments.pt').exists()]
+    if config:
+        exps = [x for x in exps if all(c in x.name for c in config)]
     if not exps:
         raise FileNotFoundError(f'no run of {label} seed {seed} with aux_moments under {root}')
     exp = exps[-1]
@@ -160,8 +167,27 @@ def analyse(label, seed, root, with_ito=True):
             lap = scalar_laplacian(pots[name], xs).mean(0)
             sl = slice(start[name], start[name] + len(lap))
             ito[sl] = np.outer(lap / np.abs(e[sl]).clip(1e-300), [hv * sigma ** 2 for hv in h_at.values()])
-    return dict(seed=seed, names=names, e=e, p=p, d=d, rel=np.abs(d), z=np.abs(p - e) / se.clip(1e-300),
+    return dict(seed=seed, cfg=cfg, sigma=sigma, nt=a.get('nt'), names=names, e=e, p=p, d=d, rel=np.abs(d),
+                z=np.abs(p - e) / se.clip(1e-300),
                 rel_t=np.abs(d_t), g_rows=1.0 - t_rows, persist=persist, ito=ito, h_at=h_at)
+
+
+def dump_csv(r, outdir):
+    """One row per statistic (all of them, not only the misses) -> <outdir>/<config>.csv."""
+    outdir.mkdir(parents=True, exist_ok=True)
+    f = outdir / f"{r['cfg']}.csv"
+    rel_t, g = r['rel_t'], r['g_rows']
+    jp = rel_t[1:].argmax(0) + 1                                  # step of the peak error along the run
+    cols = ['index', 'name', 'target_e', 'generated_p', 'd_signed', 'rel', 'z', 'persist_sign',
+            'peak_rel', 'peak_at_1mt', 'ito_1e-2', 'ito_1e-3', 'ito_end']
+    with open(f, 'w') as fh:
+        fh.write(f"# {r['cfg']}  sigma={r['sigma']} nt={r['nt']} seed={r['seed']}  rel=|p-e|/|e| at t=1\n")
+        fh.write(','.join(cols) + '\n')
+        for i, nm in enumerate(r['names']):
+            row = [i, nm, r['e'][i], r['p'][i], r['d'][i], r['rel'][i], r['z'][i], r['persist'][i],
+                   rel_t[jp[i], i], g[jp[i]], *r['ito'][i]]
+            fh.write(','.join(str(v) if isinstance(v, (int, str)) else f'{float(v):.6e}' for v in row) + '\n')
+    print(f'  wrote {f} ({len(r["names"])} statistics)')
 
 
 def report(r):
@@ -238,10 +264,16 @@ if __name__ == '__main__':
     ap.add_argument('--root', type=Path, default=HERE,
                     help='folder holding experiments/ and saved_results/ (default: turbulence/)')
     ap.add_argument('--full', type=int, default=1, help='number of seeds that also get the Ito term (slowest part)')
+    ap.add_argument('--config', nargs='+', default=None,
+                    help='substrings the run folder name must all contain, e.g. _sigma3.5_ _nt27500_')
+    ap.add_argument('--dump', type=Path, default=None,
+                    help='folder for a per-statistic CSV of every analysed run (all statistics, not only misses)')
     a = ap.parse_args()
     runs = []
     for i, s in enumerate(a.seeds):
-        runs.append(analyse(a.label, s, a.root, with_ito=i < a.full))
+        runs.append(analyse(a.label, s, a.root, with_ito=i < a.full, config=a.config))
         report(runs[-1])
+        if a.dump:
+            dump_csv(runs[-1], a.dump)
     if len(runs) > 1:
         across_seeds(runs)
