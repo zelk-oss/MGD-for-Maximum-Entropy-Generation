@@ -10,27 +10,21 @@
 # Execution environment
 
 All actual computation runs on Jean Zay (SLURM cluster) — this machine only
-has CPU. `run_jet_SDE.py`/`run_SDE.py` are the entry points, submitted as
-SLURM jobs; `.out`/`.err` land wherever the job script directs them, but
-that script isn't tracked in this repo. Don't assume a specific launch
-script or invocation exists — ask for the exact submission command if you
-need it rather than guessing one.
+has CPU. Jobs are submitted by the launchers in `*/launch/*.sh` (and a few
+`*/launch_*.sh`), run with `bash <launcher>` from the repo root on JZ with
+settings as environment variables (`GPU=v100|h100`, `QOS=`, `TIME=`,
+`SEEDS=`, ...); SLURM logs go to `<experiment>/saved_results/logs/`. Read the
+launcher's header for its options before using it.
 
-## Local runs: smoke tests only, never full experiments
+## Smoke tests run on JZ, not locally (since 2026-11-10)
 
-Claude may run `run_jet_SDE.py`/`run_SDE.py` (any of the four entry points)
-locally, or execute a notebook that calls into them (e.g. via `jupyter
-nbconvert --execute`), **only as a smoke test** — the sole purpose is
-confirming the code path runs without error, not producing a numerically
-meaningful result. Concretely: tiny values (`n1`/`M` in the tens to low
-hundreds, `nt` in the tens, a single seed, at most 1-2 points in any swept
-parameter) and a runtime of well under a minute. Never size a local run to
-actually be informative about the science (real `n1`/`nt`/sweep sizes,
-multi-seed sweeps, multi-minute runtimes) — that's a full experiment, and
-full experiments only run on Jean Zay via SLURM, regardless of whether this
-machine is technically fast enough to finish them locally. If it's unclear
-whether a given size counts as a smoke test, ask before running rather than
-guessing.
+The user wants local computing kept to a minimum. Locally: only syntax/import
+checks (`python -m py_compile`). Smoke tests of the entry points or launchers
+run on JZ as a 15-min dev job with tiny sizes (`n1`/`M` in the tens to low
+hundreds, `nt` in the tens, one seed), through `~/scripts/jz_submit` and with
+the user's approval (see the Jean Zay section of `~/.claude/CLAUDE.md`).
+Never size a smoke job to be informative about the science. If it is unclear
+whether a size counts as a smoke test, ask.
 
 # Conventions
 
@@ -48,13 +42,14 @@ run passed unless you actually executed it and saw the output yourself.
 
 # Cluster access
 
-This session has no execution access to Jean Zay or Lamsade. `ssh`, `scp`,
-`rsync`, SLURM commands (`sbatch`, `scancel`, `squeue`), and the `push`/
-`pull`/`pull_results` scripts in `~/scripts/` are all blocked by permission
-rules — attempting them will be refused, not just prompted.
+Since 2026-11-10 Claude reaches Jean Zay ONLY through the `~/scripts/jz_*`
+wrappers, with the limits and rules in the "Jean Zay" section of
+`~/.claude/CLAUDE.md`. Direct `ssh`/`scp`/`rsync`, SLURM commands, and the
+user's own `push`/`pull`/`pull_results` scripts stay blocked. Lamsade stays
+blocked.
 
-When something needs to happen on the cluster — fetching results, pushing
-code, submitting or cancelling a job — output the exact command in a
+When something is outside what the wrappers allow (a job above the limits,
+a pull above 30 MB, a deletion, Lamsade), output the exact command in a
 copy-pasteable block and stop there.
 
 Format every command the user must run (cluster or local) so it stands out:

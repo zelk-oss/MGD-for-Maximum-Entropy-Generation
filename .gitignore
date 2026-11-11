@@ -51,3 +51,6 @@ venv/
 # --- Experiment tracking, if ever used ---
 wandb/
 events.out.tfevents.*
+
+# Windows download markers
+*:Zone.Identifier
