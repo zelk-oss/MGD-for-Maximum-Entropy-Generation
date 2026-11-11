@@ -117,6 +117,15 @@ def parse_args():
                    help='with --neg_cols: cap on active-set iterations (one Thomas solve each)')
     p.add_argument('--neg_method', choices=['pnewton', 'exact', 'add_only'], default='pnewton',
                    help='with --neg_cols: bound loop (codes/theta_reg_bounds.py)')
+    p.add_argument('--c_floor_eps', nargs='+', type=float, default=[0.0],
+                   help='method A (moment mode): floor eps*M_cell on C and mdot -> C (C + eps M)^-1 mdot per '
+                        'cell (SDE._solve_regularised_thomas). One solve per (lam, eps). eps in the units of the '
+                        'generalised eigenvalues mu of C v = mu M v (codes/c_spectrum_gen.py). 0 = unchanged, '
+                        'same file name as before; eps > 0 adds _cfl<eps> to the name.')
+    p.add_argument('--node_stride', type=int, default=1,
+                   help='keep every m-th node (plus the last) before the solve: cells then span m steps, so the '
+                        'directions of C filled by one step of SDE noise (mu ~ 2 h sigma^2) move to ~2 m h sigma^2. '
+                        'Grid-dependence test (2026-11-11). 1 = all nodes, unchanged; m > 1 adds _stride<m> to the name.')
     p.add_argument('--mmap', action='store_true',
                    help='torch.load(..., mmap=True): the system stays file-backed instead of copied '
                         'into RAM (same numbers)')
@@ -272,6 +281,23 @@ def build_inputs(system, config, args, mode):
     return inp
 
 
+def stride_inputs(inp, m):
+    """Keep nodes 0, m, 2m, ... and the last one. Per-node blocks stay lazy views (mmap-friendly lists)."""
+    n = len(inp['t'])
+    idx = list(range(0, n, m))
+    if idx[-1] != n - 1:
+        idx.append(n - 1)
+    out = dict(inp)
+    out['t'] = inp['t'][idx]
+    for key in ('M', 'C', 'b', 'v'):
+        out[key] = [inp[key][k] for k in idx]
+    if inp.get('h') is not None:
+        out['h'] = np.asarray(inp['h'])[idx]
+    if inp.get('live') is not None:
+        out['live'] = inp['live'][idx]
+    return out
+
+
 def diagnose(inp, n_nodes):
     """Conditioning of the per-node blocks (Jacobi-scaled, float64): at lam=0 the solve is
     M_k theta = b_k (+ ridge), so an exactly rank-deficient M_k is singular."""
@@ -317,6 +343,9 @@ def main():
         log_mem(f'after load ({system_path.stat().st_size / 1e9:.1f} GB file, mmap {args.mmap})')
         mode = args.mode or system.get('meta', {}).get('reg_mode', 'legacy')
         inp = build_inputs(system, config, args, mode)
+        if args.node_stride > 1:
+            inp = stride_inputs(inp, args.node_stride)
+            print(f'[{config}] node_stride {args.node_stride}: {len(inp["t"])} nodes kept')
         log_mem('after build_inputs')
         print(f'[{config}] loaded {len(inp["t"])} nodes, r={inp["r"]} in {time.time() - t0:.0f} s; '
               f'mode {mode}' + (f' ({args.schedule})' if mode == 'moment' else '') +
@@ -340,9 +369,14 @@ def main():
             print(f'[{config}] bounds Theta <= -eps on columns {a_}:{b_} at {int((inp["t"] >= args.neg_t_min).sum())} '
                   f'nodes, eps_nats {args.neg_eps_nats:g} (eps at the last node: '
                   f'{[f"{-float(u):.3g}" for u in upper[-1]]})')
-        extra = neg_tag(args)
+        extra0 = neg_tag(args)
+        if any(e for e in args.c_floor_eps) and (neg is not None or args.select or mode != 'moment'):
+            raise ValueError(f'[{config}] --c_floor_eps > 0 needs moment mode, no --neg_cols, no --select')
+        if args.node_stride > 1 and (neg is not None or args.select):
+            raise ValueError(f'[{config}] --node_stride > 1 is not supported with --neg_cols or --select')
 
         if args.select:
+            extra = extra0
             from codes.lam_select_cv import lam_path
             dest = args.outdir / config / f'lam_path_ridge{args.ridge:g}{tag(mode, args.schedule, inp["mask"])}.pt'
             if dest.exists() and not args.overwrite:
@@ -357,15 +391,19 @@ def main():
             print(f'[{config}] lam path ({len(res["lams"])} values) -> {dest}')
             continue
 
-        todo = [lam for lam in args.lams
+        stride_tag = f'_stride{args.node_stride}' if args.node_stride > 1 else ''
+        eps_extra = lambda e: extra0 + (f'_cfl{e:g}' if e else '') + stride_tag
+        todo = [(lam, e) for e in args.c_floor_eps for lam in args.lams
                 if args.overwrite or not out_path(args.outdir, config, lam, args.ridge, mode,
-                                                  args.schedule, inp['mask'], extra).exists()]
+                                                  args.schedule, inp['mask'], eps_extra(e)).exists()]
         if not todo:
-            print(f'[{config}] all {len(args.lams)} lam values already solved, skipping')
+            print(f'[{config}] all {len(args.lams)} x {len(args.c_floor_eps)} (lam, eps) values already solved, skipping')
             continue
         solver_self = types.SimpleNamespace(num_potentials=inp['r'])
         failed = []
-        for lam in todo:
+        for lam, c_eps in todo:
+            extra = eps_extra(c_eps)
+            solver_self.last_c_floor_shrink = None
             t1 = time.time()
             try:
                 if neg is not None:
@@ -388,11 +426,11 @@ def main():
                         Theta = SDE._solve_regularised_thomas(
                             solver_self, inp['t'], inp['M'], inp['C'], inp['b'], inp['v'], lam,
                             ridge=args.ridge, mode=mode, dim=inp['dim'], schedule=args.schedule,
-                            live=inp['live'])
+                            live=inp['live'], c_floor_eps=c_eps)
                     neg_info = None
             except torch.linalg.LinAlgError as e:              # log, keep going with the next lam
-                print(f'[{config}] lam={lam:g}: FAILED after {time.time() - t1:.0f} s: {e}')
-                failed.append(lam)
+                print(f'[{config}] lam={lam:g} eps={c_eps:g}: FAILED after {time.time() - t1:.0f} s: {e}')
+                failed.append((lam, c_eps))
                 continue
             dest = out_path(args.outdir, config, lam, args.ridge, mode, args.schedule, inp['mask'], extra)
             if neg_info is not None and not neg_info['converged']:
@@ -403,10 +441,13 @@ def main():
             tmp = dest.with_name(dest.name + '.tmp')
             torch.save({'Theta_reg': Theta[1:].clone(), 't_reg': torch.as_tensor(inp['t'][1:]),
                         'lam': lam, 'residual': solver_self.last_reg_residual, 'neg': neg_info,
+                        'c_floor_eps': c_eps, 'c_floor_shrink': solver_self.last_c_floor_shrink,
                         **common}, tmp)
             tmp.replace(dest)
             log_mem(f'after lam={lam:g}')
-            print(f'[{config}] lam={lam:g}: residual {solver_self.last_reg_residual:.2e}, '
+            shr = solver_self.last_c_floor_shrink
+            print(f'[{config}] lam={lam:g} eps={c_eps:g}' + (f' (median |mdot_eff|^2/|mdot|^2 {shr:.3g})' if shr is not None else '')
+                  + f': residual {solver_self.last_reg_residual:.2e}, '
                   f'finite {bool(torch.isfinite(Theta).all())}, {time.time() - t1:.0f} s -> {dest}')
 
         if failed:

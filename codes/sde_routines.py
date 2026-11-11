@@ -1027,7 +1027,8 @@ class SDE(torch.nn.Module):
     
     def _solve_regularised_thomas(self, t, M, Gf, bb, cc, lam, eps_reg_theta=0.0,
                                   ridge=0.0, dtype=torch.float64, device='cpu',
-                                  mode='legacy', dim=None, schedule='uniform', live=None, pin=None):
+                                  mode='legacy', dim=None, schedule='uniform', live=None, pin=None,
+                                  c_floor_eps=0.0):
         """
         Same block-tridiagonal system as _solve_regularised, solved via block-Thomas
         elimination with block-Jacobi preconditioning instead of a dense (n*r, n*r)
@@ -1083,6 +1084,18 @@ class SDE(torch.nn.Module):
               minus the Lagrange multiplier of the pin; self.last_pinned_scale the matching
               |A_ii Theta_i| + |f_i| for a relative test. pin=None (or an empty mask):
               unchanged, bit-identical to before.
+
+        c_floor_eps : moment mode only (method A, 2026-11-11). Per cell, with C and
+              M_cell = (M_k + M_k+1)/2 (raw M, no ridge), the time term becomes
+                  1/2 Th'^T (C + eps M_cell) Th' - mdot_eff^T Th',
+                  mdot_eff = C (C + eps M_cell)^-1 mdot   (on the statistics live at both
+                  nodes of the cell; the others keep mdot),
+              i.e. a floor eps M_cell on the walker susceptibility, and the drive mdot
+              switched off where C is unmeasured (C << eps M) and kept where C >> eps M.
+              eps is in the units of the generalised eigenvalues mu of C v = mu M v
+              (codes/c_spectrum_gen.py). 0 (default): this branch is never entered, the
+              solve is the one above, unchanged. self.last_c_floor_shrink = median over
+              cells of |mdot_eff|^2 / |mdot|^2 (live entries), as a diagnostic.
 
         (Called unbound by codes/resolve_theta_reg.py, codes/lam_select_cv.py and the
         bimodal port with a SimpleNamespace as self, so the body uses no other method
@@ -1148,6 +1161,36 @@ class SDE(torch.nn.Module):
 
             def cb(k):                                     # ct on cell k: -midpoint mdot
                 return -(get(cc[k]).reshape(-1) + get(cc[k + 1]).reshape(-1)) / 2
+
+            if c_floor_eps:                                # method A: floor C, damp mdot where C is empty
+                eps_c = float(c_floor_eps)
+                live_np = None if live is None else np.asarray(live, dtype=bool).reshape(n, r)
+                Mcell = lambda k: (sym(get(M[k])) + sym(get(M[k + 1]))) / 2
+                Gb_plain, cb_plain = Gb, cb
+                cb_eff = torch.empty((max(n - 1, 0), r), device=device, dtype=dtype)
+                shrink = []
+                for k in range(n - 1):
+                    C_, Mc, md = Gb_plain(k), Mcell(k), -cb_plain(k)
+                    lv = np.ones(r, dtype=bool) if live_np is None else (live_np[k] & live_np[k + 1])
+                    idx = torch.as_tensor(np.nonzero(lv)[0], device=device)
+                    out = md.clone()
+                    if len(idx):
+                        Cl, Ml, ml = C_[idx][:, idx], Mc[idx][:, idx], md[idx]
+                        s = torch.diagonal(Ml).clamp_min(1e-300).sqrt()      # Jacobi scaling for the solve
+                        Bs = (Cl + eps_c * Ml) / (s[:, None] * s[None, :])
+                        x = torch.linalg.solve(sym(Bs), ml / s) / s
+                        out[idx] = Cl @ x
+                        nm = float((ml ** 2).sum())
+                        if nm > 0:
+                            shrink.append(float((out[idx] ** 2).sum()) / nm)
+                    cb_eff[k] = -out
+                self.last_c_floor_shrink = float(np.median(shrink)) if shrink else float('nan')
+
+                def Gb(k):                                 # C + eps M_cell on cell k
+                    return Gb_plain(k) + eps_c * Mcell(k)
+
+                def cb(k):                                 # -C (C + eps M)^-1 mdot on cell k
+                    return cb_eff[k]
 
         def Db_raw(k):                                     # diagonal block A[k, k], unpinned
             D = a[k] * Mb(k)
