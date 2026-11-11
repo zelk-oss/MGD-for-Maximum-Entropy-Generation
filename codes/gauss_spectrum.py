@@ -73,9 +73,10 @@ def welch_spectrum(x, nperseg):
     return torch.from_numpy(S)
 
 
-def replace_with_gaussian(x1, seed=0, nperseg=None):
-    """(x1 Gaussian with the spectrum of x1 [same shape, dtype, device], S (C, M) float64 cpu).
-    nperseg=None: raw mean periodogram over the batch; else Welch-smoothed (welch_spectrum)."""
+def replace_with_gaussian(x1, seed=0, nperseg=None, n=None):
+    """(Gaussian draws with the spectrum of x1 [dtype, device of x1], S (C, M) float64 cpu).
+    nperseg=None: raw mean periodogram over the batch; else Welch-smoothed (welch_spectrum).
+    n: number of draws (default x1.shape[0]); may exceed the number of data signals used for S."""
     S = average_spectrum(x1).cpu() if nperseg is None else welch_spectrum(x1, nperseg)
-    xg = sample_gaussian_spectrum(S, x1.shape[0], seed=seed)
+    xg = sample_gaussian_spectrum(S, x1.shape[0] if n is None else n, seed=seed)
     return xg.to(dtype=x1.dtype, device=x1.device), S

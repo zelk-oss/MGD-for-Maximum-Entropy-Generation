@@ -17,7 +17,9 @@
 # Usage (Jean Zay, repo root):
 #   DRY=1 GPU=h100 bash gauss_spectrum/launch_nt_sweep.sh     # print the plan only
 #   GPU=h100 bash gauss_spectrum/launch_nt_sweep.sh
-# overrides: SIGMAS, NTS, N1, SEED_TURB, SEED_JETS, OUT, TIME_<nt>, TIME2, QOS
+# overrides: SIGMAS, NTS, N1, SEED_TURB, SEED_JETS, OUT, TIME_<nt>, TIME2, QOS, NO_FINISH=1 (skip the phase-2 job)
+# dev QoS (max 2 h, max 10 submitted jobs): one nt per round, e.g.
+#   NTS=10000 TIME_10000=01:00:00 QOS=qos_gpu_h100-dev NO_FINISH=1 GPU=h100 bash gauss_spectrum/launch_nt_sweep.sh
 
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_DIR="$(cd "${HERE}/.." && pwd)"
@@ -89,6 +91,11 @@ EOT
     echo "Submitted nt ${NT}: ${J} (${#RUNS[@]} tasks, ${T})"
 done
 
+if [ -n "${NO_FINISH:-}" ]; then
+    # dev QoS allows 10 submitted jobs: a 10-task round + this job would be 11. Run finish_sigma_sweep.sh by hand at the end.
+    echo "NO_FINISH set: no phase-2 job. When all runs are done: OUT=gauss_spectrum/nt_sweep bash gauss_spectrum/finish_sigma_sweep.sh"
+    exit 0
+fi
 DEP=$(IFS=:; echo "${JOBS[*]}")
 JOB2=$(sbatch --parsable --dependency=afterany:${DEP} <<EOT
 #!/bin/bash

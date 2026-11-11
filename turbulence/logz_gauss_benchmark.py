@@ -64,7 +64,12 @@ def max_ent_gaussian(x, psi2, M, tol=1e-10, max_iter=300):
     Jacobi scaling (scaling by m_j stalls at cond ~1e20 on an 8-decade spectrum; tested 11-09). H(p*) = F(theta*) = (M/2) log(2 pi e) - 1/2 sum log lam*.
     Returns dict(H_star, iters, moment_rel_err, min_cover) -- H_star nan if not converged."""
     xf = np.fft.fft(x.reshape(-1, M).double().cpu().numpy(), axis=-1, norm='ortho')
-    C = (np.abs(xf) ** 2).mean(0)
+    return max_ent_from_spectrum((np.abs(xf) ** 2).mean(0), psi2, M, tol=tol, max_iter=max_iter)
+
+
+def max_ent_from_spectrum(C, psi2, M, tol=1e-10, max_iter=300):
+    """max_ent_gaussian with the moments given through a power spectrum C (ortho FFT): m_j = (1/M) sum_w |psi_j|^2 C(w)."""
+    C = np.asarray(C, dtype=np.float64)
     A = (psi2 + psi2[:, (-np.arange(M)) % M]) / M                                # (r, M)
     m = psi2 @ C / M
     D = np.abs(m)

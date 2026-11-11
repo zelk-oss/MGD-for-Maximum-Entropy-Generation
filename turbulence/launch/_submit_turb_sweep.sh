@@ -89,7 +89,16 @@ EXTRA_FLAGS=""
 [ -n "${DROP_STATS}" ]  && EXTRA_FLAGS+=" --drop_stats ${DROP_STATS}"
 [ -n "${GRAM_PREFLIGHT}" ] && EXTRA_FLAGS+=" --gram_preflight ${GRAM_PREFLIGHT}"
 [ "${PREFLIGHT_ONLY}" = "true" ] && EXTRA_FLAGS+=" --preflight_only"
-[ -n "${POTENTIALS_FROM}" ] && EXTRA_FLAGS+=" --potentials_from ${POTENTIALS_FROM}"
+if [ -n "${POTENTIALS_FROM}" ]; then
+    # Check at submit time, not after hours in the queue (2026-11-11: a relative path made 5 jobs fail at start,
+    # the job does not run from the submit directory). Made absolute here; must hold the fitted *.pt states.
+    POTENTIALS_FROM="$(cd "${POTENTIALS_FROM}" 2>/dev/null && pwd)" \
+        || { echo "Error: POTENTIALS_FROM is not a directory (from $(pwd))"; exit 1; }
+    compgen -G "${POTENTIALS_FROM}/*.pt" > /dev/null \
+        || { echo "Error: POTENTIALS_FROM=${POTENTIALS_FROM} holds no *.pt fitted states"; exit 1; }
+    echo "  potentials from ${POTENTIALS_FROM}: $(cd "${POTENTIALS_FROM}" && ls *.pt | tr '\n' ' ')"
+    EXTRA_FLAGS+=" --potentials_from ${POTENTIALS_FROM}"
+fi
 [ "${GAUSS_SPECTRUM}" = "true" ] && EXTRA_FLAGS+=" --gauss_spectrum"
 [ -n "${N_PARTICLES}" ] && EXTRA_FLAGS+=" --n_particles ${N_PARTICLES}"   # snp_experiment/run_SDE.py only
 [ -n "${WELCH_NPERSEG}" ] && EXTRA_FLAGS+=" --welch_nperseg ${WELCH_NPERSEG}"   # snp_experiment/run_SDE.py only (with --gauss_spectrum)

@@ -422,12 +422,18 @@ def main():
     # ---- data ----
     # periodized windows of subseries_len -> Db3 coarse-graining to target_len ->
     # n1 windows (random over the record if --n1_spread, else the first n1), standardized
-    x1, _ = load_modane_windows(args.subseries_len, args.target_len, n=args.n1,
+    # --gauss_spectrum: S(w) is estimated on at most all the record's windows; the n1 Gaussian draws are not
+    # limited by the record (2026-11-10: n1 1e5 > 50398 Modane windows crashed the nt sweep)
+    n_data = args.n1
+    if args.gauss_spectrum:
+        n_data = min(args.n1, load_modane_raw().size // args.subseries_len)
+    x1, _ = load_modane_windows(args.subseries_len, args.target_len, n=n_data,
                                 spread=args.n1_spread)
     x1 = x1.to(device)
     gauss_S = None
     if args.gauss_spectrum:
-        x1, gauss_S = replace_with_gaussian(x1, seed=0)
+        x1, gauss_S = replace_with_gaussian(x1, seed=0, n=args.n1)
+        print(f'gauss_spectrum: S(w) from {n_data} data windows, {args.n1} Gaussian draws', flush=True)
     pre_len = args.subseries_len
     scales_needed = int(np.log2(pre_len / args.target_len)) if pre_len > args.target_len else 0
     coarse_grained = scales_needed > 0
