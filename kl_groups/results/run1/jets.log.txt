@@ -1,0 +1,36 @@
+[deduplicate_filters] filters_Q: 9 -> 9 channels for channel-list potentials (dropped duplicates [], tol=1e-08)
+jets seed 500: E (10000, 299) | jets_full xseed end0.99 lam 0.01 lam0.01_ridge0.0001_moment_mask.pt | families L_6:9, Scalar_morlet_gaussianK:45, Scattering_First_Order:8, Scattering_Second_Order:9, Scattering_Third_Order_Real:44, Scattering_Third_Order_Imag:44, Scattering_Fourth_Order_Mod2_Real_Q1:84, Scattering_Fourth_Order_Mod2_Imag_Q1:56
+ -> /lustre/fswork/projects/rech/wbg/ukv59en/MGD-for-Maximum-Entropy-Generation/kl_groups/results/run1/E_jets_seed500.npz
+[deduplicate_filters] filters_Q: 9 -> 9 channels for channel-list potentials (dropped duplicates [], tol=1e-08)
+jets seed 501: E (10000, 299) | jets_full xseed end0.99 lam 0.01 lam0.01_ridge0.0001_moment_mask.pt | families L_6:9, Scalar_morlet_gaussianK:45, Scattering_First_Order:8, Scattering_Second_Order:9, Scattering_Third_Order_Real:44, Scattering_Third_Order_Imag:44, Scattering_Fourth_Order_Mod2_Real_Q1:84, Scattering_Fourth_Order_Mod2_Imag_Q1:56
+ -> /lustre/fswork/projects/rech/wbg/ukv59en/MGD-for-Maximum-Entropy-Generation/kl_groups/results/run1/E_jets_seed501.npz
+[deduplicate_filters] filters_Q: 9 -> 9 channels for channel-list potentials (dropped duplicates [], tol=1e-08)
+jets seed 502: E (10000, 299) | jets_full xseed end0.99 lam 0.01 lam0.01_ridge0.0001_moment_mask.pt | families L_6:9, Scalar_morlet_gaussianK:45, Scattering_First_Order:8, Scattering_Second_Order:9, Scattering_Third_Order_Real:44, Scattering_Third_Order_Imag:44, Scattering_Fourth_Order_Mod2_Real_Q1:84, Scattering_Fourth_Order_Mod2_Imag_Q1:56
+ -> /lustre/fswork/projects/rech/wbg/ukv59en/MGD-for-Maximum-Entropy-Generation/kl_groups/results/run1/E_jets_seed502.npz
+[deduplicate_filters] filters_Q: 9 -> 9 channels for channel-list potentials (dropped duplicates [], tol=1e-08)
+jets seed 503: E (10000, 299) | jets_full xseed end0.99 lam 0.01 lam0.01_ridge0.0001_moment_mask.pt | families L_6:9, Scalar_morlet_gaussianK:45, Scattering_First_Order:8, Scattering_Second_Order:9, Scattering_Third_Order_Real:44, Scattering_Third_Order_Imag:44, Scattering_Fourth_Order_Mod2_Real_Q1:84, Scattering_Fourth_Order_Mod2_Imag_Q1:56
+ -> /lustre/fswork/projects/rech/wbg/ukv59en/MGD-for-Maximum-Entropy-Generation/kl_groups/results/run1/E_jets_seed503.npz
+[deduplicate_filters] filters_Q: 9 -> 9 channels for channel-list potentials (dropped duplicates [], tol=1e-08)
+jets seed 504: E (10000, 299) | jets_full xseed end0.99 lam 0.01 lam0.01_ridge0.0001_moment_mask.pt | families L_6:9, Scalar_morlet_gaussianK:45, Scattering_First_Order:8, Scattering_Second_Order:9, Scattering_Third_Order_Real:44, Scattering_Third_Order_Imag:44, Scattering_Fourth_Order_Mod2_Real_Q1:84, Scattering_Fourth_Order_Mod2_Imag_Q1:56
+ -> /lustre/fswork/projects/rech/wbg/ukv59en/MGD-for-Maximum-Entropy-Generation/kl_groups/results/run1/E_jets_seed504.npz
+E_jets_seed500.npz: N = 10000, n = 299; families: L_6 -> None, Scalar_morlet_gaussianK -> scalar, Scattering_First_Order -> scat1-2, Scattering_Second_Order -> scat1-2, Scattering_Third_Order_Real -> scat3_real, Scattering_Third_Order_Imag -> scat3_imag, Scattering_Fourth_Order_Mod2_Real_Q1 -> scat4_real, Scattering_Fourth_Order_Mod2_Imag_Q1 -> scat4_imag
+E_jets_seed501.npz: N = 10000, n = 299; families: L_6 -> None, Scalar_morlet_gaussianK -> scalar, Scattering_First_Order -> scat1-2, Scattering_Second_Order -> scat1-2, Scattering_Third_Order_Real -> scat3_real, Scattering_Third_Order_Imag -> scat3_imag, Scattering_Fourth_Order_Mod2_Real_Q1 -> scat4_real, Scattering_Fourth_Order_Mod2_Imag_Q1 -> scat4_imag
+E_jets_seed502.npz: N = 10000, n = 299; families: L_6 -> None, Scalar_morlet_gaussianK -> scalar, Scattering_First_Order -> scat1-2, Scattering_Second_Order -> scat1-2, Scattering_Third_Order_Real -> scat3_real, Scattering_Third_Order_Imag -> scat3_imag, Scattering_Fourth_Order_Mod2_Real_Q1 -> scat4_real, Scattering_Fourth_Order_Mod2_Imag_Q1 -> scat4_imag
+E_jets_seed503.npz: N = 10000, n = 299; families: L_6 -> None, Scalar_morlet_gaussianK -> scalar, Scattering_First_Order -> scat1-2, Scattering_Second_Order -> scat1-2, Scattering_Third_Order_Real -> scat3_real, Scattering_Third_Order_Imag -> scat3_imag, Scattering_Fourth_Order_Mod2_Real_Q1 -> scat4_real, Scattering_Fourth_Order_Mod2_Imag_Q1 -> scat4_imag
+E_jets_seed504.npz: N = 10000, n = 299; families: L_6 -> None, Scalar_morlet_gaussianK -> scalar, Scattering_First_Order -> scat1-2, Scattering_Second_Order -> scat1-2, Scattering_Third_Order_Real -> scat3_real, Scattering_Third_Order_Imag -> scat3_imag, Scattering_Fourth_Order_Mod2_Real_Q1 -> scat4_real, Scattering_Fourth_Order_Mod2_Imag_Q1 -> scat4_imag
+                                               H  boot_std      var2  ess_frac  log10_N_needed  flag
+group                                                                                               
+fam:Scattering_First_Order                  2878       350 1.277e+04    0.0001       1.109e+04     1
+cat:scat1-2                                567.9     33.15      3552    0.0001            3085     1
+cat:scalar                                  96.1     10.99     634.3 0.0001518           550.9     1
+fam:Scalar_morlet_gaussianK                 96.1     10.99     634.3 0.0001518           550.9     1
+fam:Scattering_Second_Order                   87     2.552      3843 0.0001405            3338     1
+cat:scat3_imag                             69.83      10.2     27.08 0.0001053           23.52     1
+fam:Scattering_Third_Order_Imag            69.83      10.2     27.08 0.0001053           23.52     1
+fam:Scattering_Fourth_Order_Mod2_Real_Q1   40.43     4.943     9.307 0.0001004           8.084     1
+cat:scat4_real                             40.43     4.943     9.307 0.0001004           8.084     1
+fam:Scattering_Third_Order_Real             4.45     1.813    0.6544  0.001449          0.5684     1
+cat:scat3_real                              4.45     1.813    0.6544  0.001449          0.5684     1
+cat:scat4_imag                           0.07296   0.03943   0.05632    0.2012         0.04892   0.8
+fam:Scattering_Fourth_Order_Mod2_Imag_Q1 0.07296   0.03943   0.05632    0.2012         0.04892   0.8
+-> /lustre/fswork/projects/rech/wbg/ukv59en/MGD-for-Maximum-Entropy-Generation/kl_groups/results/run1/H_jets.csv (1760 rows), flagged groups: 616

@@ -226,6 +226,27 @@ def parse_args():
                     help='Tolerance of the extra corrector, in standard errors of each target moment')
     p.add_argument('--extra_corrector_tail', type=float, default=0.1,
                     help='Extra corrector only where 1 - t < this')
+    # Terminal phase / final projection (2026-11-12, branch terminal-phase-test). Both OFF by default: a run with them off is
+    # bit-identical to before. Not in the config name: use --label.
+    p.add_argument('--terminal_phase', action='store_true',
+                    help='After the planned time grid keep stepping with a step size chosen by a rule: shrink h by '
+                         '--terminal_shrink per step until the largest post-corrector residual of the live statistics '
+                         '(in standard errors of their targets) is <= --terminal_tol, then hold that h for '
+                         '--terminal_hold steps and stop (sde_routines.SDE._terminal_update). Needs a float64 grid '
+                         '(--schedule two_phase). Not in the config name: use --label')
+    p.add_argument('--terminal_tol', type=float, default=0.1, help='Terminal phase: tolerance, in standard errors')
+    p.add_argument('--terminal_shrink', type=float, default=0.8, help='Terminal phase: step size factor per step while above the tolerance')
+    p.add_argument('--terminal_hold', type=int, default=300, help='Terminal phase: steps held at the step size that met the tolerance')
+    p.add_argument('--terminal_h_min', type=float, default=1e-14, help='Terminal phase cap: smallest step size (warning if hit)')
+    p.add_argument('--terminal_max_steps', type=int, default=2000, help='Terminal phase cap: most terminal steps (warning if hit)')
+    p.add_argument('--terminal_in_system', action='store_true',
+                    help='Terminal phase: also put the terminal steps in the time-regularised (Thomas) system '
+                         '(default: they are not)')
+    p.add_argument('--final_projection', action='store_true',
+                    help='At the very end, iterate the corrector (chord, Gram of the last step) until every live statistic '
+                         'is within --final_projection_tol of its target (relative) or --final_projection_max passes')
+    p.add_argument('--final_projection_tol', type=float, default=1e-3, help='Final projection: relative tolerance')
+    p.add_argument('--final_projection_max', type=int, default=10, help='Final projection: pass limit')
     p.add_argument('--potentials_from', type=str, default=None, metavar='DIR',
                     help='Copy the fitted states (*.pt) of another run (its fitted_potentials/ dir) into '
                          'this run\'s fitted_potentials/ before the SDE: the SDE loads them instead of '

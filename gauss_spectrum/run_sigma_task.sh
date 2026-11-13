@@ -21,19 +21,22 @@ DSOUT="${OUT}/${DS}"
 TIMESTAMP="${TIMESTAMP:-$(date +%Y%m%d_%H%M)}"
 TIME_LIMIT_MIN="${TIME_LIMIT_MIN:-55}"
 N1="${N1:-10000}"
+SUBLEN="${SUBLEN:-512}"            # window length before coarse-graining (2026-11-12: M scan, M = 32/64)
+MLEN="${MLEN:-256}"                # --target_len = M of the signals; J must be log2(M) (256 -> 8, 64 -> 6, 32 -> 5)
+JSC="${JSC:-8}"
 NT_RULE=$(python -c "print(max(2000, round(300 * ${SIGMA} ** 2)))")
 NT="${NT:-${NT_RULE}}"
 NBULK="${NBULK:-$(( NT / 5 ))}"
 TAG="${SIGMA//./p}"
 LABEL="${LABEL:-sigsweep_s${TAG}}"
-REGDIR="${DSOUT}/reg_system"
+REGDIR="${REGDIR:-${DSOUT}/reg_system}"   # env REGDIR: saved regularised systems (large) -> $SCRATCH (M scan, 2026-11-12)
 mkdir -p "${REGDIR}"
 for d in samples lagrange_multipliers lagrange_multipliers_regularised entropy_bounds sampling_times aux_moments; do
     mkdir -p "${DSOUT}/saved_results/${d}"
 done
 cd "${PROJECT_DIR}"
 
-COMMON="--seed ${SEED} --timestamp ${TIMESTAMP} --n1 ${N1} --subseries_len 512 --target_len 256 --nt ${NT} --J 8 \
+COMMON="--seed ${SEED} --timestamp ${TIMESTAMP} --n1 ${N1} --subseries_len ${SUBLEN} --target_len ${MLEN} --nt ${NT} --J ${JSC} \
  --sigma ${SIGMA} --interpolant Cos --schedule_exponent 2 --regularization 1e-4 --lam 0.0 --n_subsample 1 \
  --reg_solver thomas --reg_ridge 0.0 --time_limit_min ${TIME_LIMIT_MIN} --outdir ${DSOUT} \
  --terms Scattering_Second_Order_Q1 --label ${LABEL} --batch_size 5000 --solve_float64 --cond_every 10 \

@@ -15,7 +15,8 @@
 #   DRY=1 ARM=noL6psi_noSm30_reg1e-4 RIDGE=1e-4 bash lam_selection_criterion/launch_turb_xseed.sh
 #   ARM=noL6psi_noSm30_reg1e-4 RIDGE=1e-4 bash lam_selection_criterion/launch_turb_xseed.sh
 #   ARM=noL6psi_noSm30_reg1e-2 RIDGE=1e-2 bash lam_selection_criterion/launch_turb_xseed.sh
-# overrides: SYSTEM_PATTERN (default *<ARM>*.pt), LAMS, QOS, TIME1/TIME2, CPUS, SWEEP_DIR, OUT
+# overrides: SYSTEM_PATTERN (default *<ARM>*.pt), LAMS, QOS, TIME1/TIME2, CPUS, SWEEP_DIR, OUT, REG_SYSTEM_DIR,
+#   PARTITION=prepost (CPU-only, free; default H100 GPU node), MMAP=1 (--mmap in phase 1; unchained mode only)
 # chained after an SDE array: DEPEND=<job id> SEEDS="..." (see below; jets/launch_jet_SDE.sh does this)
 
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -35,6 +36,16 @@ TIME2="${TIME2:-02:00:00}"
 CPUS="${CPUS:-24}"
 DEPEND="${DEPEND-}"
 
+MMAP_ARG=""; [ "${MMAP:-0}" = "1" ] && MMAP_ARG="--mmap"     # MMAP=1: system stays file-backed (big systems, e.g. B+Scat4 49 GB)
+if [ "${PARTITION:-}" = "prepost" ]; then                     # PARTITION=prepost: CPU-only (the Thomas solve is CPU/RAM-bound), free
+HEADER="#SBATCH -A wbg@v100
+#SBATCH --partition=prepost
+#SBATCH --cpus-per-task=${CPUS}
+#SBATCH --hint=nomultithread"
+SETUP="module purge
+module load pytorch-gpu/py3/2.8.0
+cd \"${PROJECT_DIR}\""
+else
 HEADER="#SBATCH -A wbg@h100
 #SBATCH --partition=gpu_p6
 ${QOS:+#SBATCH --qos=${QOS}}
@@ -46,6 +57,7 @@ SETUP="module purge
 module load arch/h100
 module load pytorch-gpu/py3/2.8.0
 cd \"${PROJECT_DIR}\""
+fi
 
 # Chained mode (DEPEND=<SDE array job id> SEEDS="500 501 ..."), as theta_sign_constraint/launch_l6neg.sh:
 # the systems don't exist yet, so they are globbed at run time. Phase-1 task k waits for task k of DEPEND
@@ -118,7 +130,7 @@ ${HEADER}
 ${SETUP}
 FILES=( ${FILES[@]} )
 python -u codes/resolve_theta_reg.py "\${FILES[\${SLURM_ARRAY_TASK_ID}]}" --lams ${LAM_LIST[@]} \
-    --ridge ${RIDGE} --schedule uniform --mask auto --diagnose 0 --outdir "${SWEEP_DIR}"
+    --ridge ${RIDGE} --schedule uniform --mask auto --diagnose 0 --outdir "${SWEEP_DIR}" ${MMAP_ARG}
 EOT
 )
 if [ -z "${JOB1}" ]; then echo "Error: phase-1 sbatch returned no job id"; exit 1; fi

@@ -1,0 +1,184 @@
+device cuda, M 64, n1 300, nt 80 (n_bulk 30, gap_end 0.002), 3 potentials
+Signal detected as 1D: (B, C, T) = (300, 1, 64).
+The model has 14 potentials.
+The model has 14 potentials.
+  0%|          | 0/80 [00:00<?, ?it/s]  1%|▏         | 1/80 [00:00<00:52,  1.50it/s] 24%|██▍       | 19/80 [00:00<00:01, 32.75it/s] 46%|████▋     | 37/80 [00:00<00:00, 61.79it/s] 69%|██████▉   | 55/80 [00:00<00:00, 87.33it/s] 91%|█████████▏| 73/80 [00:01<00:00, 108.51it/s]100%|██████████| 80/80 [00:01<00:00, 71.35it/s] 
+Loop finished
+After loop: CPU=1.12 GB | GPU alloc=0.03 GB | GPU reserved=0.06 GB
+Preparing regularised solve
+Before _solve_regularised: CPU=1.12 GB | GPU alloc=0.03 GB | GPU reserved=0.06 GB
+Dropped close-in-time nodes: 0
+Last times: [0.99726506 0.99747089 0.99766122 0.99783723 0.998     ]
+Last dt: [0.00020583 0.00019034 0.00017601 0.00016277]
+Thomas solve: n=79, r=14, relative scaled residual 3.03e-14, finite=True
+After _solve_regularised: CPU=1.12 GB | GPU alloc=0.03 GB | GPU reserved=0.06 GB
+Stacking outputs
+Everything stacked: CPU=1.12 GB | GPU alloc=0.03 GB | GPU reserved=0.06 GB
+Returning
+OLD run done; r = 14
+T1  flags off
+Signal detected as 1D: (B, C, T) = (300, 1, 64).
+The model has 14 potentials.
+The model has 14 potentials.
+  0%|          | 0/80 [00:00<?, ?it/s] 22%|██▎       | 18/80 [00:00<00:00, 174.30it/s] 45%|████▌     | 36/80 [00:00<00:00, 177.09it/s] 68%|██████▊   | 54/80 [00:00<00:00, 177.10it/s] 90%|█████████ | 72/80 [00:00<00:00, 177.47it/s]100%|██████████| 80/80 [00:00<00:00, 177.18it/s]
+Loop finished
+After loop: CPU=1.12 GB | GPU alloc=0.03 GB | GPU reserved=0.06 GB
+Preparing regularised solve
+Before _solve_regularised: CPU=1.12 GB | GPU alloc=0.03 GB | GPU reserved=0.06 GB
+Dropped close-in-time nodes: 0
+Last times: [0.99726506 0.99747089 0.99766122 0.99783723 0.998     ]
+Last dt: [0.00020583 0.00019034 0.00017601 0.00016277]
+Thomas solve: n=79, r=14, relative scaled residual 3.03e-14, finite=True
+After _solve_regularised: CPU=1.12 GB | GPU alloc=0.03 GB | GPU reserved=0.06 GB
+Stacking outputs
+Everything stacked: CPU=1.12 GB | GPU alloc=0.03 GB | GPU reserved=0.06 GB
+Returning
+  [PASS] T1 xt identical
+  [PASS] T1 barphi_e identical
+  [PASS] T1 barphi_p identical
+  [PASS] T1 eta identical
+  [PASS] T1 theta identical
+  [PASS] T1 dH identical
+  [PASS] T1 Theta_reg identical
+  [PASS] T1 t_reg identical
+  [PASS] T1 time grid identical
+T2  terminal phase on, criterion met at the end of the planned grid (tol 1e9)
+Signal detected as 1D: (B, C, T) = (300, 1, 64).
+The model has 14 potentials.
+The model has 14 potentials.
+  0%|          | 0/2080 [00:00<?, ?it/s]  1%|          | 18/2080 [00:00<00:11, 176.50it/s]  2%|▏         | 36/2080 [00:00<00:11, 178.03it/s]  3%|▎         | 55/2080 [00:00<00:11, 179.56it/s]  4%|▎         | 74/2080 [00:00<00:10, 182.50it/s][terminal] at the end of the planned grid max z = 0.00163 (L_6[0]) <= 1e+09: no terminal phase needed
+  4%|▍         | 79/2080 [00:00<00:12, 164.38it/s]
+terminal phase: criterion met at the end of the planned grid: no terminal phase (z at the end of the planned grid 0.00163)
+Loop finished
+After loop: CPU=1.16 GB | GPU alloc=0.03 GB | GPU reserved=0.06 GB
+Preparing regularised solve
+Before _solve_regularised: CPU=1.16 GB | GPU alloc=0.03 GB | GPU reserved=0.06 GB
+Dropped close-in-time nodes: 0
+Last times: [0.99726506 0.99747089 0.99766122 0.99783723 0.998     ]
+Last dt: [0.00020583 0.00019034 0.00017601 0.00016277]
+Thomas solve: n=79, r=14, relative scaled residual 3.03e-14, finite=True
+After _solve_regularised: CPU=1.16 GB | GPU alloc=0.03 GB | GPU reserved=0.06 GB
+Stacking outputs
+Everything stacked: CPU=1.16 GB | GPU alloc=0.03 GB | GPU reserved=0.06 GB
+Returning
+  [PASS] T2 xt identical
+  [PASS] T2 barphi_e identical
+  [PASS] T2 barphi_p identical
+  [PASS] T2 eta identical
+  [PASS] T2 theta identical
+  [PASS] T2 dH identical
+  [PASS] T2 Theta_reg identical
+  [PASS] T2 t_reg identical
+  [PASS] T2 info   (criterion met at the end of the planned grid: no terminal phase)
+     max z at the end of the planned grid: 0.00163
+T3  terminal phase forced to the step cap (tol 1e-12, shrink 0.5, cap 25)
+Signal detected as 1D: (B, C, T) = (300, 1, 64).
+The model has 14 potentials.
+The model has 14 potentials.
+  0%|          | 0/105 [00:00<?, ?it/s] 17%|█▋        | 18/105 [00:00<00:00, 179.75it/s] 35%|███▌      | 37/105 [00:00<00:00, 181.46it/s] 53%|█████▎    | 56/105 [00:00<00:00, 181.40it/s] 71%|███████▏  | 75/105 [00:00<00:00, 181.53it/s][terminal] at the end of the planned grid max z = 0.00163 (L_6[0]) > 1e-12: terminal phase from h = 1.628e-04, shrink x0.5 per step
+ 90%|████████▉ | 94/105 [00:00<00:00, 181.68it/s][terminal] WARNING: terminal_max_steps = 25 reached in phase "shrink" with max z = 6.43e-06 (Scattering_First_Order[2]), h = 4.851e-12
+ 99%|█████████▉| 104/105 [00:00<00:00, 180.23it/s]
+terminal phase: 25 steps from k = 80 (terminal_max_steps reached); h 8.14e-05 -> 4.85e-12 (min 4.85e-12); max z at the end of the planned grid 0.00163, after the last terminal step 6.43e-06 (min over the phase 3.32e-06)
+Loop finished
+After loop: CPU=1.16 GB | GPU alloc=0.03 GB | GPU reserved=0.06 GB
+Preparing regularised solve
+Before _solve_regularised: CPU=1.16 GB | GPU alloc=0.03 GB | GPU reserved=0.06 GB
+Dropped close-in-time nodes: 0
+Last times: [0.99726506 0.99747089 0.99766122 0.99783723 0.998     ]
+Last dt: [0.00020583 0.00019034 0.00017601 0.00016277]
+Thomas solve: n=79, r=14, relative scaled residual 3.03e-14, finite=True
+After _solve_regularised: CPU=1.16 GB | GPU alloc=0.03 GB | GPU reserved=0.06 GB
+Stacking outputs
+Everything stacked: CPU=1.16 GB | GPU alloc=0.03 GB | GPU reserved=0.06 GB
+Returning
+  [PASS] T3 25 terminal steps   (25)
+  [PASS] T3 reason   (terminal_max_steps reached)
+  [PASS] T3 t length   (106 vs 106)
+  [PASS] T3 barphi_e rows = steps   (105)
+  [PASS] T3 barphi_e planned rows identical to OLD
+  [PASS] T3 barphi_p rows = steps   (105)
+  [PASS] T3 barphi_p planned rows identical to OLD
+  [PASS] T3 eta rows = steps   (105)
+  [PASS] T3 eta planned rows identical to OLD
+  [PASS] T3 theta rows = steps   (105)
+  [PASS] T3 theta planned rows identical to OLD
+  [PASS] T3 dH rows = steps   (105)
+  [PASS] T3 dH planned rows identical to OLD
+  [PASS] T3 planned time grid identical
+  [PASS] T3 Theta_reg / t_reg unchanged (terminal steps not in the system)
+  [PASS] T3 h shrinks x0.5 per step   (ratios [0.5 0.5])
+  [PASS] T3 first terminal h = 0.5 x last planned h
+  [PASS] T3 t strictly increasing and < 1   (1 - t_end = 1.837e-03)
+  [PASS] T3 samples differ from OLD (extra steps were taken)
+T4  reachable tolerance: shrink -> hold -> stop
+Signal detected as 1D: (B, C, T) = (300, 1, 64).
+The model has 14 potentials.
+The model has 14 potentials.
+  0%|          | 0/160 [00:00<?, ?it/s] 12%|█▏        | 19/160 [00:00<00:00, 182.16it/s] 24%|██▍       | 38/160 [00:00<00:00, 184.79it/s] 36%|███▌      | 57/160 [00:00<00:00, 186.31it/s] 48%|████▊     | 76/160 [00:00<00:00, 186.59it/s][terminal] at the end of the planned grid max z = 0.00163 (L_6[0]) > 0.000817055: terminal phase from h = 1.628e-04, shrink x0.5 per step
+[terminal] step 81: max z = 0.000621 <= 0.000817055 at h = 4.069e-05 after 2 terminal steps: holding this h for 4 steps
+ 53%|█████▎    | 85/160 [00:00<00:00, 184.23it/s]
+terminal phase: 6 steps from k = 80 (hold finished); h 8.14e-05 -> 4.07e-05 (min 4.07e-05); max z at the end of the planned grid 0.00163, after the last terminal step 0.000792 (min over the phase 0.0002)
+Loop finished
+After loop: CPU=1.16 GB | GPU alloc=0.03 GB | GPU reserved=0.06 GB
+Preparing regularised solve
+Before _solve_regularised: CPU=1.16 GB | GPU alloc=0.03 GB | GPU reserved=0.06 GB
+Dropped close-in-time nodes: 0
+Last times: [0.99726506 0.99747089 0.99766122 0.99783723 0.998     ]
+Last dt: [0.00020583 0.00019034 0.00017601 0.00016277]
+Thomas solve: n=79, r=14, relative scaled residual 3.03e-14, finite=True
+After _solve_regularised: CPU=1.16 GB | GPU alloc=0.03 GB | GPU reserved=0.06 GB
+Stacking outputs
+Everything stacked: CPU=1.16 GB | GPU alloc=0.03 GB | GPU reserved=0.06 GB
+Returning
+  [PASS] T4 reason = hold finished   (hold finished)
+  [PASS] T4 h held for the last >= 4 steps   (5 steps at h = 4.069e-05)
+  [PASS] T4 max z at the end <= tol is what ended the shrink   (min z 0.0002 vs tol 0.000817)
+      terminal phase: 6 steps from k = 80 (hold finished); h 8.14e-05 -> 4.07e-05 (min 4.07e-05); max z at the end of the planned grid 0.00163, after the last terminal step 0.000792 (min over the phase 0.0002)
+T5  terminal steps in the regularised system
+Signal detected as 1D: (B, C, T) = (300, 1, 64).
+The model has 14 potentials.
+The model has 14 potentials.
+  0%|          | 0/90 [00:00<?, ?it/s] 21%|██        | 19/90 [00:00<00:00, 186.39it/s] 42%|████▏     | 38/90 [00:00<00:00, 188.14it/s] 63%|██████▎   | 57/90 [00:00<00:00, 188.44it/s] 86%|████████▌ | 77/90 [00:00<00:00, 189.05it/s][terminal] at the end of the planned grid max z = 0.00163 (L_6[0]) > 1e-12: terminal phase from h = 1.628e-04, shrink x0.5 per step
+[terminal] WARNING: terminal_max_steps = 10 reached in phase "shrink" with max z = 9.07e-06 (Scattering_First_Order[1]), h = 1.590e-07
+ 99%|█████████▉| 89/90 [00:00<00:00, 185.72it/s]
+terminal phase: 10 steps from k = 80 (terminal_max_steps reached); h 8.14e-05 -> 1.59e-07 (min 1.59e-07); max z at the end of the planned grid 0.00163, after the last terminal step 9.07e-06 (min over the phase 5.44e-06)
+Loop finished
+After loop: CPU=1.16 GB | GPU alloc=0.03 GB | GPU reserved=0.06 GB
+Preparing regularised solve
+Before _solve_regularised: CPU=1.16 GB | GPU alloc=0.03 GB | GPU reserved=0.06 GB
+Dropped close-in-time nodes: 0
+Last times: [0.99816022 0.99816149 0.99816213 0.99816245 0.99816261]
+Last dt: [1.27160401e-06 6.35802006e-07 3.17901003e-07 1.58950502e-07]
+Thomas solve: n=89, r=14, relative scaled residual 4.94e-13, finite=True
+After _solve_regularised: CPU=1.16 GB | GPU alloc=0.03 GB | GPU reserved=0.06 GB
+Stacking outputs
+Everything stacked: CPU=1.16 GB | GPU alloc=0.03 GB | GPU reserved=0.06 GB
+Returning
+  [PASS] T5 runs; system grid longer than the planned one   (88 vs 78)
+T6  final projection
+Signal detected as 1D: (B, C, T) = (300, 1, 64).
+The model has 14 potentials.
+The model has 14 potentials.
+  0%|          | 0/80 [00:00<?, ?it/s] 24%|██▍       | 19/80 [00:00<00:00, 187.19it/s] 48%|████▊     | 38/80 [00:00<00:00, 188.53it/s] 72%|███████▎  | 58/80 [00:00<00:00, 190.20it/s] 98%|█████████▊| 78/80 [00:00<00:00, 190.80it/s]100%|██████████| 80/80 [00:00<00:00, 190.12it/s]
+[final projection] 3 passes: max relative error 1.737e-04 -> 2.031e-07 (tol 1e-12, 14 statistics)
+Loop finished
+After loop: CPU=1.20 GB | GPU alloc=0.03 GB | GPU reserved=0.06 GB
+Preparing regularised solve
+Before _solve_regularised: CPU=1.20 GB | GPU alloc=0.03 GB | GPU reserved=0.06 GB
+Dropped close-in-time nodes: 0
+Last times: [0.99726506 0.99747089 0.99766122 0.99783723 0.998     ]
+Last dt: [0.00020583 0.00019034 0.00017601 0.00016277]
+Thomas solve: n=79, r=14, relative scaled residual 3.03e-14, finite=True
+After _solve_regularised: CPU=1.20 GB | GPU alloc=0.03 GB | GPU reserved=0.06 GB
+Stacking outputs
+Everything stacked: CPU=1.20 GB | GPU alloc=0.03 GB | GPU reserved=0.06 GB
+Returning
+  [PASS] T6 barphi_e identical
+  [PASS] T6 eta identical
+  [PASS] T6 theta identical
+  [PASS] T6 dH identical
+  [PASS] T6 barphi_p identical except the last row
+  [PASS] T6 log present, error not increased   ([3, 0.00017373819719068706, 2.030840136058032e-07])
+
+47/47 checks passed
+exit code 0

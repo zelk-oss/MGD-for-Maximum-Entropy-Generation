@@ -1,0 +1,2158 @@
+"""
+Moment-Guided Diffusion (MGD) — stochastic interpolant sampler.
+ 
+Implements Algorithm 1 of the Moment-Guided Diffusion paper together with two
+Langevin baselines.
+ 
+Idea
+----
+Given data samples ``x_1`` and a noise reference ``x_0``, an interpolant ``I_t`` is
+built between them (``I_0 = x_0``, ``I_1 = x_1``). A walker ensemble ``x_k`` is
+evolved by an SDE so that, at every step, the empirical moments of the walkers
+follow the moments of the interpolant ``phi_bar(I_t)``.
+ 
+Notation
+--------
+r           : number of scalar potentials, ``self.num_potentials``.
+N           : number of samples in the ensemble being processed.
+phi         : potentials ``phi = (phi_1, ..., phi_r)``.
+phi_bar(x)  : empirical moments, ``phi_bar(x) = mean_n phi(x_n)``  (length r).
+grad phi(x) : gradients of the potentials w.r.t. the signal.
+G(x)        : Gram matrix ``G_ij = mean_n <grad phi_i(x_n), grad phi_j(x_n)>`` (r x r).
+I_t         : interpolant at time t; I_dot_t its time derivative.
+eta_k       : solves ``G eta = d/dt phi_bar(I_t)``.
+theta_k     : solves ``G theta = phi_bar(I_{k+1}) - phi_bar(x_k)``.
+ 
+Signal layouts
+--------------
+``signal_dim`` is inferred from ``x_1.shape``:
+    0 -> scalar  : (B, C)
+    1 -> 1D      : (B, C, T)
+    2 -> 2D      : (B, C, M, N)
+ 
+Each ``potential`` object exposes:
+    forward(x)        -> moments,        shape (B, num_coefficients)
+    grad(x)           -> gradient fields, flattened over the potential axis
+    grad(x, v=vec)    -> sum_i v_i grad phi_i(x)
+    num_coefficients  : int
+    fit(x)            : optional refit (no-op if absent)
+"""
+
+
+
+import torch
+import numpy as np
+import matplotlib.pyplot as plt
+import time
+
+from scipy.special import erfcx, erf, erfinv
+from scipy.integrate import trapezoid
+from scipy import stats
+from tqdm import tqdm
+from scipy.ndimage import gaussian_filter
+
+from potentials.utils_potentials import *
+from potentials_builder import *
+from filters_bank import * 
+from utils import *
+from utils_entropy import*
+
+from pathlib import Path
+
+
+def loop_budget_s(time_limit_min, reserve_min=30.0, reserve_frac=0.1):
+    """Seconds the SDE loop may use out of a --time_limit_min budget.
+
+    Keeps back min(reserve_min, reserve_frac * limit) for what runs after the loop
+    (save_results, figures: ~100 s in the 2026-09-25 n1=8500 runs) and before it
+    (data loading, ~30 s). 20 h job -> 19h30; 1 h job -> 54 min.
+    (Changed 2026-09-26: was a flat 90%, i.e. 18 h of 20 h, which aborted a 60k-step
+    run projected at 18.02 h.)
+    """
+    return 60.0 * (time_limit_min - min(reserve_min, reserve_frac * time_limit_min))
+
+
+def trapezoid_node_weights(t):
+    """Trapezoid quadrature weights h_k of the nodes t (sum = t[-1] - t[0])."""
+    t = np.asarray(t, dtype=np.float64)
+    n, dt = len(t), np.diff(t)
+    h = np.empty(n)
+    if n == 1:
+        h[0] = 1.0
+    else:
+        h[0], h[-1] = dt[0] / 2, dt[-1] / 2
+        h[1:-1] = (dt[:-1] + dt[1:]) / 2
+    return h
+
+
+def reg_energy_weights(t, lam, mode='legacy', dim=None, schedule='uniform'):
+    """Weights (a, q, l) of the discrete energy solved by SDE._solve_regularised_thomas
+    (CODE sign, theta_code = -theta_MGD):
+
+        E = sum_k a_k (1/2 Theta_k^T M_k Theta_k - b_k^T Theta_k)
+          + sum_k [ q_k/2 dTheta_k^T C_k dTheta_k + l_k ct_k^T dTheta_k ].
+
+    a: (n,) per node, q, l: (n-1,) per cell [t_k, t_k+1].
+
+      'legacy' -- a = 1, q = lam/dt^2, l = -lam/dt: unweighted sums over nodes and cells
+                  (kept so old runs reproduce; on a non-uniform grid the node density
+                  acts as a weight).
+      'moment' -- quadrature in t. Per cell the time term is
+                  lam w_T dt [1/2 Th'^T C Th' + ct^T Th'].
+                  schedule 'uniform' (default): a = h_k (trapezoid), w_T = 1, i.e.
+                      int_0^1 [data(t) + lam (1/2 Th'^T C Th' + ct^T Th')] dt.
+                  schedule 'guth': Guth et al. (2025, eq. 8) weights mapped to the Cos
+                      schedule (noise variance s = cot^2 a, p(s) ∝ 1/s):
+                      a = h_k w_D(t_k),  w_D = 2 adot cos a / (d sin a)
+                      w_T(t_{k+1/2}) = sin a cos a / (2 adot d^2),
+                      lam_eff = w_T / w_D = sin^2(pi t/2) / (pi^2 d); lam is a multiplier.
+                      A comparison option, not the default. (The 2026-09-29 version had
+                      w_D = 2 adot cos a/(d sin^3 a): it missed the factor sin^2 a from
+                      grad_y = sin a grad_x, notes/guth_reg_audit_0930.)
+    """
+    t = np.asarray(t, dtype=np.float64)
+    n, dt = len(t), np.diff(t)
+    if mode == 'legacy':
+        return np.ones(n), lam / dt ** 2, -lam / dt
+    if mode != 'moment':
+        raise ValueError(f"mode must be 'legacy' or 'moment', got {mode!r}")
+    h = trapezoid_node_weights(t)
+    if schedule == 'uniform':
+        return h, lam / dt, lam * np.ones(n - 1)
+    if schedule != 'guth':
+        raise ValueError(f"schedule must be 'uniform' or 'guth', got {schedule!r}")
+    if dim is None:
+        raise ValueError("schedule='guth' needs dim (the signal dimension d)")
+    adot = np.pi / 2.0
+    a_node = adot * t
+    w_D = 2 * adot * np.cos(a_node) / (dim * np.sin(a_node))            # sin^2 a |ds/dt| / d
+    a_mid = adot * (t[:-1] + t[1:]) / 2
+    w_T = np.sin(a_mid) * np.cos(a_mid) / (2 * adot * dim ** 2)         # s / (d^2 |ds/dt|)
+    return h * w_D, lam * w_T / dt, lam * w_T
+
+
+current = Path.cwd()
+MGD_project_folder = current.parent
+
+
+
+
+class SDE(torch.nn.Module):
+    """
+    Predictor-corrector stochastic interpolant sampler (Algorithm 1 of MGD).
+ 
+    Integrates an SDE forward in interpolant time ``t``. At each step a predictor
+    moves the walkers along a drift reproducing the moment velocity
+    ``d/dt phi_bar(I_t)``, and a corrector moves them back onto the moment target
+    ``phi_bar(I_{k+1})``. Both solve a linear system against the Gram matrix ``G``.
+ 
+    Structure
+    ---------
+        - Initialization
+        - forward                     : main loop integrating the SDE
+        - iteration_step_projection   : a single predictor-corrector step
+        - intermediate helpers         (in call order)
+        - interpolant utilities
+ 
+    Parameters
+    ----------
+    x_1 : torch.Tensor
+        Data samples (interpolant endpoint at t = 1). Its shape sets the signal
+        layout: (B, C), (B, C, T) or (B, C, M, N).
+    n_rep : int
+        Number of walkers in the ensemble ``x_k``.
+    nb_interpolants : int
+        Number of interpolant samples used to estimate ``phi_bar(I_t)`` and its time
+        derivative.
+    t : array_like
+        Monotone time grid in [0, 1]. Integration runs over ``t[:-1]``.
+    sigma : float
+        Noise amplitude of the predictor. ``sigma = 0`` gives a deterministic
+        predictor.
+    potentials : dict[str, object]
+        Named potential objects (see module docstring for the expected interface).
+    batch_size : int
+        Mini-batch size used inside the per-sample reductions (moments, gradients,
+        Gram matrix) to bound memory.
+    device : str, optional
+        Torch device, by default ``'cpu'``.
+    regularization : float, optional
+        Value added to the diagonal of the (rescaled) Gram matrix before each solve,
+        by default 0.
+    interpolant : str, optional
+        Interpolant schedule: ``'Linear'``, ``'VarPreserv'``, ``'Sqrt'`` or
+        ``'Cos'`` (default).
+    x_0 : torch.Tensor, optional
+        Noise endpoint of the interpolant (t = 0). Drawn as Gaussian noise if None.
+    x_k : torch.Tensor, optional
+        Initial walker ensemble. Drawn as Gaussian noise if None.
+ 
+    Attributes
+    ----------
+    original_signal_shape : torch.Size
+        Shape of the supplied ``x_1``.
+    signal_dim : int
+        0, 1 or 2 (scalar / 1D / 2D), inferred from ``x_1``.
+    num_potentials : int
+        Total number of scalar potentials ``r= sum_i num_coefficients_i``.
+    indices_potentials : numpy.ndarray
+        Cumulative offsets delimiting each potential's coefficient block, used to
+        slice ``eta`` / ``theta`` per potential.
+    """
+    # 1) Add a small helper that (re)computes the potential-dimension bookkeeping
+    # added because of generalized gaussian class pruning the number of potentials 
+    #    from whatever num_coefficients the potentials currently report.
+    def _sync_potential_dims(self):
+        sizes = [p.num_coefficients for p in self.potentials.values()]
+        self.num_potentials = sum(sizes)
+        self.indices_potentials = np.cumsum([0] + sizes)
+
+    def __init__(
+        self,
+        x_1,
+        n_rep,
+        nb_interpolants,
+        t,
+        sigma,
+        potentials,
+        batch_size,
+        device='cpu',
+        regularization=1e-4,
+        interpolant='Cos',
+        x_0=None,
+        x_k=None,
+        use_coshgt_s0=True,
+        potentials_save_dir=None,  
+        solve_float64=False,
+    ):
+        super().__init__()
+
+        self.x_1 = x_1
+        self.original_signal_shape = self.x_1.shape
+        # per-step eta/theta solves in float64 (G and rhs upcast, result cast back);
+        # only matters for small `regularization` (ridge near float32 rounding ~1e-7)
+        self.solve_float64 = solve_float64
+
+        match len(self.x_1.shape):
+            case 2:
+                self.signal_dim = 0
+                print(f'Signal detected as scalar: (B, C) = ({batch_size}, {self.original_signal_shape[1]}).')
+            case 3:
+                self.signal_dim = 1
+                print(f'Signal detected as 1D: (B, C, T) = ({batch_size}, {self.original_signal_shape[1]}, {self.original_signal_shape[2]}).')
+            case 4:
+                self.signal_dim = 2
+                print(f'Signal detected as 2D: (B, C, M, N) = ({batch_size}, {self.original_signal_shape[1]}, {self.original_signal_shape[2]}, {self.original_signal_shape[3]}).')
+
+        self.n_rep           = n_rep
+        self.nb_interpolants = nb_interpolants
+        self.t               = t
+        self.sigma           = sigma
+        self.potentials      = potentials
+        self.batch_size      = batch_size
+        self.device          = device
+        self.regularization  = regularization
+        self.interpolant     = interpolant
+        self.x_0             = x_0
+        self.x_k             = x_k
+        self.use_coshgt_s0   = use_coshgt_s0
+
+        self.init_interpolants_and_workers()
+        
+        # 1. Resolve where fitted-potential state gets saved for THIS run.
+        if potentials_save_dir is not None:
+            saved_results_dir = Path(potentials_save_dir)
+        else:
+            saved_results_dir = MGD_project_folder / "turbulence/saved_results"
+            print(f"[SDE] WARNING: no potentials_save_dir given — falling back to the "
+                f"shared global path {saved_results_dir}. This WILL be overwritten by "
+                f"other/concurrent runs. Pass potentials_save_dir=<exp_dir>/'fitted_potentials'.")
+
+        saved_results_dir.mkdir(parents=True, exist_ok=True)
+
+        for name, pot in self.potentials.items():
+            if not hasattr(pot, "fit"):
+                continue
+            state_path = saved_results_dir / f"{name}.pt"
+
+            # load a previously fitted/pruned state instead of refitting, if present
+            if hasattr(pot, "is_fitted") and hasattr(pot, "load_fixed_parameters") and state_path.exists():
+                own_filters = pot.filters
+                loaded = type(pot).load_fixed_parameters(state_path, own_filters, map_location=device)
+                loaded.to(device)
+                self.potentials[name] = loaded
+                print(f"[SDE] loaded fitted state for '{name}' from {state_path} "
+                    f"({loaded.num_coefficients} active statistics)")
+                continue
+
+            pot.fit(self.x_1)
+            if hasattr(pot, "is_fitted"):
+                pot.save_fixed_parameters(state_path)
+                print(f"Fixed parameters for '{name}' have been saved in: {state_path}")
+
+        self._sync_potential_dims()     # <-- reads post-prune sizes
+        print(f'The model has {self.num_potentials} potentials.')
+
+        list_potential_num_coefficients = [p.num_coefficients for p in self.potentials.values()]
+        self.num_potentials    = sum(list_potential_num_coefficients)
+        self.indices_potentials = np.cumsum([0] + list_potential_num_coefficients)
+        print(f'The model has {self.num_potentials} potentials.')
+        # per-statistic threshold on diag(G) below which a statistic counts as dead in
+        # _live_potentials: 0 (exact zero, as before) unless the potential sets
+        # near_empty_tol (Scalar_GGD_KRegion, in units of its data Gram diagonal = 1)
+        self._live_floor = torch.cat([
+            torch.full((p.num_coefficients,), float(getattr(p, 'near_empty_tol', 0.0) or 0.0))
+            for p in self.potentials.values()]).to(self.device)
+        n_tol = int((self._live_floor > 0).sum())
+        if n_tol:
+            print(f'[live] {n_tol} statistics are set to 0 at steps where their Gram diagonal '
+                  f'is below near_empty_tol x their data value (region empty on the walkers)')
+        # per-step conditioning log (2026-09-30, notes/eps_conditioning_0930): every
+        # cond_every-th step, the spectrum of the Jacobi-scaled live Gram (before the
+        # ridge) of the eta and theta solves. 0 = off. Diagnostic only: the solves are
+        # unchanged. Set by run_experiment from --cond_every.
+        self.cond_every = 0
+        self._cond_log = {'eta': [], 'theta': []}
+        self._cond_spec = {'eta': [], 'theta': []}
+        # Partial dumps of that log while the run is going (2026-10-01): if cond_path is set,
+        # the log collected so far is written there every cond_flush_rows logged theta steps
+        # (atomic replace, so a reader never sees a half-written file). The final save in
+        # run_experiment overwrites it with the complete log. Set by run_experiment.
+        self.cond_path = None
+        self.cond_flush_rows = 200
+        # Iterated corrector in the tail (2026-10-27, see _extra_corrector). 0 = off: the step
+        # is the single predictor-corrector pass, bit-identical to before. Set by run_experiment.
+        self.extra_corrector_max = 0
+        self.extra_corrector_tau = 1.0
+        self.extra_corrector_tail = 0.1
+        self.extra_corrector_log = []          # rows [k, passes, max z before, max z after]
+        self._mom_x1 = None
+        self.potential_labels = [f'{name}[{i}]' for name, p in self.potentials.items()
+                                 for i in range(p.num_coefficients)]
+
+
+    # ------------------------------------------------------------------------------------------------------------------
+    # Initialization
+    # ------------------------------------------------------------------------------------------------------------------
+
+    def _print_memory(self, msg):
+        import gc
+        import psutil
+        import os
+
+        process = psutil.Process(os.getpid())
+        rss = process.memory_info().rss / 1024**3
+
+        if torch.cuda.is_available():
+            allocated = torch.cuda.memory_allocated() / 1024**3
+            reserved  = torch.cuda.memory_reserved() / 1024**3
+            print(f"{msg}: CPU={rss:.2f} GB | GPU alloc={allocated:.2f} GB | GPU reserved={reserved:.2f} GB")
+        else:
+            print(f"{msg}: CPU={rss:.2f} GB")
+
+        gc.collect()
+
+
+    def init_interpolants_and_workers(self,):
+        """
+        Initialize the interpolant endpoints and the walker ensemble.
+ 
+        Sets ``x_0`` (noise endpoint), ``x_1`` (data endpoint, tiled to length
+        ``nb_interpolants``) and ``x_k`` (walkers, length ``n_rep``) according to the
+        detected ``signal_dim``. Any endpoint supplied to the constructor is reused
+        and tiled to the required count; otherwise it is drawn as Gaussian noise.
+        Dispatched per signal layout (scalar / 1D / 2D).
+ 
+        Notes
+        -----
+        Mutates ``self.x_0``, ``self.x_1`` and ``self.x_k`` in place.
+        """
+
+
+        match len(self.original_signal_shape):
+
+            case 2:
+                if self.x_0 is None:
+                    self.x_0 = torch.randn(self.nb_interpolants, 1).to(self.device)
+                else:
+                    self.x_0 = self.x_0.repeat((self.nb_interpolants // self.x_0.shape[0] + 1, 1))[:self.nb_interpolants]
+                self.x_1 = self.x_1.repeat((self.nb_interpolants // self.x_1.shape[0] + 1, 1))[:self.nb_interpolants]
+
+                if self.x_k is None:
+                    self.x_k = torch.randn(self.n_rep, 1).to(self.device)
+
+            case 3:
+                if self.x_0 is None:
+                    self.x_0 = torch.randn(self.nb_interpolants, self.original_signal_shape[1], self.original_signal_shape[2]).to(self.device)
+                else:
+                    self.x_0 = self.x_0.repeat((self.nb_interpolants // self.x_0.shape[0] + 1, 1, 1))[:self.nb_interpolants]
+                self.x_1 = self.x_1.repeat((self.nb_interpolants // self.original_signal_shape[0] + 1, 1, 1))[:self.nb_interpolants]
+
+                if self.x_k is None:
+                    self.x_k = torch.randn(self.n_rep, self.original_signal_shape[1], self.original_signal_shape[2]).to(self.device)
+
+            case 4:
+                if self.x_0 is None:
+                    self.x_0 = torch.randn(self.nb_interpolants, self.original_signal_shape[1], self.original_signal_shape[2], self.original_signal_shape[3]).to(self.device)
+                else:
+                    self.x_0 = self.x_0.repeat((self.nb_interpolants // self.x_0.shape[0] + 1, 1, 1, 1))[:self.nb_interpolants]
+                self.x_1 = self.x_1.repeat((self.nb_interpolants // self.original_signal_shape[0] + 1, 1, 1, 1))[:self.nb_interpolants]
+
+                if self.x_k is None:
+                    self.x_k = torch.randn(self.n_rep, self.original_signal_shape[1], self.original_signal_shape[2], self.original_signal_shape[3]).to(self.device)
+
+
+    # ------------------------------------------------------------------------------------------------------------------
+    # Main function
+    # ------------------------------------------------------------------------------------------------------------------
+
+    def _check_time_budget(self, loop_t0, n_done, time_limit_min,
+                            min_iters=30, window=1000, min_window=100):
+        """
+        Abort the SDE loop early if the steady-state iteration time, extrapolated
+        to the full loop, would blow through the SLURM time budget. No-op if
+        `time_limit_min` is None (the default — opt-in per run).
+
+        The first `min_iters` iterations are warm-up (CUDA, allocator) and are
+        slower: they are timed separately and NOT used for the rate. From then on
+        each iteration's wall-clock time is recorded; the rate used for the
+        projection is the MEDIAN of the last `window` per-iter times (of all of them
+        while fewer than `window` exist; the check starts after `min_window`):
+            projected = (warm-up time) + rate * (total - min_iters).
+
+        (Changed 2026-11-01: window 100 -> 1000, checks from min_window = 100 iters.
+        Job 1812104 (52000 steps) ran at a steady 1.22 s/it for 4000+ steps (17.6 h
+        projected), then a short slow stretch at the end of its 100-iter window pushed
+        the median to 1.40 s/it and aborted it at 1.5 h (20.17 h projected). With 1000
+        iters a slow stretch must last > ~500 iters (~10 min) to move the median; a
+        node that stays slow is still caught after ~500 iters. The first check still
+        comes at min_iters + min_window, so a run that can never fit aborts as early
+        as before.)
+
+        The median (not mean) is used so a single transient spike -- GPU allocator
+        jitter, I/O, filesystem hiccup -- does not inflate the rate for the rest
+        of the run and trigger a false abort. A sustained slow node (every iter
+        at 1.3 s instead of 1.16) still shows up as a 1.3 s median and aborts.
+        (Changed 2026-10-13: job 1019780 aborted projecting 20.88 h because one
+        iter at 6.13 s shifted the cumulative mean from 1.16 to 1.37 s/it over
+        the 100-iter window; the median would have stayed at 1.16.)
+
+        (Changed 2026-09-25: the rate used to include the warm-up and the check ran
+        from iteration 30. On H100 at n1=8500 the first 30 steps ran at 1.10 s/it vs
+        1.01 s/it steady, which aborted two 60k-step runs projected at 18.3-18.6 h that
+        would have taken ~16.8 h.)
+
+        The budget is :func:`loop_budget_s`: it reserves headroom under
+        `time_limit_min` for the work that happens after this loop (regularised
+        solve, save_results I/O), which isn't accounted for by iteration count alone.
+        """
+        if time_limit_min is None or n_done < min_iters:
+            return
+        now = time.time()
+        # end-of-warm-up marker; also reset per-iter history for a fresh loop
+        if n_done == min_iters or getattr(self, '_budget_mark', (None,))[0] != loop_t0:
+            self._budget_mark = (loop_t0, n_done, now)
+            self._iter_times = []
+            self._iter_last = now
+            return
+        _, n_warm, t_warm = self._budget_mark
+        # record this iter's wall time (first entry = time from end-of-warm-up to iter n_warm+1)
+        self._iter_times.append(now - self._iter_last)
+        self._iter_last = now
+        if len(self._iter_times) > window:
+            self._iter_times = self._iter_times[-window:]
+        if n_done < n_warm + min_window:
+            return
+        rate = float(np.median(self._iter_times))
+        n_rate = len(self._iter_times)
+        total_iters = len(self.t) - 1
+        projected_s = (t_warm - loop_t0) + rate * (total_iters - n_warm)
+        budget_s = loop_budget_s(time_limit_min)
+        if projected_s > budget_s:
+            raise RuntimeError(
+                f"Aborting SDE loop: projected to take {projected_s / 3600:.2f}h "
+                f"({rate:.2f}s/it x {total_iters} it, median of the last {n_rate} iters' "
+                f"wall times after a {n_warm}-iteration warm-up) which exceeds "
+                f"the {budget_s / 3600:.2f}h loop budget of the {time_limit_min / 60:.1f}h job "
+                f"(--time_limit_min {time_limit_min}). Aborting now instead of letting "
+                f"SLURM kill the job at the wall-clock limit with nothing saved."
+            )
+
+    def forward(self, param_storage_frequency=1, time_limit_min=None):
+        """
+        Integrate the SDE over the time grid and collect the trajectories.
+ 
+        Fits the potentials on the current walkers, then loops over ``t[:-1]``,
+        calling :meth:`iteration_step_projection` at each step. At a configurable
+        cadence it records the predictor / corrector coefficients, the entropy
+        increment, and the moments of both the interpolant and the walkers.
+ 
+        Parameters
+        ----------
+        param_storage_frequency : int, optional
+            Store diagnostics every ``param_storage_frequency`` steps, by default 1.
+ 
+        Returns
+        -------
+        x_k : torch.Tensor
+            Final walker ensemble (the generated samples).
+        barphi_e : torch.Tensor
+            Interpolant moments ``phi_bar(I_t)`` stacked over stored steps,
+            shape (num_stored, r).
+        barphi_p : torch.Tensor
+            Walker moments ``phi_bar(x_k)`` stacked over stored steps,
+            shape (num_stored, r).
+        eta_k_list : torch.Tensor
+            Predictor coefficients at the stored steps, shape (num_stored, r).
+        theta_k_list : torch.Tensor
+            Corrector coefficients (normalized) at the stored steps,
+            shape (num_stored, r).
+        dH_k_list : torch.Tensor
+            Entropy increments, concatenated over stored steps.
+ 
+        Notes
+        -----
+        ``barphi_e`` / ``barphi_p`` are seeded before the loop with the moments of
+        ``x_0`` and ``x_k``, and the final state is appended after the loop so the
+        trajectories include both endpoints.
+        """
+
+
+        #Fiting
+        #self.fit(self.x_k)
+        #self.fit(self.x_1)
+        #self._sync_potential_dims()  # update after possible potential pruning 
+
+        barphi_e = [self.compute_moments(self.x_0).mean(0)]
+        barphi_p = [self.compute_moments(self.x_k).mean(0)]
+
+        eta_k_list   = []
+        theta_k_list = []
+        dH_k_list    = []
+
+        self._rhs_dt_cache = None                     # no reuse across separate runs
+        loop_t0 = time.time()
+        for k, t_k in tqdm(enumerate(self.t[:-1])):
+
+            #Fiting
+            #self.fit(self.x_k)
+
+
+            self.x_k, y_k, I_k, eta_k, theta_k, dH_k, bk= self.iteration_step_projection(self.x_k, k)
+
+            if (k + 1) % param_storage_frequency == 0:
+                eta_k_list.append(eta_k)
+                theta_k_list.append(theta_k)
+                dH_k_list.append(dH_k)
+                barphi_e.append(self.compute_moments(I_k).mean(0))
+                barphi_p.append(self.compute_moments(self.x_k).mean(0))
+
+            self._check_time_budget(loop_t0, k + 1, time_limit_min)
+
+        # Store final parameters and statistics
+        eta_k_list.append(eta_k)
+        theta_k_list.append(theta_k)
+        dH_k_list.append(dH_k)
+        barphi_e.append(self.compute_moments(I_k).mean(0))
+        barphi_p.append(self.compute_moments(self.x_k).mean(0))
+
+        print("Finished time integration")
+        self._print_memory("After loop")
+
+        print("Stacking barphi_e")
+        barphi_e = torch.stack(barphi_e)
+        self._print_memory("After stacking barphi_e")
+
+        print("Stacking barphi_p")
+        barphi_p = torch.stack(barphi_p)
+        self._print_memory("After stacking barphi_p")
+
+        print("Stacking eta")
+        eta_k_list = torch.stack(eta_k_list)
+        self._print_memory("After stacking eta")
+
+        print("Stacking theta")
+        theta_k_list = torch.stack(theta_k_list)
+        self._print_memory("After stacking theta")
+
+        print("Concatenating dH")
+        dH_k_list = torch.cat(dH_k_list)
+        self._print_memory("After concatenating dH")
+
+        print("Returning outputs")
+
+        return (
+            self.x_k,
+            barphi_e,
+            barphi_p,
+            eta_k_list,
+            theta_k_list,
+            dH_k_list,
+        )
+
+    def _cut_close_time_nodes(self, t, M, Gf, bb, cc, min_dt=None, extra=None):
+        """
+        Greedily keep only nodes at least min_dt apart (checked against the last
+        KEPT node, not the previous raw node — a plain np.diff(t) > tol mask
+        fails on runs of many close points because it doesn't re-check spacing
+        after dropping). Points that violate the tolerance are simply cut.
+        extra: further per-node lists, cut the same way and appended to the output.
+        """
+        t = np.asarray(t, dtype=np.float64)  # keep full precision, no float32 cast
+        if min_dt is None:
+            span = t[-1] - t[0] if len(t) > 1 else 1.0
+            min_dt = max(span * 1e-5, 1e-6)
+
+        keep = [0]
+        for i in range(1, len(t)):
+            if t[i] - t[keep[-1]] >= min_dt:
+                keep.append(i)
+
+        keep = np.asarray(keep)
+        out = (t[keep], [M[i] for i in keep], [Gf[i] for i in keep],
+               [bb[i] for i in keep], [cc[i] for i in keep])
+        if extra is not None:
+            out = out + tuple([X[i] for i in keep] for X in extra)
+        return out
+
+    def forward_regularised(self, lam=1.0, n_subsample=1, param_storage_frequency=1,
+                             time_limit_min=None, reg_solver='dense', reg_ridge=0.0,
+                             reg_system_path=None, solve_reg=True, adaptive=None,
+                             reg_mode='legacy', interp_time_terms=False, reg_schedule='uniform'):
+        """
+        As forward, but stores the quantities of the time-regularised problem per node
+        and solves A Theta = f (see _solve_regularised_thomas) on a coarse grid after
+        the loop. The SDE evolution is unchanged. t = 0 and t = 1 are skipped.
+
+        Sign: CODE sign throughout, theta_code = -theta_MGD.
+
+        Per node t_{k+1} (both modes): M_k = G(y_k) = E[grad phi grad phi^T] at the
+        predicted walkers y_k (the corrector's matrix) and b_k = (m_{t_{k+1}} -
+        phibar(y_k)) / (h sigma^2), so the per-node minimiser is the corrector's theta_k.
+        Time term, by reg_mode:
+          'legacy' -- G = E[phi phi^T] and c = E[phi tau] at y_k, with
+                      tau = -adot [tan a (d - |Z|^2) + Z.X_eff], Z = x_0,
+                      X_eff = (y_k - cos a Z)/sin a. NOTE: the walkers are NOT paired with
+                      Z: x_k and x_0 are independent draws (run_experiment passes
+                      neither), so E[tau | y_k] = adot d cot a is a constant and c carries
+                      no information on theta_dot (notes/guth_reg_audit_0930). Kept only
+                      so old runs reproduce; tau is computed in this mode only.
+          'moment' -- Sigma_w = Cov(phi) at the moment-matched walkers x_{k+1},
+                      accumulated centred in float64 (stored float32), m_w = E[phi(x_{k+1})]
+                      (float64) and mdot = d/dt E[phi(I_t)] at t_{k+1}, the pathwise
+                      estimate the predictor already uses (dt_phi_I_k); plus the per-step
+                      live mask of the corrector and the step h. No tau.
+        Both modes are solved by _solve_regularised_thomas with the same mode;
+        reg_schedule ('uniform' | 'guth') picks the moment-mode weights.
+
+        Coarse grid keeps the points t[n_subsample*j]; metrics and second members are
+        averaged over the n_subsample neighbouring (valid) fine steps (live: AND).
+
+        Returns (..., Theta_reg, t_reg): t_reg is the actual (non-uniform) coarse
+        time grid Theta_reg was solved on -- distinct from the fine grid `t` passed
+        in, since `n_subsample` blocking and `_cut_close_time_nodes` pruning near
+        t=1 (where the Cos schedule's steps shrink) both remove points irregularly.
+        Callers must save t_reg alongside Theta_reg if they want to plot/interpret
+        Theta_reg on its correct time axis later -- it cannot be reconstructed from
+        `t` + `n_subsample` alone.
+
+        reg_solver selects the solve of A Theta = f:
+          'dense'  -- legacy: dense (n*r)^2 float32 solve on the device, with
+                      self.regularization added after Jacobi scaling, and nodes
+                      closer than ~1e-5 cut. Unchanged, so old runs reproduce.
+                      Only reg_mode='legacy'.
+          'thomas' -- block-Thomas in float64 on CPU, O(n r^2) memory, no Schur
+                      ridge, only exact-duplicate times cut. Per-block matrices
+                      are offloaded to CPU during the loop, so n_subsample=1
+                      (no block averaging) fits.
+        reg_ridge (thomas only): M_k += reg_ridge * diag(M_k), a ridge on the data
+        term of the original problem; 0 disables it. Equal to the per-step solve when
+        reg_ridge = self.regularization.
+        interp_time_terms (thomas only, default OFF since 2026-09-30): also save the
+        r-vector diagnostics c_I = E[phi(I) tau_I], m_I, mean tau_I on the interpolant
+        samples (true (Z, x_1) pairs; -c_I is a noisy estimate of mdot). No r x r block.
+
+        reg_system_path: if set, the assembled system is written there BEFORE the solve,
+        so lam can be re-tuned offline (codes/resolve_theta_reg.py) without re-running
+        the SDE -- lam never enters the SDE evolution. solve_reg=False skips the in-run
+        solve (Theta_reg is returned as None); only meaningful with reg_system_path.
+
+        adaptive: an AdaptiveStepController (codes/time_schedules.py) or None. If set,
+        self.t is replaced by a float64 grid built step by step: t[k+1] is chosen from
+        the moment error after step k-1, before step k draws its noise (no rejected
+        steps). The loop stops at the controller's t_end, at max_steps, or -- instead
+        of aborting -- when the loop budget (loop_budget_s) is used, and self.t is trimmed to the
+        points actually used, so callers must save self.t (not the grid they passed).
+        """
+        assert self.interpolant == 'Cos', "this routine assumes the Cos schedule"
+        if reg_solver not in ('dense', 'thomas'):
+            raise ValueError(f"reg_solver must be 'dense' or 'thomas', got {reg_solver!r}")
+        if reg_mode not in ('legacy', 'moment'):
+            raise ValueError(f"reg_mode must be 'legacy' or 'moment', got {reg_mode!r}")
+        if reg_solver == 'dense' and reg_ridge:
+            raise ValueError("reg_ridge is only implemented for reg_solver='thomas'")
+        if reg_solver == 'dense' and reg_mode != 'legacy':
+            raise ValueError("reg_mode other than 'legacy' is only implemented for "
+                             "reg_solver='thomas'")
+        if not solve_reg and reg_system_path is None:
+            raise ValueError("solve_reg=False without reg_system_path would discard the "
+                             "regularised system entirely")
+        legacy = reg_mode == 'legacy'
+        # thomas: keep per-block matrices on CPU so the full fine grid fits
+        store = (lambda x: x.detach().cpu()) if reg_solver == 'thomas' else (lambda x: x)
+        if legacy:
+            # elementwise tau(y_k^i; x_0^i) needs equal shapes. The walkers are NOT
+            # paired with x_0 (independent draws), see the docstring.
+            assert self.x_k.shape[0] == self.x_0.shape[0], \
+                "legacy walker tau needs n_rep == nb_interpolants (x_k and x_0 are NOT paired)"
+        #self.fit(self.x_1)
+        #self._sync_potential_dims()
+
+        x0  = self.x_0
+        B   = x0.shape[0]
+        d   = int(np.prod(x0.shape[1:]))
+        z2  = x0.reshape(B, -1).pow(2).sum(1)              # ||Z||^2  (fixed, Z = x_0)
+        adot, eps = np.pi / 2.0, 1e-8
+
+        barphi_e = [self.compute_moments(self.x_0).mean(0)]
+        barphi_p = [self.compute_moments(self.x_k).mean(0)]
+        eta_k_list, theta_k_list, dH_k_list = [], [], []
+        # per-node quantities: name -> list; acc: name -> running block sum
+        keys = (['M', 'G', 'b', 'c', 'm', 'tau_mean'] if legacy else
+                ['M', 'Sigma', 'b', 'mdot', 'm', 'live', 'h'])
+        interp_time_terms = bool(interp_time_terms) and reg_solver == 'thomas'
+        if interp_time_terms:
+            keys = keys + ['diag_c_I', 'diag_m_I', 'diag_tau_mean_I']
+        nodes = {kk: [] for kk in keys}
+        acc = {}
+        t_used = []
+        zx01 = (x0 * self.x_1).reshape(B, -1).sum(1) if interp_time_terms else None   # Z . x_1
+        cnt = 0
+
+        def flush():
+            for kk in keys:
+                v = acc[kk]
+                if kk == 'live':
+                    nodes[kk].append(store(v))
+                elif kk in ('tau_mean', 'diag_tau_mean_I', 'h'):
+                    nodes[kk].append(float(v / cnt))
+                elif kk == 'Sigma':
+                    # accumulated centred in float64; kept float32 like M (the saved copy
+                    # is float32 too, so an offline re-solve reproduces the in-run one)
+                    nodes[kk].append(store((v / cnt).float()))
+                else:
+                    nodes[kk].append(store(v / cnt))
+
+        if adaptive is not None:
+            if param_storage_frequency != 1:
+                raise ValueError('adaptive steps need param_storage_frequency=1 (the '
+                                 'controller reads every step\'s moments)')
+            t_grid = torch.zeros(adaptive.max_steps + 1, dtype=torch.float64)
+            t_grid[0] = float(self.t[0])
+            self.t = t_grid
+            adaptive.observe_initial(barphi_e[0])
+            n_iter = adaptive.max_steps
+        else:
+            n_iter = len(self.t) - 1
+
+        self._rhs_dt_cache = None                     # no reuse across separate runs
+        loop_t0 = time.time()
+        for k in tqdm(range(n_iter)):
+            if adaptive is not None:
+                self.t[k + 1] = adaptive.next_t(float(self.t[k]))
+            h = self.t[k + 1] - self.t[k]
+            self.x_k, y_k, I_k, eta_k, theta_k, dH_k, bk = self.iteration_step_projection(self.x_k, k)
+            t_node = self.t[k + 1]
+            ak = np.pi * t_node / 2.0
+            cos_k, sin_k, tan_k = np.cos(ak), np.sin(ak), np.tan(ak)
+
+            # phi(y_k) and phi(I_{k+1}) were computed by this step's corrector
+            # (compute_rhs_constraint_correction); reused here instead of recomputed
+            # (2026-09-29): same function on the same tensors, identical values.
+            mom_y = getattr(self, '_mom_x', None)
+            mom_I = getattr(self, '_mom_I', None)
+            if mom_y is None or mom_I is None:
+                mom_y, mom_I = self.compute_moments(y_k), self.compute_moments(I_k)
+            self._mom_x = self._mom_I = None                  # never reused by a later step
+            # phi(x_{k+1}) (walkers after the corrector): the moment mode's covariance
+            # and barphi_p; computed once per step when either needs it
+            store_step = (k + 1) % param_storage_frequency == 0
+            mom_x1 = self._mom_x1                  # cached by _extra_corrector (same x), else None
+            self._mom_x1 = None
+            if mom_x1 is None and (store_step or not legacy):
+                mom_x1 = self.compute_moments(self.x_k)
+
+            if sin_k > eps and cos_k > eps:                # skip t = 0 (sin = 0), t = 1 (cos = 0)
+                # raw Gram at y_k. CHANGED 2026-09-25: was self.compute_G(Xt), an exact
+                # repeat of the G(y_k) that compute_theta just computed for the corrector
+                # (Xt is y_k); reused instead: identical values, ~17% of the step at
+                # n1=8500 (profile_step.sh).
+                Mk    = self._G_theta
+                bk    = bk / (h * self.sigma**2)  # phi_bar(I_{k+1}) - phi_bar(y_k)
+                if legacy:
+                    mom   = mom_y                                          # phi(y_k)              (B, r)
+                    Gk    = mom.T @ mom / B                                # moment Gram at y_k
+                    X_eff = (y_k - cos_k * x0) / sin_k                     # (y_k - cos a Z)/sin a
+                    zx    = (x0 * X_eff).reshape(B, -1).sum(1)             # Z . X_eff             (B,)
+                    tau   = -adot * (tan_k * (d - z2) + zx)                # tau_k^i               (B,)
+                    ck    = torch.einsum('br,b->r', mom, tau) / B          # E[phi(y_k) tau]
+                    new = {'M': Mk, 'G': Gk, 'b': bk, 'c': ck, 'm': mom.mean(0), 'tau_mean': tau.mean()}
+                else:
+                    mom1  = mom_x1.double()                                # phi(x_{k+1})     (B, r)
+                    m1    = mom1.mean(0)
+                    dev1  = mom1 - m1
+                    Sk    = dev1.T @ dev1 / B                              # centred, float64
+                    cache = self._rhs_dt_cache                             # (k+1, dt_phi_I at t_{k+1})
+                    assert cache is not None and cache[0] == k + 1
+                    live_k = getattr(self, '_live_theta', None)
+                    if live_k is None:
+                        live_k = torch.ones(self.num_potentials, dtype=torch.bool, device=Mk.device)
+                    new = {'M': Mk, 'Sigma': Sk, 'b': bk, 'mdot': cache[1].reshape(-1).double(),
+                           'm': m1, 'live': live_k.clone(),
+                           'h': torch.as_tensor(float(h), dtype=torch.float64)}
+                if interp_time_terms:
+                    # diagnostics on the interpolant samples I_{k+1} = cos a Z + sin a x_1
+                    # (true pairs): E[tau_I] = 0 and E[phi tau_I] = -mdot in expectation
+                    tauI = -adot * (tan_k * (d - z2) + zx01)
+                    new.update({'diag_c_I': torch.einsum('br,b->r', mom_I, tauI) / B,
+                                'diag_m_I': mom_I.mean(0), 'diag_tau_mean_I': tauI.mean()})
+
+                if cnt == 0:
+                    t_used.append(t_node)                             # coarse node at target time
+                    acc = {kk: v.clone() for kk, v in new.items()}
+                else:
+                    for kk, v in new.items():
+                        if kk == 'live':
+                            acc[kk] &= v
+                        else:
+                            acc[kk] += v
+                cnt += 1
+                if cnt == n_subsample:
+                    flush()
+                    cnt = 0
+
+            if store_step:
+                eta_k_list.append(eta_k); theta_k_list.append(theta_k); dH_k_list.append(dH_k)
+                barphi_e.append(mom_I.mean(0))                         # phi(I_k), I_k = I(t_{k+1})
+                barphi_p.append(mom_x1.mean(0))
+
+            if adaptive is None:
+                self._check_time_budget(loop_t0, k + 1, time_limit_min)
+                continue
+            adaptive.update(barphi_e[-1], barphi_p[-1])
+            if adaptive.done(float(self.t[k + 1])):
+                break
+            if time_limit_min is not None and time.time() - loop_t0 > loop_budget_s(time_limit_min):
+                print(f'WARNING: adaptive run stopped by the time limit at t = '
+                      f'{float(self.t[k + 1]):.8f} (1 - t = {1 - float(self.t[k + 1]):.2e}), '
+                      f'before t_end = {adaptive.t_end}')
+                break
+        else:
+            if adaptive is not None:
+                print(f'WARNING: adaptive run hit max_steps = {adaptive.max_steps} at '
+                      f'1 - t = {1 - float(self.t[-1]):.2e}, before t_end = {adaptive.t_end}')
+
+        if adaptive is not None:
+            self.t = self.t[:k + 2]                       # grid points actually used
+            print(adaptive.summary())
+
+        if cnt > 0:                                                    # final partial block
+            flush()
+
+        print("Loop finished")
+        self._print_memory("After loop")
+
+        print("Preparing regularised solve")
+        self._print_memory("Before _solve_regularised")
+
+        # dense: the ~1e-5 cut keeps its float32 solve conditioned (legacy behaviour).
+        # thomas (float64): drop only exact-duplicate times, which would give dt = 0.
+        # The first node is dropped from the system (as before 2026-09-30).
+        blk, vec = ('G', 'c') if legacy else ('Sigma', 'mdot')
+        rest = [kk for kk in keys if kk not in ('M', blk, 'b', vec)]
+        t_reg, M_reg, C_reg, b_reg, v_reg, *rest_reg = self._cut_close_time_nodes(
+            t_used[1:], nodes['M'][1:], nodes[blk][1:], nodes['b'][1:], nodes[vec][1:],
+            min_dt=1e-12 if reg_solver == 'thomas' else None,
+            extra=[nodes[kk][1:] for kk in rest],
+        )
+        sysd = {'M': M_reg, blk: C_reg, 'b': b_reg, vec: v_reg, **dict(zip(rest, rest_reg))}
+
+        print("Dropped close-in-time nodes:", len(t_used) - 1 - len(t_reg))
+        print("Last times:", t_reg[-5:])
+        print("Last dt:", np.diff(t_reg[-5:]))
+
+        if reg_system_path is not None:                  # before the solve: survives a solve OOM
+            # Non-fatal: the samples, theta_t and moments are saved by the caller AFTER
+            # this method returns, so an exception here (SCRATCH quota, I/O error, memory
+            # while writing ~40 GB) would lose the whole run. Log it and carry on.
+            try:
+                self._save_reg_system(reg_system_path, t_reg, sysd,
+                                      lam=lam, n_subsample=n_subsample, reg_solver=reg_solver,
+                                      reg_mode=reg_mode, dim=d, n_walkers=int(self.x_k.shape[0]),
+                                      sigma=float(self.sigma), regularization=float(self.regularization))
+            except Exception as e:
+                import traceback
+                traceback.print_exc()
+                print(f"WARNING: saving the regularised system to {reg_system_path} FAILED "
+                      f"({type(e).__name__}: {e}). Continuing: samples, theta_t and moments are "
+                      f"still saved; Theta_reg for this run can only come from an in-run solve.")
+
+        if not solve_reg:
+            print("Skipping in-run regularised solve (solve_reg=False); "
+                  "solve offline with codes/resolve_theta_reg.py")
+            Theta_reg = None
+        elif reg_solver == 'thomas':
+            live_reg = torch.stack(sysd['live']) if not legacy else None
+            Theta_reg = self._solve_regularised_thomas(
+                t_reg, M_reg, C_reg, b_reg, v_reg, lam, ridge=reg_ridge,
+                mode=reg_mode, dim=d, schedule=reg_schedule, live=live_reg)
+        else:
+            Theta_reg = self._solve_regularised(t_reg, M_reg, C_reg, b_reg, v_reg, lam)
+
+        self._print_memory("After _solve_regularised")
+
+        print("Stacking outputs")
+
+        # barphi_e/barphi_p start with one extra entry appended BEFORE the loop
+        # (the t=0 seed, `compute_moments(x_0)`/`compute_moments(x_k)` above), so
+        # `[1:]` drops that redundant seed and leaves one entry per loop iteration.
+        # eta_k_list/theta_k_list/dH_k_list have NO such pre-loop seed -- they
+        # start as empty lists and are only appended inside the loop -- so slicing
+        # them with `[1:]` as well silently discarded their genuine first step
+        # (k=0) and left them 2 shorter than `t` instead of 1 shorter. Fixed: no
+        # slice for these three, so all five end up the same length, one entry
+        # per loop iteration, aligned with `t[1:]`.
+        barphi_e = torch.stack(barphi_e)[1:]
+        barphi_p = torch.stack(barphi_p)[1:]
+        eta_k_list = torch.stack(eta_k_list)
+        theta_k_list = torch.stack(theta_k_list)
+        dH_k_list = torch.cat(dH_k_list)
+
+        self._print_memory("Everything stacked")
+
+        print("Returning")
+
+        return (
+            self.x_k,
+            barphi_e,
+            barphi_p,
+            eta_k_list,
+            theta_k_list,
+            dH_k_list,
+            Theta_reg[1:] if Theta_reg is not None else None,
+            np.asarray(t_reg[1:], dtype=float),
+        )
+
+    def _save_reg_system(self, path, t, sysd, **meta):
+        """
+        Write the regularised system exactly as the solver receives it: grid t
+        (float64) and the per-node lists of sysd, plus metadata (meta['reg_mode'] says
+        which keys exist). r x r blocks (M, G, Sigma) and b, c are stored float32
+        (Sigma is accumulated centred in float64 first); m, mdot, the diag_* vectors
+        float64 (n, r); live bool (n, r); tau_mean, h, diag_tau_mean_I float64 (n,).
+          legacy: M, G, b, c, m, tau_mean      moment: M, Sigma, b, mdot, m, live, h
+        codes/resolve_theta_reg.py rebuilds Theta_reg from this for any lam; like
+        forward_regularised, it drops the first node (Theta[1:], t[1:]).
+
+        Written to a temporary file and renamed, so an interrupted write never
+        leaves a truncated file under the final name.
+        """
+        path = Path(path)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        cpu32 = lambda X: X.detach().to('cpu', torch.float32)
+        system = {
+            't': torch.as_tensor(np.asarray(t, dtype=np.float64)),
+            'num_potentials': int(self.num_potentials),
+            'meta': dict(meta),
+        }
+        for kk, v in sysd.items():
+            if kk in ('M', 'G', 'Sigma'):
+                system[kk] = [cpu32(X) for X in v]
+            elif kk in ('b', 'c'):
+                system[kk] = [cpu32(X).reshape(-1) for X in v]
+            elif kk in ('m', 'mdot', 'diag_c_I', 'diag_m_I'):
+                system[kk] = torch.stack([X.detach().to('cpu', torch.float64).reshape(-1) for X in v])
+            elif kk == 'live':
+                system[kk] = torch.stack([X.detach().to('cpu', torch.bool).reshape(-1) for X in v])
+            else:                                          # per-node scalars
+                system[kk] = torch.as_tensor(np.asarray(v, dtype=np.float64))
+        tmp = path.with_name(path.name + '.tmp')
+        t0 = time.time()
+        try:
+            torch.save(system, tmp)
+            tmp.replace(path)
+        except BaseException:
+            tmp.unlink(missing_ok=True)                 # a partial ~40 GB file would eat the quota
+            raise
+        print(f"Saved regularised system ({len(system['t'])} nodes, r={self.num_potentials}, "
+              f"mode {meta.get('reg_mode')}) to {path} in {time.time() - t0:.0f} s")
+
+    def _solve_regularised(self, t, M, Gf, bb, cc, lam):
+        t = np.asarray(t, dtype=float)
+        n, r, dev = len(t), self.num_potentials, self.device
+        dt = np.diff(t)
+        A = torch.zeros((n, r, n, r)).to(dev)
+        f = torch.zeros((n, r)).to(dev)
+        for k in range(n):
+            A[k, :, k, :] += M[k]
+            f[k]          += bb[k]
+        for k in range(n - 1):
+            w = lam / dt[k] ** 2
+            A[k,     :, k,     :] += w * Gf[k]
+            A[k + 1, :, k + 1, :] += w * Gf[k]
+            A[k,     :, k + 1, :] -= w * Gf[k]
+            A[k + 1, :, k,     :] -= w * Gf[k]
+            f[k]     -= (lam / dt[k]) * cc[k]
+            f[k + 1] += (lam / dt[k]) * cc[k]
+
+        # --- diagonal (Jacobi) preconditioning, mirrors compute_eta / compute_theta ---
+        A_flat = A.reshape(n * r, n * r)
+        f_flat = f.reshape(n * r)
+        S = torch.diagonal(A_flat).clamp_min(1e-30).sqrt()        # per-(k,potential) scale
+        A_flat = A_flat / (S[:, None] * S[None, :])
+        A_flat = (A_flat + A_flat.T) / 2
+        f_flat = f_flat / S
+        if self.regularization:
+            A_flat = A_flat + self.regularization * torch.eye(n * r, device=dev, dtype=A_flat.dtype)
+        
+        print("Calling torch.linalg.solve")
+        self._print_memory("Before solve")
+
+        z = torch.linalg.solve(A_flat, f_flat)
+
+        print("Solve finished")
+        self._print_memory("After solve")
+
+        return (z / S).reshape(n, r) 
+    
+    def _solve_regularised_thomas(self, t, M, Gf, bb, cc, lam, eps_reg_theta=0.0,
+                                  ridge=0.0, dtype=torch.float64, device='cpu',
+                                  mode='legacy', dim=None, schedule='uniform', live=None, pin=None,
+                                  c_floor_eps=0.0):
+        """
+        Same block-tridiagonal system as _solve_regularised, solved via block-Thomas
+        elimination with block-Jacobi preconditioning instead of a dense (n*r, n*r)
+        solve. Memory: O(n * r**2) instead of O(n**2 * r**2) -- the only O(n r^2)
+        buffer is the elimination factor c', so the full fine grid (n_subsample=1)
+        fits in host RAM. At lam=0 this reduces to the per-step solves M_k theta_k = b_k.
+
+        Everything here is in the CODE sign: theta_code = -theta_MGD, the walkers'
+        exponential family is p ∝ exp(+theta_code . phi). The energy (weights a, q, l
+        from reg_energy_weights) is
+
+            E = sum_k a_k (1/2 Theta_k^T M_k Theta_k - b_k^T Theta_k)
+              + sum_k [ q_k/2 dTheta_k^T C_k dTheta_k + l_k ct_k^T dTheta_k ],
+            dTheta_k = Theta_{k+1} - Theta_k,
+
+        M_k = E[grad phi grad phi^T] at y_k, b_k = (m_{t_k} - phibar(y_k)) / (h sigma^2):
+        its per-node minimiser is the corrector's theta_k.
+
+          'legacy' -- Gf = G = E[phi phi^T] (uncentred), cc = c = E[phi tau] on the
+                      walkers; C_k = G_k, ct_k = c_k (left point), a = 1, q = lam/dt^2,
+                      l = -lam/dt: targets G Theta_dot = c. Kept so old results
+                      reproduce. It is wrong twice: tau was copied from Guth et al.
+                      (p ∝ exp(-U)) without the sign flip and G is uncentred; and the
+                      walkers are NOT paired with Z = x_0 (independent draws), so
+                      E[tau | x] = adot d cot a is a constant and c carries no information
+                      on theta_dot (notes/guth_reg_audit_0930).
+          'moment' -- Gf = Sigma_w = Cov_w(phi) (centred, on the walkers), cc = mdot =
+                      d/dt E[phi(I_t)] (pathwise). Time-score matching on the walker law
+                      p_t^sigma with model time score theta_code_dot . phi + c_t (c_t
+                      free) has normal equations
+                          Sigma_w Theta_code_dot = Cov_w(phi, d_t log p_t^sigma)
+                                                 = d/dt E_w[phi] = mdot
+                      by the MGD constraint E[phi(X_t)] = m_t alone (MGD sign:
+                      Sigma_w theta_dot = -mdot). Per cell: C = (Sigma_k + Sigma_k+1)/2,
+                      ct = -(mdot_k + mdot_k+1)/2, so the cell energy
+                      lam w_T dt [1/2 Th'^T C Th' - mdot^T Th'] is minimised at
+                      C Th' = mdot. Weights: quadrature (schedule 'uniform' or 'guth',
+                      see reg_energy_weights). No tau anywhere.
+
+        live : optional (n, r) bool. A potential dead at node k (False) is pinned,
+               Theta_{k,i} = 0, as the per-step solve does (_live_potentials): its row
+               and column of A are replaced by the identity and its right-hand side by
+               0. Neighbouring nodes keep their time coupling to the pinned value 0.
+
+        pin : optional (mask, value), both (n, r): Theta_{k,i} = value[k,i] wherever mask
+              (added 2026-10-08 for the L_6 sign constraint, codes/theta_reg_bounds.py).
+              Solved as Theta = V + Theta', V = value on the mask and 0 elsewhere: Theta'
+              is pinned to 0 there exactly as a dead potential, with right-hand side
+              f - A V (A the unpinned system), so the free entries keep their exact
+              coupling to the pinned values. A pinned entry may not be dead. After the
+              solve, self.last_pinned_grad (n, r) holds (A Theta - f) of the UNPINNED
+              system at the pinned entries (0 elsewhere): the gradient of the energy, i.e.
+              minus the Lagrange multiplier of the pin; self.last_pinned_scale the matching
+              |A_ii Theta_i| + |f_i| for a relative test. pin=None (or an empty mask):
+              unchanged, bit-identical to before.
+
+        c_floor_eps : moment mode only (method A, 2026-11-11). Per cell, with C and
+              M_cell = (M_k + M_k+1)/2 (raw M, no ridge), the time term becomes
+                  1/2 Th'^T (C + eps M_cell) Th' - mdot_eff^T Th',
+                  mdot_eff = C (C + eps M_cell)^-1 mdot   (on the statistics live at both
+                  nodes of the cell; the others keep mdot),
+              i.e. a floor eps M_cell on the walker susceptibility, and the drive mdot
+              switched off where C is unmeasured (C << eps M) and kept where C >> eps M.
+              eps is in the units of the generalised eigenvalues mu of C v = mu M v
+              (codes/c_spectrum_gen.py). 0 (default): this branch is never entered, the
+              solve is the one above, unchanged. self.last_c_floor_shrink = median over
+              cells of |mdot_eff|^2 / |mdot|^2 (live entries), as a diagnostic.
+
+        (Called unbound by codes/resolve_theta_reg.py, codes/lam_select_cv.py and the
+        bimodal port with a SimpleNamespace as self, so the body uses no other method
+        of self.)
+
+        Blocks are built on the fly from M/Gf/bb/cc (any device/dtype, typically
+        float32 on CPU) and all arithmetic is in `dtype` on `device` (float64 CPU by
+        default): with the lam/dt^2 coupling large on a fine grid, the Schur
+        complements D_k - L c' cancel O(lam/dt^2) terms down to O(M), which float32
+        cannot resolve.
+
+        A is SPD (a M PSD + time-Laplacian (x) C PSD, a, q >= 0), so the Schur
+        complements stay SPD and elimination without pivoting across blocks is stable.
+
+        ridge : M_k += ridge * diag(M_k) -- a ridge on the data term of the original
+                problem (same system for any solver); equal to the per-step solve's
+                Jacobi-scaled `regularization` when ridge = regularization. 0 disables it.
+        eps_reg_theta : legacy ridge added to each Schur complement, relative to its
+                mean diagonal. It is NOT a regularisation of the original problem and
+                biases Theta when M, G are ill-conditioned; keep 0 unless debugging.
+
+        Prints the relative residual of the Jacobi-scaled system as a solve check.
+        """
+        t = np.asarray(t, dtype=np.float64)
+        n, r = len(t), self.num_potentials
+        dt = np.diff(t)
+        if (dt <= 0).any():
+            raise ValueError("t must be strictly increasing for the regularised solve")
+        a, w, l = reg_energy_weights(t, lam, mode=mode, dim=dim, schedule=schedule)
+
+        get = lambda X: X.to(device=device, dtype=dtype)
+        sym = lambda X: (X + X.T) / 2
+
+        dead = None
+        if live is not None:
+            dead = ~torch.as_tensor(np.asarray(live), dtype=torch.bool).reshape(n, r).to(device)
+            if not bool(dead.any()):
+                dead = None
+        pin_mask = pin_val = None
+        if pin is not None:
+            pm = torch.as_tensor(np.asarray(pin[0]), dtype=torch.bool).reshape(n, r).to(device)
+            if bool(pm.any()):
+                if dead is not None and bool((dead & pm).any()):
+                    raise ValueError('pin: a pinned entry is also dead (live False)')
+                pin_mask = pm
+                pin_val = torch.as_tensor(np.asarray(pin[1]), dtype=dtype).reshape(n, r).to(device) * pm
+                dead = pm if dead is None else (dead | pm)    # Theta' = Theta - V is pinned to 0 there
+        dead_idx = lambda k: None if dead is None or not bool(dead[k].any()) else dead[k].nonzero().flatten()
+
+        def Mb(k):
+            m_ = sym(get(M[k]))
+            return m_ + ridge * torch.diag(torch.diagonal(m_)) if ridge else m_
+
+        if mode == 'legacy':
+            def Gb(k):                                     # C_k: uncentred Gram, left point
+                return sym(get(Gf[k]))
+
+            def cb(k):                                     # ct_k = E[phi tau], left point
+                return get(cc[k]).reshape(-1)
+        else:
+            def Gb(k):                                     # C on cell k: midpoint Sigma_w
+                return (sym(get(Gf[k])) + sym(get(Gf[k + 1]))) / 2
+
+            def cb(k):                                     # ct on cell k: -midpoint mdot
+                return -(get(cc[k]).reshape(-1) + get(cc[k + 1]).reshape(-1)) / 2
+
+            if c_floor_eps:                                # method A: floor C, damp mdot where C is empty
+                eps_c = float(c_floor_eps)
+                live_np = None if live is None else np.asarray(live, dtype=bool).reshape(n, r)
+                Mcell = lambda k: (sym(get(M[k])) + sym(get(M[k + 1]))) / 2
+                Gb_plain, cb_plain = Gb, cb
+                cb_eff = torch.empty((max(n - 1, 0), r), device=device, dtype=dtype)
+                shrink = []
+                for k in range(n - 1):
+                    C_, Mc, md = Gb_plain(k), Mcell(k), -cb_plain(k)
+                    lv = np.ones(r, dtype=bool) if live_np is None else (live_np[k] & live_np[k + 1])
+                    idx = torch.as_tensor(np.nonzero(lv)[0], device=device)
+                    out = md.clone()
+                    if len(idx):
+                        Cl, Ml, ml = C_[idx][:, idx], Mc[idx][:, idx], md[idx]
+                        s = torch.diagonal(Ml).clamp_min(1e-300).sqrt()      # Jacobi scaling for the solve
+                        Bs = (Cl + eps_c * Ml) / (s[:, None] * s[None, :])
+                        x = torch.linalg.solve(sym(Bs), ml / s) / s
+                        out[idx] = Cl @ x
+                        nm = float((ml ** 2).sum())
+                        if nm > 0:
+                            shrink.append(float((out[idx] ** 2).sum()) / nm)
+                    cb_eff[k] = -out
+                self.last_c_floor_shrink = float(np.median(shrink)) if shrink else float('nan')
+
+                def Gb(k):                                 # C + eps M_cell on cell k
+                    return Gb_plain(k) + eps_c * Mcell(k)
+
+                def cb(k):                                 # -C (C + eps M)^-1 mdot on cell k
+                    return cb_eff[k]
+
+        def Db_raw(k):                                     # diagonal block A[k, k], unpinned
+            D = a[k] * Mb(k)
+            if k > 0:
+                D = D + w[k - 1] * Gb(k - 1)
+            if k < n - 1:
+                D = D + w[k] * Gb(k)
+            return D
+
+        def Db(k):
+            D = Db_raw(k)
+            i = dead_idx(k)
+            if i is not None:                              # pin Theta_{k,i} = 0
+                D = D.clone()
+                D[i, :] = 0
+                D[:, i] = 0
+                D[i, i] = 1
+            return D
+
+        def fb_raw(k):                                     # second member f[k], unpinned
+            f = a[k] * get(bb[k]).reshape(-1)
+            if k < n - 1:
+                f = f + l[k] * cb(k)
+            if k > 0:
+                f = f - l[k - 1] * cb(k - 1)
+            return f
+
+        def A_rows(k, X, rows=None):                       # (A X)[k] of the unpinned system, X (n, r)
+            sel = (lambda B: B) if rows is None else (lambda B: B[rows])
+            out = sel(Db_raw(k)) @ X[k]
+            if k < n - 1:
+                out = out - w[k] * sel(Gb(k)) @ X[k + 1]   # A[k, k+1] = -w_k C_k
+            if k > 0:
+                out = out - w[k - 1] * sel(Gb(k - 1)) @ X[k - 1]
+            return out
+
+        AV = None                                          # A V for the pinned values (pin)
+        if pin_val is not None:
+            AV = torch.zeros((n, r), device=device, dtype=dtype)
+            near = pin_mask.any(1).clone()
+            near[1:] |= pin_mask.any(1)[:-1]
+            near[:-1] |= pin_mask.any(1)[1:]
+            for k in near.nonzero().flatten().tolist():
+                AV[k] = A_rows(k, pin_val)
+
+        def fb(k):
+            f = fb_raw(k)
+            if AV is not None:
+                f = f - AV[k]
+            i = dead_idx(k)
+            if i is not None:
+                f = f.clone()
+                f[i] = 0
+            return f
+
+        # block-Jacobi scales (sqrt of diag of A), needed one block ahead for U_k
+        S = torch.stack([torch.diagonal(Db(k)).clamp_min(1e-300).sqrt() for k in range(n)])
+
+        def Ub(k):                                         # scaled A[k, k+1] = -w_k C_k
+            U = -w[k] * Gb(k) / (S[k][:, None] * S[k + 1][None, :])
+            i, j = dead_idx(k), dead_idx(k + 1)
+            if i is not None or j is not None:
+                U = U.clone()
+                if i is not None:
+                    U[i, :] = 0
+                if j is not None:
+                    U[:, j] = 0
+            return U
+
+        eye = torch.eye(r, device=device, dtype=dtype)
+        c_prime = torch.empty((max(n - 1, 0), r, r), device=device, dtype=dtype)
+        d_prime = torch.empty((n, r), device=device, dtype=dtype)
+
+        for k in range(n):
+            D = sym(Db(k) / (S[k][:, None] * S[k][None, :]))
+            rhs = fb(k) / S[k]
+            if k > 0:
+                L = Ub(k - 1).T                            # scaled A[k, k-1]
+                D = D - L @ c_prime[k - 1]
+                rhs = rhs - L @ d_prime[k - 1]
+            if eps_reg_theta:
+                D = D + eps_reg_theta * D.diagonal().abs().mean() * eye
+            try:
+                if k < n - 1:
+                    sol = torch.linalg.solve(D, torch.cat([Ub(k), rhs[:, None]], dim=1))
+                    c_prime[k], d_prime[k] = sol[:, :-1], sol[:, -1]
+                else:
+                    d_prime[k] = torch.linalg.solve(D, rhs)
+            except torch.linalg.LinAlgError as e:
+                raise torch.linalg.LinAlgError(
+                    f"Thomas: singular block at node {k}/{n} (t={t[k]:.6f}), lam={lam:g}, "
+                    f"ridge={ridge:g}. With lam=0 the blocks are the bare M_k, which can be "
+                    f"exactly rank-deficient (e.g. statistics with identical gradients); "
+                    f"use ridge > 0.") from e
+
+        Theta_scaled = torch.empty((n, r), device=device, dtype=dtype)
+        Theta_scaled[-1] = d_prime[-1]
+        for k in range(n - 2, -1, -1):
+            Theta_scaled[k] = d_prime[k] - c_prime[k] @ Theta_scaled[k + 1]
+        del c_prime
+
+        # solve check: residual of the scaled system  S^-1 (A Theta - f)
+        res2 = f2 = 0.0
+        for k in range(n):
+            Ax = (Db(k) / (S[k][:, None] * S[k][None, :])) @ Theta_scaled[k]
+            if k < n - 1:
+                Ax = Ax + Ub(k) @ Theta_scaled[k + 1]
+            if k > 0:
+                Ax = Ax + Ub(k - 1).T @ Theta_scaled[k - 1]
+            fk = fb(k) / S[k]
+            res2 += float(((Ax - fk) ** 2).sum()); f2 += float((fk ** 2).sum())
+        self.last_reg_residual = (res2 / max(f2, 1e-300)) ** 0.5
+        print(f"Thomas solve: n={n}, r={r}, relative scaled residual "
+              f"{self.last_reg_residual:.2e}, finite={bool(torch.isfinite(Theta_scaled).all())}")
+
+        if pin_val is None:
+            return Theta_scaled / S
+        Theta = Theta_scaled / S + pin_val                 # Theta' is exactly 0 on the mask
+        grad = torch.zeros((n, r), device=device, dtype=dtype)
+        scale = torch.zeros((n, r), device=device, dtype=dtype)
+        for k in pin_mask.any(1).nonzero().flatten().tolist():
+            i = pin_mask[k].nonzero().flatten()
+            f_i = fb_raw(k)[i]
+            grad[k, i] = A_rows(k, Theta, rows=i) - f_i
+            scale[k, i] = (torch.diagonal(Db_raw(k))[i] * Theta[k, i]).abs() + f_i.abs()
+        self.last_pinned_grad, self.last_pinned_scale = grad, scale
+        return Theta
+
+    def _reg_energy_grad(self, t, M, Gf, bb, cc, lam, Xs, ridge=0.0, dtype=torch.float64,
+                         device='cpu', mode='legacy', dim=None, schedule='uniform'):
+        """
+        Energy E(X) = 1/2 X^T A X - f^T X and gradient A X - f of the UNPINNED system of
+        _solve_regularised_thomas (same blocks, same weights), for each X (n, r) in Xs, in one
+        pass over the nodes (2026-10-08, for the projected-Newton bound loop in
+        codes/theta_reg_bounds.py). Dead potentials are not special here: callers keep them at 0.
+        Returns ([E per X], [grad per X]). Called unbound like the solver.
+        """
+        t = np.asarray(t, dtype=np.float64)
+        n, r = len(t), self.num_potentials
+        a, w, l = reg_energy_weights(t, lam, mode=mode, dim=dim, schedule=schedule)
+        get = lambda X: X.to(device=device, dtype=dtype)
+        sym = lambda X: (X + X.T) / 2
+
+        def Mb(k):
+            m_ = sym(get(M[k]))
+            return m_ + ridge * torch.diag(torch.diagonal(m_)) if ridge else m_
+        if mode == 'legacy':
+            Gb = lambda k: sym(get(Gf[k]))
+            cb = lambda k: get(cc[k]).reshape(-1)
+        else:
+            Gb = lambda k: (sym(get(Gf[k])) + sym(get(Gf[k + 1]))) / 2
+            cb = lambda k: -(get(cc[k]).reshape(-1) + get(cc[k + 1]).reshape(-1)) / 2
+
+        Xs = [get(X).reshape(n, r) for X in Xs]
+        grads = [torch.empty((n, r), device=device, dtype=dtype) for _ in Xs]
+        E = [0.0 for _ in Xs]
+        G_prev = None                                      # Gb(k - 1), reused from the previous node
+        for k in range(n):
+            G_next = Gb(k) if k < n - 1 else None
+            D = a[k] * Mb(k)
+            if G_prev is not None:
+                D = D + w[k - 1] * G_prev
+            if G_next is not None:
+                D = D + w[k] * G_next
+            f = a[k] * get(bb[k]).reshape(-1)
+            if k < n - 1:
+                f = f + l[k] * cb(k)
+            if k > 0:
+                f = f - l[k - 1] * cb(k - 1)
+            for j, X in enumerate(Xs):
+                AX = D @ X[k]
+                if G_next is not None:
+                    AX = AX - w[k] * G_next @ X[k + 1]
+                if G_prev is not None:
+                    AX = AX - w[k - 1] * G_prev @ X[k - 1]
+                grads[j][k] = AX - f
+                E[j] += float(0.5 * X[k] @ AX - f @ X[k])
+            G_prev = G_next
+        return E, grads
+
+
+    def iteration_step_projection(self, x_k, k):
+        """
+        Perform a single predictor-corrector SDE integration step.
+ 
+        Predictor::
+ 
+            eta_k = solve  G(x_k) eta = d/dt phi_bar(I_t)
+            y_k   = x_k + h * (grad phi)^T eta_k + sqrt(2 h) * sigma * noise
+ 
+        Corrector (toward the moments at t_{k+1})::
+ 
+            theta_k = solve  G(y_k) theta = phi_bar(I_{k+1}) - phi_bar(y_k)
+            x_{k+1} = y_k + (grad phi)^T theta_k
+ 
+        ``theta_k`` is then rescaled by ``h * sigma**2`` (zeroed if ``sigma == 0``),
+        and the entropy increment is ``dH_k = - theta_k^T d/dt phi_bar(I_t)``.
+ 
+        Parameters
+        ----------
+        x_k : torch.Tensor
+            Current walker ensemble.
+        k : int
+            Index of the current time step (``h = t[k+1] - t[k]``).
+ 
+        Returns
+        -------
+        x_k_plus_one : torch.Tensor
+            Updated walker ensemble after predictor and corrector.
+        y_k : torch.Tensor
+            Predicted walker ensemble after the predictor step.
+        I_k : torch.Tensor
+            Interpolant evaluated at ``t[k+1]`` (the corrector target).
+        eta_k : torch.Tensor
+            Predictor coefficients, shape (m,).
+        theta_k : torch.Tensor
+            Corrector coefficients, normalized by ``h * sigma**2`` (zeroed if
+            ``sigma == 0``), shape (m,).
+        dH_k : torch.Tensor
+            Entropy increment for this step.
+        """
+
+
+        h = self.t[k + 1] - self.t[k]
+
+        # Predictor
+        eta_k       = self.compute_eta(x_k, k)
+        drift       = self.compute_grad_phi_projected(x_k, eta_k)
+        noise_scale = (2 * h) ** 0.5 * self.sigma
+        noise       = noise_scale * torch.randn_like(x_k).to(self.device)
+        y_k         = x_k + h * drift + noise
+
+        # Corrector
+        theta_k_raw, bk       = self.compute_theta(y_k, k)
+        corrector      = self.compute_grad_phi_projected(y_k, theta_k_raw)
+        x_k_plus_one   = y_k + corrector
+        if self.extra_corrector_max:
+            x_k_plus_one, theta_extra = self._extra_corrector(x_k_plus_one, k)
+            if theta_extra is not None:
+                theta_k_raw = theta_k_raw + theta_extra.to(theta_k_raw.dtype)
+
+        # Normalise theta
+        if self.sigma > 0:
+            theta_k = theta_k_raw / (h * self.sigma ** 2)
+        else:
+            theta_k = torch.zeros_like(theta_k_raw)
+
+        # Entropy estimate
+        # CHANGED 2026-09-25 (was: compute_rhs_dt_phi_I_t(I_k, k), i.e. phi evaluated
+        # on the interpolant at t_{k+1} but contracted with its velocity Idot at t_k --
+        # an index slip present since the 2026-06-11 upload, no documented reason).
+        # Now both at t_{k+1}, the time theta_k belongs to. This is exactly the
+        # right-hand side the NEXT step's predictor needs, so it is cached and
+        # compute_eta reuses it: one fewer moment-velocity pass per step (~16% of the
+        # step at n1=8500, profile_step.sh).
+        # Why this is fine (checks of 2026-09-25, scalar port, Cos interpolant):
+        #  - theory: dS/dt = -theta_t . mdot_t with both factors at the SAME t; nothing
+        #    motivates the old mixed times.
+        #  - exact case (phi = x^2, target N(0, 0.2^2), sigma^2 = 0.4, n1 = 1e5), error of
+        #    the integrated dH vs the exact log-std ratio, old mixed -> this version:
+        #    nt=100: +0.093 -> +0.069; nt=400: +0.024 -> +0.017; nt=1600: +0.014 -> +0.013.
+        #    The old version was the least accurate of the variants tried. The one the
+        #    concavity argument supports, -theta_k . (m_{k+1} - m_k)/h, did a little better
+        #    (+0.034/+0.008/+0.010) but is not used here: at fine steps all variants agree
+        #    to ~6e-3 and the ~1e-2 error left comes from theta itself (Euler-Maruyama
+        #    bias ~ h sigma^2 and estimation noise), not from this pairing.
+        #  - bimodal model (n1 = 2e4): integrated dH moved by 5.0% at nt=200, 0.69% at
+        #    nt=1000 vs the old version (O(h)), so entropy bounds of runs before and after
+        #    this change differ by that much. Samples, theta and moments are unchanged
+        #    (A/B run vs the previous commit: bit-identical); dH never enters the SDE.
+        # The bimodal port (bimodal_experiment/sde_routines_scalar_reg.py) has its own
+        # step and still uses t_k for both.
+        I_k          = self.compute_interpolant(k + 1)
+        dt_phi_I_k   = self.compute_rhs_dt_phi_I_t(I_k, k + 1)
+        self._rhs_dt_cache = (k + 1, dt_phi_I_k)
+        dH_k         = -theta_k @ dt_phi_I_k
+
+        return x_k_plus_one, y_k, I_k, eta_k, theta_k, dH_k, bk
+
+
+    # ------------------------------------------------------------------------------------------------------------------
+    # Intermediate steps (in call order)
+    # ------------------------------------------------------------------------------------------------------------------
+
+    def compute_eta(self, x_k, k):
+        """
+        Solve for the predictor coefficients ``eta_k``.
+ 
+        Solves ``G(x_k) eta = d/dt phi_bar(I_t)``, where the right-hand side is the
+        moment velocity of the interpolant at step ``k``. Before the solve the Gram
+        matrix is rescaled by its diagonal ``D = diag(G)`` to ``D^{-1/2} G D^{-1/2}``,
+        symmetrized, and has ``regularization`` added to its diagonal; the solution
+        is rescaled back by ``D^{-1/2}``.
+ 
+        Parameters
+        ----------
+        x_k : torch.Tensor
+            Current walker ensemble (defines ``G``).
+        k : int
+            Current time-step index.
+ 
+        Returns
+        -------
+        eta_k : torch.Tensor
+            Predictor coefficients, one per potential, shape (m,).
+        """
+ 
+
+
+        I_k              = self.compute_interpolant(k)
+        # Reuse the moment velocity computed at t_k by the previous step's entropy
+        # estimate (same interpolant, same time; see iteration_step_projection,
+        # 2026-09-25). Recomputed on the first step or if the cache is from another k.
+        cache = getattr(self, '_rhs_dt_cache', None)
+        if cache is not None and cache[0] == k:
+            rhs_dt_phi_I_k = cache[1]
+        else:
+            rhs_dt_phi_I_k = self.compute_rhs_dt_phi_I_t(I_k, k)
+        G_k              = self.compute_G(x_k)
+        live             = self._live_potentials(G_k, rhs_dt_phi_I_k, k, 'eta')
+
+        def _solve(G_k, rhs_dt_phi_I_k):
+            out_dtype = G_k.dtype
+            if self.solve_float64:
+                G_k, rhs_dt_phi_I_k = G_k.double(), rhs_dt_phi_I_k.double()
+            ################################Regularization###################################
+            D_k12 = torch.diag(G_k).sqrt()
+            G_k = G_k /(D_k12[:,None]*D_k12[None,:])
+            G_k = (G_k+G_k.T)/2
+            self._log_cond('eta', k, G_k, D_k12, live, rhs_dt_phi_I_k.reshape(-1) / D_k12)
+            G_k+= self.regularization*torch.eye(G_k.shape[-1],).to(G_k.dtype).to(G_k.device)
+
+            # double precision to avoid fit colinearity
+            eta_k = torch.linalg.solve(G_k, (rhs_dt_phi_I_k/D_k12[:,None]))[:, 0]
+            return (eta_k/D_k12).to(out_dtype)
+
+        if live.all():
+            return _solve(G_k, rhs_dt_phi_I_k)
+        eta_k = torch.zeros(G_k.shape[0], dtype=G_k.dtype, device=G_k.device)
+        eta_k[live] = _solve(G_k[live][:, live], rhs_dt_phi_I_k[live])
+        return eta_k
+
+
+    def compute_grad_phi_projected(self, x, vector):
+        """
+        Evaluate the field ``sum_i vector_i * grad phi_i(x)``.
+ 
+        The signal-space drift induced by a coefficient vector. Mini-batched over the
+        sample axis to bound memory, with results concatenated into a tensor matching
+        ``x``'s signal layout.
+ 
+        Parameters
+        ----------
+        x : torch.Tensor
+            Samples at which to evaluate.
+        vector : torch.Tensor
+            Coefficients (length r), e.g. ``eta_k`` or ``theta_k``.
+ 
+        Returns
+        -------
+        grad_phi_eta : torch.Tensor
+            Field with the same per-sample shape as ``x``.
+        """
+ 
+
+
+        batch_size  = self.batch_size
+        num_samples = x.shape[0]
+        num_batches = (num_samples + batch_size - 1) // batch_size
+
+        if self.signal_dim == 0:
+            grad_phi_eta = torch.zeros((0, self.original_signal_shape[1]), device=self.device)
+        elif self.signal_dim == 1:
+            grad_phi_eta = torch.zeros((0, self.original_signal_shape[1], self.original_signal_shape[2]), device=self.device)
+        elif self.signal_dim == 2:
+            grad_phi_eta = torch.zeros((0, self.original_signal_shape[1], self.original_signal_shape[2], self.original_signal_shape[3]), device=self.device)
+
+        for idx_batch in range(num_batches):
+            batch                = x[idx_batch * batch_size:(idx_batch + 1) * batch_size]
+            grad_phi_eta_batch   = self.compute_grad_potentials(batch, vector)
+            grad_phi_eta         = torch.cat([grad_phi_eta, grad_phi_eta_batch], dim=0)
+
+        return grad_phi_eta
+
+
+    def compute_theta(self, y_k, k):
+        """
+        Solve for the corrector coefficients ``theta_k``.
+ 
+        Solves ``G(y_k) theta = phi_bar(I_{k+1}) - phi_bar(y_k)``, the moment
+        mismatch between the interpolant target at ``t[k+1]`` and the predicted
+        walkers. Uses the same diagonal rescaling, symmetrization and regularization
+        as :meth:`compute_eta`.
+ 
+        Parameters
+        ----------
+        y_k : torch.Tensor
+            Predicted walker ensemble (post-predictor).
+        k : int
+            Current time-step index (target is at ``k + 1``).
+ 
+        Returns
+        -------
+        theta_k : torch.Tensor
+            Corrector coefficients, one per potential, shape (m,).
+        """
+
+
+        I_k                      = self.compute_interpolant(k + 1)
+        rhs_constraint_correction = self.compute_rhs_constraint_correction(y_k, I_k)
+        G_k                      = self.compute_G(y_k)
+        # Kept (raw, before the rescaling/ridge in _solve, which make new tensors) so
+        # forward_regularised can reuse it instead of recomputing G(y_k) (2026-09-25).
+        self._G_theta = G_k
+        live                     = self._live_potentials(G_k, rhs_constraint_correction, k, 'theta')
+        self._live_theta          = live               # per-node mask for the moment-mode system
+
+        def _solve(G_k, rhs_constraint_correction):
+            out_dtype = G_k.dtype
+            if self.solve_float64:
+                G_k, rhs_constraint_correction = G_k.double(), rhs_constraint_correction.double()
+            ################################Regularization###################################
+            D_k12 = torch.diag(G_k)**0.5
+            G_k = G_k /(D_k12[:,None]*D_k12[None,:])
+            G_k = (G_k+G_k.T)/2
+            self._log_cond('theta', k, G_k, D_k12, live, rhs_constraint_correction / D_k12,
+                           noise=(self._mom_I, self._mom_x))
+            G_k+= self.regularization*torch.eye(G_k.shape[-1],).to(G_k.dtype).to(G_k.device)
+
+            theta_k = torch.linalg.solve(G_k, rhs_constraint_correction/D_k12)
+            return (theta_k/D_k12).to(out_dtype)
+
+        if live.all():
+            return _solve(G_k, rhs_constraint_correction), rhs_constraint_correction
+        theta_k = torch.zeros(G_k.shape[0], dtype=G_k.dtype, device=G_k.device)
+        theta_k[live] = _solve(G_k[live][:, live], rhs_constraint_correction[live])
+        return theta_k, rhs_constraint_correction
+
+    def _extra_corrector(self, x, k):
+        """
+        Extra corrector passes after the step's corrector, in the tail (1 - t_{k+1} <
+        extra_corrector_tail), until every live statistic is within extra_corrector_tau
+        standard errors of its target, at most extra_corrector_max passes:
+
+            r      = phi_bar(I_{k+1}) - phi_bar(x)
+            stop if |r_n| <= tau * SE_n for all live n,  SE_n = std_i phi_n(I_{k+1}^i) / sqrt(B)
+            theta' = solve  G(y_k) theta' = r     (same Gram, Jacobi scaling and ridge as compute_theta)
+            x      = x + (grad phi(x))^T theta'
+
+        Why (2026-10-27, turbulence/moment_error_variance.py): the single corrector pass is one
+        Gauss-Newton step; on window statistics narrower than one step's noise it leaves a
+        residual that does not shrink with n1 (15/128 statistics 10-36% off at t=1 in
+        mass_L6_2b), while 3 extra passes take the one-step error to ~1e-7 (TEST A, 2026-10-07).
+        G(y_k) is reused (chord iteration): no new Gram per pass.
+
+        Returns (x, sum of the extra theta's in raw units) or (x, None) outside the tail. The
+        moments of the returned x are cached in self._mom_x1 for forward_regularised.
+        """
+        self._mom_x1 = None
+        if (1.0 - float(self.t[k + 1])) >= self.extra_corrector_tail:
+            return x, None
+        mom_I = self._mom_I
+        target = mom_I.mean(0)
+        se = mom_I.double().std(0) / mom_I.shape[0] ** 0.5
+        live = self._live_theta
+        G_live = self._G_theta[live][:, live]
+        if self.solve_float64:
+            G_live = G_live.double()
+        D12 = torch.diag(G_live).sqrt()
+        Gs = G_live / (D12[:, None] * D12[None, :])
+        Gs = (Gs + Gs.T) / 2 + self.regularization * torch.eye(Gs.shape[-1], dtype=Gs.dtype, device=Gs.device)
+
+        def zscores(mom):
+            r = target - mom.mean(0)
+            # a statistic with zero spread on the target is matched only if r is exactly 0
+            return r, (r.double().abs() / se.clamp_min(1e-300))[live]
+
+        total = torch.zeros_like(target)
+        mom = self.compute_moments(x)
+        r, z = zscores(mom)
+        z0 = z.max().item()
+        passes = 0
+        # A pass is kept only if it lowers the rms z over the live statistics (step halved
+        # at most twice, else stop): with the Gram of y_k and residuals near the noise level
+        # an unguarded chord pass can move the walkers more than the step's own noise and
+        # blow up (local smoke n1=40, 2026-10-27).
+        while z.max().item() > self.extra_corrector_tau and passes < self.extra_corrector_max:
+            th = torch.zeros_like(target)
+            th[live] = (torch.linalg.solve(Gs, r[live].to(Gs.dtype) / D12) / D12).to(th.dtype)
+            dx = self.compute_grad_phi_projected(x, th)
+            rms = z.pow(2).mean().sqrt()
+            for alpha in (1.0, 0.5, 0.25):
+                x_try = x + alpha * dx
+                mom_try = self.compute_moments(x_try)
+                r_try, z_try = zscores(mom_try)
+                if z_try.pow(2).mean().sqrt() < rms:
+                    break
+            else:
+                break                            # no decrease: keep x as it is
+            x, mom, r, z = x_try, mom_try, r_try, z_try
+            total = total + alpha * th
+            passes += 1
+        self._mom_x1 = mom                       # moments of the returned x
+        self.extra_corrector_log.append([k, passes, z0, z.max().item()])
+        return x, total
+
+    def extra_corrector_summary(self):
+        """One-line summary of the extra corrector passes (tail steps only)."""
+        if not self.extra_corrector_log:
+            return 'extra corrector: no tail steps'
+        L = np.asarray(self.extra_corrector_log, dtype=float)
+        n, passes = len(L), L[:, 1]
+        return (f'extra corrector (tau {self.extra_corrector_tau:g} SE, max {self.extra_corrector_max}, '
+                f'1-t < {self.extra_corrector_tail:g}): {n} tail steps, passes mean {passes.mean():.2f}, '
+                f'steps with >0 passes {np.mean(passes > 0):.0%}, at the cap and still > tau '
+                f'{np.mean((passes >= self.extra_corrector_max) & (L[:, 3] > self.extra_corrector_tau)):.1%}; '
+                f'max z before median {np.median(L[:, 2]):.2f}, after median {np.median(L[:, 3]):.2f} '
+                f'max {L[:, 3].max():.2f}')
+
+    def _log_cond(self, name, k, Gs, D12, live, rhs_s, noise=None):
+        """
+        Conditioning / discrepancy log for the per-step solves (every cond_every-th step;
+        0 = off). Read-only: works on copies, never changes the solve.
+
+        Gs is the Jacobi-scaled live Gram, symmetrised, BEFORE the ridge (unit diagonal);
+        D12 = sqrt(diag G) and rhs_s = rhs / D12 on the live set; live the (r,) mask. With
+        Gs = U diag(mu) U^T, the ridge solve is theta_s = U (U^T rhs_s) / (mu + lam), so
+        mu and beta = U^T rhs_s replay the solve for ANY lam offline: component i of the
+        solution is beta_i / (mu_i + lam), of the residual Gs theta_s - rhs_s it is
+        -lam beta_i / (mu_i + lam). noise = (per-sample moments of the two sample means
+        whose difference is the rhs), for theta (phi(I_k+1), phi(y_k)): nu_i = variance of
+        the rhs noise along u_i, sum_s Var_s(u_i^T phi_s / D12) / B_s (independent means),
+        i.e. what the discrepancy principle compares the residual to.
+
+        Per logged step: row = [k, n_live, mu_min, mu_max, 3 statistics with the largest
+        |loading| on the mu_min eigenvector (global indices), min diag(G)/live floor over
+        the live floored statistics (inf if none), its index]; spectra = mu, beta, nu as
+        float32 (r,), padded with NaN past n_live (eigen-coordinates, not statistics).
+        """
+        if not self.cond_every or k % self.cond_every:
+            return
+        idx = live.nonzero().flatten()
+        n, r = int(idx.numel()), self.num_potentials
+        spec = torch.full((3, r), float('nan'), dtype=torch.float32)
+        try:
+            mu, U = torch.linalg.eigh(Gs.detach().double())
+            lmin, lmax = float(mu[0]), float(mu[-1])
+            top = idx[U[:, 0].abs().argsort(descending=True)[:3]].tolist()
+            spec[0, :n] = mu.float().cpu()
+            spec[1, :n] = (U.T @ rhs_s.detach().double()).float().cpu()
+            if noise is not None:
+                nu = torch.zeros(n, dtype=torch.float64, device=U.device)
+                for mom in noise:
+                    z = (mom[:, idx].double() / D12.double()) @ U          # (B, n)
+                    nu += z.var(0) / z.shape[0]
+                spec[2, :n] = nu.float().cpu()
+        except torch.linalg.LinAlgError:
+            lmin = lmax = float('nan'); top = []
+        top = (top + [-1, -1, -1])[:3]
+        floor = self._live_floor.to(device=D12.device, dtype=D12.dtype)[idx]
+        has = floor > 0
+        if has.any():
+            ratio = (D12[has] ** 2) / floor[has]
+            j = int(ratio.argmin())
+            margin, margin_idx = float(ratio[j]), int(idx[has][j])
+        else:
+            margin, margin_idx = float('inf'), -1
+        self._cond_log[name].append([k, n, lmin, lmax, *top, margin, margin_idx])
+        self._cond_spec[name].append(spec)
+        if (name == 'theta' and self.cond_path is not None and self.cond_flush_rows
+                and len(self._cond_log['theta']) % self.cond_flush_rows == 0):
+            self._flush_cond_log()
+
+    def _flush_cond_log(self):
+        """Write the conditioning log collected so far to cond_path (partial; atomic replace)."""
+        import os
+        path = str(self.cond_path)
+        try:
+            torch.save(self.cond_log(), path + '.tmp')
+            os.replace(path + '.tmp', path)
+        except OSError as e:                                   # diagnostic only: never stop the run
+            print(f'[cond log] partial save to {path} failed ({e}); continuing')
+
+    def cond_log(self):
+        """The conditioning log as tensors (see _log_cond), plus the potential labels."""
+        cols = ['k', 'n_live', 'lam_min', 'lam_max', 'top0', 'top1', 'top2', 'margin', 'margin_idx']
+        out = {'columns': cols, 'labels': self.potential_labels, 'cond_every': self.cond_every,
+               'regularization': self.regularization,
+               'spectra': 'mu, beta = U^T rhs_s, nu (rhs noise variance along u_i; NaN for eta)'}
+        for name, rows in self._cond_log.items():
+            out[name] = torch.tensor(rows, dtype=torch.float64) if rows else torch.zeros(0, len(cols))
+            spec = self._cond_spec[name]
+            out[f'{name}_spectra'] = torch.stack(spec) if spec else torch.zeros(0, 3, self.num_potentials)
+        return out
+
+    def _live_potentials(self, G_k, rhs, k, name):
+        """
+        Guard for the Jacobi-rescaled solves in compute_eta / compute_theta.
+
+        A potential whose gradient is zero on every walker (e.g. a Scalar_*_gaussianK
+        region that has emptied) has G_kk == 0 exactly; the rescaling then divides
+        0 by 0 and the solve fails as "singular" (seen near t=1 in turbulence runs,
+        jobs 115127/115128). Such a potential cannot move the walkers at this step,
+        so its coefficient is set to 0 and the solve runs on the others; steps where
+        every diagonal is positive are untouched (bit-identical to before).
+
+        Non-finite G or rhs is NOT masked: it means the walkers or a potential blew
+        up, so it raises with the step and the offending potential indices.
+        """
+        if not (torch.isfinite(G_k).all() and torch.isfinite(rhs).all()):
+            bad = ~(torch.isfinite(G_k).all(1) & torch.isfinite(rhs.reshape(G_k.shape[0], -1)).all(1))
+            raise FloatingPointError(
+                f"{name} solve at step {k}: non-finite Gram/rhs for potentials "
+                f"{bad.nonzero().flatten().tolist()[:20]} (walkers or potentials produced NaN/inf)")
+        diag = torch.diag(G_k)
+        floor = getattr(self, '_live_floor', None)
+        live = diag > 0 if floor is None else diag > floor.to(device=diag.device, dtype=diag.dtype)
+        dead = tuple((~live).nonzero().flatten().tolist())
+        warned = getattr(self, '_dead_potentials_warned', {})
+        n_printed = getattr(self, '_dead_potentials_printed', {})
+        if dead != warned.get(name, ()):                       # print when the dead set changes
+            n = n_printed.get(name, 0)
+            if n < 50:
+                print(f"[{name}] step {k}: {len(dead)} potential(s) dead (zero gradient, or region "
+                      f"empty on the walkers) {list(dead)[:20]} -> coefficient set to 0 while they stay dead")
+            elif n == 50:
+                print(f"[{name}] step {k}: dead set still changing; further changes not printed")
+            n_printed[name] = n + 1
+        warned[name] = dead
+        self._dead_potentials_warned = warned
+        self._dead_potentials_printed = n_printed
+        return live
+
+        
+
+
+    def compute_rhs_dt_phi_I_t(self, I_k, k):
+        """
+        Compute the moment velocity of the interpolant, ``d/dt phi_bar(I_t)``.
+ 
+        Evaluates ``mean_n <grad phi(I_t,n), I_dot_t,n>`` over the interpolant
+        samples, with ``I_dot_t`` from :meth:`gradient_interpolant`. Mini-batched over
+        the sample axis; the spatial contraction is handled per ``signal_dim``.
+ 
+        Parameters
+        ----------
+        I_k : torch.Tensor
+            Interpolant samples at the current step.
+        k : int
+            Current time-step index (selects ``I_dot_t``).
+ 
+        Returns
+        -------
+        rhs : torch.Tensor
+            Moment velocity, shape (m, 1). Right-hand side of the ``eta`` system and
+            the contraction term in the entropy increment.
+        """
+
+
+        batch_size  = self.batch_size
+        num_samples = I_k.shape[0]
+        num_batches = (num_samples + batch_size - 1) // batch_size
+
+        rhs      = torch.zeros((self.num_potentials, 1)).to(self.device)
+        I_k_dot  = self.gradient_interpolant(k)
+
+        for idx_batch in range(num_batches):
+            batch        = I_k[idx_batch * batch_size:(idx_batch + 1) * batch_size]
+            I_k_dot_batch = I_k_dot[idx_batch * batch_size:(idx_batch + 1) * batch_size]
+            grad_potential = self.compute_grad_potentials(batch)
+
+            if self.signal_dim == 0:
+                rhs += torch.matmul(grad_potential, I_k_dot_batch.reshape(batch.shape[0], 1, 1)).sum(0)
+            elif self.signal_dim == 1:
+                rhs += torch.matmul(grad_potential, I_k_dot_batch.reshape(batch.shape[0], batch.shape[-1], 1)).sum(0)
+            elif self.signal_dim == 2:
+                rhs += torch.matmul(
+                    grad_potential.reshape(batch.shape[0], self.num_potentials, batch.shape[-2] * batch.shape[-1]),
+                    I_k_dot_batch.reshape(batch.shape[0], batch.shape[-2] * batch.shape[-1], 1),
+                ).sum(0)
+
+        rhs /= num_samples
+
+        return rhs
+
+
+    def compute_G(self, x):
+        """
+        Compute the Gram matrix of the potential gradients.
+ 
+        ``G_ij = mean_n <grad phi_i(x_n), grad phi_j(x_n)>``, accumulated in
+        mini-batches via ``grad_potential @ grad_potential^T`` (spatial dimensions
+        flattened for 2D signals) and averaged over the samples. ``G`` is the matrix
+        solved against in the predictor and corrector.
+ 
+        Parameters
+        ----------
+        x : torch.Tensor
+            Samples defining ``G``.
+ 
+        Returns
+        -------
+        G : torch.Tensor
+            Symmetric matrix, shape (r, r).
+        """
+
+
+        batch_size  = self.batch_size
+        num_samples = x.shape[0]
+        num_batches = (num_samples + batch_size - 1) // batch_size
+
+        G = torch.zeros((self.num_potentials, self.num_potentials)).to(self.device)
+
+        for idx_batch in range(num_batches):
+            batch          = x[idx_batch * batch_size:(idx_batch + 1) * batch_size]
+            grad_potential = self.compute_grad_potentials(batch)
+
+            if self.signal_dim == 2:
+                grad_potential = grad_potential.reshape(batch.shape[0], self.num_potentials, batch.shape[-2] * batch.shape[-1])
+
+            G += torch.bmm(grad_potential, grad_potential.transpose(1, 2)).sum(0)
+
+        G /= num_samples
+
+        return G
+
+
+    def compute_grad_potentials(self, x, vector=None):
+        """
+        Evaluate potential gradients, optionally contracted with a coefficient vector.
+ 
+        Two modes:
+ 
+        - ``vector is None``: concatenates ``grad phi_i(x)`` over all potentials and
+          reshapes to (B, m, *signal_shape). Used to assemble ``G`` and the moment
+          velocity.
+        - ``vector`` given: returns ``sum_i grad phi_i(x) @ vector[block_i]`` as a
+          single field shaped like ``x``, slicing ``vector`` per potential via
+          ``indices_potentials``.
+ 
+        Parameters
+        ----------
+        x : torch.Tensor
+            Samples at which to evaluate gradients.
+        vector : torch.Tensor, optional
+            Coefficients (length r). If provided, returns the contracted field;
+            otherwise returns the stacked gradients.
+ 
+        Returns
+        -------
+        torch.Tensor
+            Stacked gradients (B, m, *signal_shape) when ``vector is None``, otherwise
+            the contracted field with the same per-sample shape as ``x``.
+        """
+
+
+        if vector is None:
+            grad_potential = torch.tensor([], device=x.device)
+            for potential in self.potentials.values():
+                grad_potential = torch.cat((grad_potential, potential.grad(x)), dim=1).detach()
+
+            if self.signal_dim == 0:
+                grad_potential = grad_potential.reshape(x.shape[0], self.num_potentials, 1)
+            elif self.signal_dim == 1:
+                grad_potential = grad_potential.reshape(x.shape[0], self.num_potentials, x.shape[-1])
+            elif self.signal_dim == 2:
+                grad_potential = grad_potential.reshape(x.shape[0], self.num_potentials, x.shape[-2], x.shape[-1])
+
+            return grad_potential
+
+        else:
+            grad_phi_eta = torch.zeros_like(x)
+            for i, potential in enumerate(self.potentials.values()):
+                grad_phi_eta += potential.grad(x, v=vector[self.indices_potentials[i]:self.indices_potentials[i + 1]])
+
+            return grad_phi_eta
+
+
+    def compute_rhs_constraint_correction(self, x_k, I_k):
+        """
+        Compute the moment mismatch driving the corrector.
+ 
+        Returns ``phi_bar(I_k) - phi_bar(x_k)``, the difference between the target
+        moments and the current walker moments. Right-hand side of the ``theta``
+        system in :meth:`compute_theta`.
+ 
+        Parameters
+        ----------
+        x_k : torch.Tensor
+            Current (predicted) walkers.
+        I_k : torch.Tensor
+            Interpolant target samples.
+ 
+        Returns
+        -------
+        torch.Tensor
+            Moment mismatch vector, length m.
+        """
+ 
+
+        # per-sample phi(I_k) kept for forward_regularised's interpolant-side time
+        # terms (2026-09-29); the returned mismatch is unchanged
+        # (and phi(x_k), x_k = y_k there, which it reuses instead of recomputing)
+        self._mom_I      = self.compute_moments(I_k)
+        self._mom_x      = self.compute_moments(x_k)
+        bar_phi_I_k      = self._mom_I.mean(0)
+        bar_phi_x_current = self._mom_x.mean(0)
+
+        return bar_phi_I_k - bar_phi_x_current
+
+
+    def compute_moments(self, x):
+        """
+        Evaluate the per-sample potentials (moments).
+ 
+        Concatenates ``potential.forward(x)`` over all potentials, mini-batched over
+        the sample axis. Averaging over samples yields ``phi_bar(x)``.
+ 
+        Parameters
+        ----------
+        x : torch.Tensor
+            Samples to evaluate.
+ 
+        Returns
+        -------
+        moments : torch.Tensor
+            Per-sample moments, shape (N, r).
+        """
+
+
+        batch_size  = self.batch_size
+        num_samples = x.shape[0]
+        num_batches = (num_samples + batch_size - 1) // batch_size
+
+        moments = torch.zeros((0, self.num_potentials)).to(self.device)
+
+        for idx_batch in range(num_batches):
+            batch         = x[idx_batch * batch_size:(idx_batch + 1) * batch_size]
+            moments_batch = torch.tensor([], device=x.device)
+            for potential in self.potentials.values():
+                moments_batch = torch.cat((moments_batch, potential.forward(batch)), dim=1)
+            moments = torch.cat([moments, moments_batch], dim=0)
+
+        return moments
+
+
+    # ------------------------------------------------------------------------------------------------------------------
+    # Interpolant
+    # ------------------------------------------------------------------------------------------------------------------
+
+    def compute_interpolant(self, k):
+        """
+        Evaluate the interpolant ``I(t_k)`` between noise ``x_0`` and data ``x_1``.
+ 
+        Schedules:
+ 
+        - ``'Linear'``      : (1 - t) x_0 + t x_1
+        - ``'VarPreserv'``  : sqrt(1 - t) x_0 + sqrt(t) x_1
+        - ``'Sqrt'``        : (1 - sqrt(t)) x_0 + sqrt(t) x_1
+        - ``'Cos'``         : cos(pi t / 2) x_0 + sin(pi t / 2) x_1
+ 
+        Parameters
+        ----------
+        k : int
+            Time-step index into ``self.t``.
+ 
+        Returns
+        -------
+        torch.Tensor
+            Interpolant samples at ``t[k]``.
+        """
+ 
+
+
+        t, x_0, x_1 = self.t, self.x_0, self.x_1
+
+        match self.interpolant:
+            case 'Linear':
+                return (1 - t[k]) * x_0 + t[k] * x_1
+            case 'VarPreserv':
+                return np.sqrt(1 - t[k]) * x_0 + np.sqrt(t[k]) * x_1
+            case 'Sqrt':
+                return (1 - np.sqrt(t[k])) * x_0 + np.sqrt(t[k]) * x_1
+            case 'Cos':
+                return np.cos(np.pi * t[k] / 2) * x_0 + np.sin(np.pi * t[k] / 2) * x_1
+
+
+    def gradient_interpolant(self, k):
+        """
+        Evaluate the time derivative of the interpolant, ``I_dot(t_k)``.
+ 
+        Returns the derivative matching the schedule of :meth:`compute_interpolant`.
+        Used as the contraction vector in :meth:`compute_rhs_dt_phi_I_t`.
+ 
+        Parameters
+        ----------
+        k : int
+            Time-step index into ``self.t``.
+ 
+        Returns
+        -------
+        torch.Tensor
+            Interpolant time derivative at ``t[k]``.
+        """
+ 
+
+
+        t, x_0, x_1 = self.t, self.x_0, self.x_1
+
+        match self.interpolant:
+            case 'Linear':
+                return x_1 - x_0
+            case 'VarPreserv':
+                return x_1 / (2 * np.sqrt(t[k])) - x_0 / (2 * np.sqrt(1 - t[k]))
+            case 'Sqrt':
+                return (x_1 - x_0) / (2 * np.sqrt(t[k]))
+            case 'Cos':
+                return (np.pi / 2) * (-np.sin(np.pi * t[k] / 2) * x_0 + np.cos(np.pi * t[k] / 2) * x_1)
+    # ------------------------------------------------------------------------------------------------------------------
+    # Optional
+    # ------------------------------------------------------------------------------------------------------------------
+    """
+    def fit(self,x_k):
+        #Refit any potentials that implement ``fit`` on the current samples.
+        #Calls ``potential.fit(x_k)`` on every potential, silently skipping those that
+        #do not implement (or raise inside) ``fit``.
+        #Parameters
+        #x_k : torch.Tensor
+        #    Current samples to refit on.
+
+        coshgt_x0 = None
+        morlet_coshgt_x0 = None
+
+        if self.use_coshgt_s0:
+            # first fit coshGT potentials, capturing x0 to reuse as s0 in maxent_log
+            for name, pot in self.potentials.items():
+                if name in ('Scalar_psi_maxent_log', 'Scalar_morlet_maxent_log'):
+                    continue
+                try:
+                    pot.fit(x_k)
+                    if name == 'Scalar_psi_coshgt' and getattr(pot, 'is_fitted', False):
+                        coshgt_x0 = pot.x0
+                    elif name == 'Scalar_morlet_coshgt' and getattr(pot, 'is_fitted', False):
+                        morlet_coshgt_x0 = pot.x0
+                except:
+                    pass
+
+            for name, pot in self.potentials.items():
+                if name == 'Scalar_psi_maxent_log':
+                    try:
+                        pot.fit(x_k, s0=coshgt_x0 * 10)
+                    except:
+                        pass
+                elif name == 'Scalar_morlet_maxent_log':
+                    try:
+                        pot.fit(x_k, s0=morlet_coshgt_x0 * 10)
+                    except:
+                        pass
+        else:
+            for name, pot in self.potentials.items():
+                try:
+                    pot.fit(x_k)
+                except:
+                    pass
+    """

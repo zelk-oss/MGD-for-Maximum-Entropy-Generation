@@ -1,0 +1,247 @@
+run: turbulencesynth_M256_J8_Q3_sigma3.5_nt55000_n1_10000_lam0.0_thomas_nsub1_moment_f64_dedupfilt1e-08_seed_900_termse51338f8_turbulence_nested_M3_bicw_allmass_20261027_1615
+  n1=10000 M=256 J=8 Q=3 nt=55000 sigma=3.5 ridge=0.0001 terms=['L_6', 'Scalar_psi_gaussianK', 'Scalar_morlet_gaussianK']
+[deduplicate_filters] filters_Q: 25 -> 22 channels for channel-list potentials (dropped duplicates [21, 22, 23], tol=1e-08)
+last step h = 7.601e-09, sigma = 3.5, noise per sample 4.316e-04, ridge(s) [0.0001, 0.01, 1e-06], device cuda, 201 statistics, 2 draws
+check: moments of the saved samples vs aux barphi_p: median rel 0.0e+00 max 0.0e+00
+  h x 1: 2 draws in 1 s
+  h x 0.25: 2 draws in 0 s
+  h x 0.0625: 2 draws in 0 s
+  h x 0.01562: 2 draws in 0 s
+check: my solve vs SDE.compute_theta, max relative difference over the draws: 0.0e+00
+
+=== 0. reproduction: one noise step of the last size + one corrector pass, target = saved last target ===
+statistic                                   where                               observed 1-step mean       std mean/obs sign   (relative to |e|)
+Scalar_psi_gaussianK[34]                    ch0 win2 mom [1.5e-08,0.001) 99.0   3.70e-02    3.70e-02   2.8e-04     1.00    =
+Scalar_psi_gaussianK[78]                    ch0 win3 mass [0.001,inf) 1.0%      3.50e-02    3.52e-02   2.9e-05     1.01    =
+Scalar_psi_gaussianK[56]                    ch0 win3 mom [0.001,inf) 1.0%       3.16e-02    3.18e-02   3.3e-05     1.01    =
+Scalar_psi_gaussianK[35]                    ch1 win2 mom [1.5e-08,0.00092) 99   1.71e-02    1.71e-02   2.3e-04     1.00    =
+Scalar_morlet_gaussianK[8]                  ch0 win1 mom [1e-08,0.0035) 96.0%   1.62e-02    1.62e-02   5.1e-05     1.00    =
+Scalar_psi_gaussianK[79]                    ch1 win3 mass [0.00092,inf) 1.0%    6.77e-03    6.53e-03   5.7e-07     0.96    =
+Scalar_psi_gaussianK[57]                    ch1 win3 mom [0.00092,inf) 1.0%     5.99e-03    5.77e-03   2.3e-06     0.96    =
+Scalar_psi_gaussianK[36]                    ch2 win2 mom [1.5e-08,0.0014) 99.   4.99e-03    5.02e-03   5.4e-05     1.01    =
+Scalar_morlet_gaussianK[51]                 ch0 win2 mass [0.0035,0.0086) 3.0   1.67e-03    1.63e-03   2.7e-05     0.98    =
+Scalar_psi_gaussianK[15]                    ch3 win1 mom [1e-08,0.0011) 96.7%   1.55e-03    1.53e-03   1.2e-05     0.99    =
+Scalar_morlet_gaussianK[16]                 ch0 win2 mom [0.0035,0.0086) 3.0%   1.43e-03    1.41e-03   2.4e-05     0.98    =
+Scalar_morlet_gaussianK[0]                  ch1 win0 mom [0,0.0018) 79.0%       1.05e-03    1.07e-03   1.9e-05     1.02    =
+Scalar_psi_gaussianK[113]                   ch3 win2 mass [0.0011,0.0023) 2.3   6.69e-04    6.51e-04   2.3e-05     0.97    =
+Scalar_psi_gaussianK[80]                    ch2 win3 mass [0.0014,inf) 1.0%     6.47e-04    6.20e-04   1.6e-05     0.96    =
+Scalar_psi_gaussianK[58]                    ch2 win3 mom [0.0014,inf) 1.0%      5.70e-04    5.49e-04   1.4e-05     0.96    =
+all statistics with |observed error| > 1e-5 |e| (n=45): median |mean residual| / |observed| = 1.00; Spearman(|mean residual|, |observed|) = +1.00; rms-over-draws version: median ratio 1.00, Spearman +1.00
+statistics with observed rel error > 1e-3 (n=12): sign of the mean residual equals the observed sign for 100% of them (12 of 12 with |mean| > 2 SEM); median |mean|/|observed| = 1.00
+the five known turbulence statistics: observed rel ['3.7e-02', '3.5e-02', '3.2e-02', '1.7e-02', '1.6e-02'] vs one-step mean ['3.7e-02', '3.5e-02', '3.2e-02', '1.7e-02', '1.6e-02']
+
+=== a. step size: mean residual (relative to |e|) after one step of h x mult ===
+  CAVEAT: the start is the saved final walkers, which still carry their own residual; for small h this old residual (not the noise) can set the
+  level. The clean h-dependence is the settled level of experiment d.
+statistic                                         h x 1   h x 0.25 h x 0.0625 h x 0.0156  exponent
+Scalar_psi_gaussianK[34]                       3.70e-02   7.59e-03   2.74e-03   1.88e-03      0.72
+Scalar_psi_gaussianK[78]                       3.52e-02   7.11e-03   3.60e-03   2.97e-03      0.58
+Scalar_psi_gaussianK[56]                       3.18e-02   6.52e-03   3.33e-03   2.75e-03      0.58
+Scalar_psi_gaussianK[35]                       1.71e-02   3.58e-03   1.22e-03   7.89e-04      0.74
+Scalar_morlet_gaussianK[8]                     1.62e-02   6.79e-03   4.34e-03   3.81e-03      0.35
+Scalar_psi_gaussianK[79]                       6.53e-03   8.96e-04   3.01e-04   2.09e-04      0.82
+Scalar_psi_gaussianK[57]                       5.77e-03   8.01e-04   2.66e-04   1.81e-04      0.83
+Scalar_psi_gaussianK[36]                       5.02e-03   9.14e-04   2.48e-04   1.39e-04      0.87
+Scalar_morlet_gaussianK[51]                    1.63e-03   2.10e-04   5.20e-05   3.12e-05      0.96
+Scalar_psi_gaussianK[15]                       1.53e-03   2.08e-04   5.80e-05   4.16e-05      0.87
+Scalar_morlet_gaussianK[16]                    1.41e-03   1.79e-04   4.43e-05   2.69e-05      0.96
+Scalar_morlet_gaussianK[0]                     1.07e-03   1.67e-04   4.92e-05   3.15e-05      0.85
+Scalar_psi_gaussianK[113]                      6.51e-04   6.48e-05   1.32e-05   7.24e-06      1.09
+Scalar_psi_gaussianK[80]                       6.20e-04   6.79e-05   1.58e-05   9.13e-06      1.02
+Scalar_psi_gaussianK[58]                       5.49e-04   6.31e-05   1.41e-05   7.03e-06      1.05
+statistics with |mean| > 3 SEM at every h: 35 of 201; exponent median 0.99, quartiles 0.84 .. 1.15
+
+=== b. number of corrector passes (chord, Gram of y reused), h = last step ===
+statistic                                     observed  mean, 1 pass  mean, 2 pass  mean, 3 pass
+Scalar_psi_gaussianK[34]                      3.70e-02      3.70e-02      1.30e-02      4.42e-03
+Scalar_psi_gaussianK[78]                      3.50e-02      3.52e-02      1.52e-02      6.81e-03
+Scalar_psi_gaussianK[56]                      3.16e-02      3.18e-02      1.39e-02      6.26e-03
+Scalar_psi_gaussianK[35]                      1.71e-02      1.71e-02      4.60e-03      1.47e-03
+Scalar_morlet_gaussianK[8]                    1.62e-02      1.62e-02      4.52e-03      1.03e-03
+Scalar_psi_gaussianK[79]                      6.77e-03      6.53e-03      1.86e-03      5.86e-04
+Scalar_psi_gaussianK[57]                      5.99e-03      5.77e-03      1.65e-03      5.23e-04
+Scalar_psi_gaussianK[36]                      4.99e-03      5.02e-03      3.09e-04      4.73e-05
+Scalar_morlet_gaussianK[51]                   1.67e-03      1.63e-03      3.47e-04      1.23e-04
+Scalar_psi_gaussianK[15]                      1.55e-03      1.53e-03     -1.29e-04     -1.24e-04
+Scalar_morlet_gaussianK[16]                   1.43e-03      1.41e-03      2.95e-04      1.06e-04
+Scalar_morlet_gaussianK[0]                    1.05e-03      1.07e-03     -2.09e-04     -1.01e-04
+Scalar_psi_gaussianK[113]                     6.69e-04      6.51e-04      5.15e-05     -5.68e-06
+Scalar_psi_gaussianK[80]                      6.47e-04      6.20e-04      1.04e-04      1.89e-05
+Scalar_psi_gaussianK[58]                      5.70e-04      5.49e-04      9.04e-05      1.67e-05
+  1 pass(es): median |mean|/|e| 5.56e-08, median rms-over-draws/|e| 7.87e-08, max rms/|e| 3.70e-02
+  2 pass(es): median |mean|/|e| 5.56e-08, median rms-over-draws/|e| 8.13e-08, max rms/|e| 1.52e-02
+  3 pass(es): median |mean|/|e| 4.76e-08, median rms-over-draws/|e| 7.50e-08, max rms/|e| 6.81e-03
+
+=== c. ridge, one pass, h = last step ===
+statistic                                     observed  ridge 1e-04  ridge 1e-02  ridge 1e-06
+Scalar_psi_gaussianK[34]                      3.70e-02     3.70e-02     3.88e-02     3.70e-02
+Scalar_psi_gaussianK[78]                      3.50e-02     3.52e-02     3.63e-02     3.51e-02
+Scalar_psi_gaussianK[56]                      3.16e-02     3.18e-02     3.35e-02     3.17e-02
+Scalar_psi_gaussianK[35]                      1.71e-02     1.71e-02     1.82e-02     1.71e-02
+Scalar_morlet_gaussianK[8]                    1.62e-02     1.62e-02     1.64e-02     1.62e-02
+Scalar_psi_gaussianK[79]                      6.77e-03     6.53e-03     6.56e-03     6.52e-03
+Scalar_psi_gaussianK[57]                      5.99e-03     5.77e-03     6.21e-03     5.75e-03
+Scalar_psi_gaussianK[36]                      4.99e-03     5.02e-03     5.58e-03     5.02e-03
+Scalar_morlet_gaussianK[51]                   1.67e-03     1.63e-03     1.62e-03     1.63e-03
+Scalar_psi_gaussianK[15]                      1.55e-03     1.53e-03     1.94e-03     1.53e-03
+Scalar_morlet_gaussianK[16]                   1.43e-03     1.41e-03     1.46e-03     1.40e-03
+Scalar_morlet_gaussianK[0]                    1.05e-03     1.07e-03     1.10e-03     1.07e-03
+Scalar_psi_gaussianK[113]                     6.69e-04     6.51e-04     5.67e-04     6.53e-04
+Scalar_psi_gaussianK[80]                      6.47e-04     6.20e-04     5.97e-04     6.21e-04
+Scalar_psi_gaussianK[58]                      5.70e-04     5.49e-04     6.10e-04     5.47e-04
+  ridge 1e-04: median rms/|e| 7.87e-08, median |mean|/|e| 5.56e-08, max |mean|/|e| 3.70e-02
+  ridge 1e-02: median rms/|e| 3.08e-07, median |mean|/|e| 1.61e-07, max |mean|/|e| 3.88e-02
+  ridge 1e-06: median rms/|e| 8.09e-08, median |mean|/|e| 5.56e-08, max |mean|/|e| 3.70e-02
+
+=== d. repeated steps (noise + one corrector pass each, target fixed), checkpoints [1, 5], settled = [5] ===
+h x 1 (h = 7.60e-09): 5 steps in 1 s
+statistic                                         step 1      step 5
+Scalar_psi_gaussianK[34]                        3.63e-02    3.71e-02
+Scalar_psi_gaussianK[78]                        3.43e-02    3.55e-02
+Scalar_psi_gaussianK[56]                        3.09e-02    3.21e-02
+Scalar_psi_gaussianK[35]                        1.71e-02    1.71e-02
+Scalar_morlet_gaussianK[8]                      1.59e-02    1.61e-02
+Scalar_psi_gaussianK[79]                        6.57e-03    6.59e-03
+Scalar_psi_gaussianK[57]                        5.82e-03    5.83e-03
+Scalar_psi_gaussianK[36]                        5.05e-03    5.11e-03
+Scalar_morlet_gaussianK[51]                     1.65e-03    1.67e-03
+Scalar_psi_gaussianK[15]                        1.56e-03    1.54e-03
+Scalar_morlet_gaussianK[16]                     1.42e-03    1.43e-03
+Scalar_morlet_gaussianK[0]                      1.07e-03    1.05e-03
+Scalar_psi_gaussianK[113]                       6.18e-04    6.57e-04
+Scalar_psi_gaussianK[80]                        6.43e-04    6.37e-04
+Scalar_psi_gaussianK[58]                        5.69e-04    5.63e-04
+  median |res|/|e|: 1: 9.58e-08  5: 9.02e-08   max: 1: 3.63e-02  5: 3.71e-02
+h x 0.25 (h = 1.90e-09): 5 steps in 1 s
+statistic                                         step 1      step 5
+Scalar_psi_gaussianK[34]                        7.53e-03    4.44e-03
+Scalar_psi_gaussianK[78]                        6.89e-03    1.88e-03
+Scalar_psi_gaussianK[56]                        6.32e-03    1.69e-03
+Scalar_psi_gaussianK[35]                        3.55e-03    2.13e-03
+Scalar_morlet_gaussianK[8]                      6.68e-03    3.75e-03
+Scalar_psi_gaussianK[79]                        9.22e-04    3.89e-04
+Scalar_psi_gaussianK[57]                        8.26e-04    3.51e-04
+Scalar_psi_gaussianK[36]                        8.87e-04    6.13e-04
+Scalar_morlet_gaussianK[51]                     2.13e-04    1.22e-04
+Scalar_psi_gaussianK[15]                        2.07e-04    1.36e-04
+Scalar_morlet_gaussianK[16]                     1.82e-04    1.04e-04
+Scalar_morlet_gaussianK[0]                      1.64e-04    8.57e-05
+Scalar_psi_gaussianK[113]                       5.98e-05    4.01e-05
+Scalar_psi_gaussianK[80]                        7.33e-05    4.17e-05
+Scalar_psi_gaussianK[58]                        6.66e-05    3.96e-05
+  median |res|/|e|: 1: 8.13e-08  5: 8.15e-08   max: 1: 7.53e-03  5: 4.44e-03
+h x 0.0625 (h = 4.75e-10): 5 steps in 1 s
+statistic                                         step 1      step 5
+Scalar_psi_gaussianK[34]                        2.67e-03    4.85e-04
+Scalar_psi_gaussianK[78]                        3.54e-03    1.41e-04
+Scalar_psi_gaussianK[56]                        3.28e-03    1.34e-04
+Scalar_psi_gaussianK[35]                        1.22e-03    2.10e-04
+Scalar_morlet_gaussianK[8]                      4.33e-03    8.03e-04
+Scalar_psi_gaussianK[79]                        3.12e-04    2.78e-05
+Scalar_psi_gaussianK[57]                        2.77e-04    2.70e-05
+Scalar_psi_gaussianK[36]                        2.48e-04    4.98e-05
+Scalar_morlet_gaussianK[51]                     5.30e-05    8.76e-06
+Scalar_psi_gaussianK[15]                        5.90e-05    1.07e-05
+Scalar_morlet_gaussianK[16]                     4.49e-05    7.33e-06
+Scalar_morlet_gaussianK[0]                      5.09e-05    6.42e-06
+Scalar_psi_gaussianK[113]                       1.21e-05    2.08e-06
+Scalar_psi_gaussianK[80]                        1.74e-05    3.08e-06
+Scalar_psi_gaussianK[58]                        1.50e-05    2.98e-06
+  median |res|/|e|: 1: 7.32e-08  5: 7.13e-08   max: 1: 4.33e-03  5: 8.03e-04
+h x 0.01562 (h = 1.19e-10): 5 steps in 1 s
+statistic                                         step 1      step 5
+Scalar_psi_gaussianK[34]                        1.86e-03    5.32e-05
+Scalar_psi_gaussianK[78]                        2.95e-03    1.21e-05
+Scalar_psi_gaussianK[56]                        2.73e-03    1.37e-05
+Scalar_psi_gaussianK[35]                        7.72e-04    1.90e-05
+Scalar_morlet_gaussianK[8]                      3.84e-03    1.75e-04
+Scalar_psi_gaussianK[79]                        2.15e-04    2.25e-06
+Scalar_psi_gaussianK[57]                        1.86e-04    2.59e-06
+Scalar_psi_gaussianK[36]                        1.46e-04    4.01e-06
+Scalar_morlet_gaussianK[51]                     3.15e-05    5.33e-07
+Scalar_psi_gaussianK[15]                        4.18e-05    9.19e-07
+Scalar_morlet_gaussianK[16]                     2.70e-05    5.81e-07
+Scalar_morlet_gaussianK[0]                      3.08e-05    6.08e-07
+Scalar_psi_gaussianK[113]                       6.53e-06   -9.47e-08
+Scalar_psi_gaussianK[80]                        9.92e-06    5.95e-07
+Scalar_psi_gaussianK[58]                        7.70e-06    5.78e-07
+  median |res|/|e|: 1: 6.44e-08  5: 0.00e+00   max: 1: 3.84e-03  5: 1.75e-04
+
+  settled level (rms over the settled checkpoints, relative to |e|) and exponent of its dependence on h:
+statistic                                         h x 1   h x 0.25 h x 0.0625 h x 0.0156  exponent
+Scalar_psi_gaussianK[34]                       3.71e-02   4.44e-03   4.85e-04   5.32e-05      1.58
+Scalar_psi_gaussianK[78]                       3.55e-02   1.88e-03   1.41e-04   1.21e-05      1.91
+Scalar_psi_gaussianK[56]                       3.21e-02   1.69e-03   1.34e-04   1.37e-05      1.86
+Scalar_psi_gaussianK[35]                       1.71e-02   2.13e-03   2.10e-04   1.90e-05      1.64
+Scalar_morlet_gaussianK[8]                     1.61e-02   3.75e-03   8.03e-04   1.75e-04      1.09
+Scalar_psi_gaussianK[79]                       6.59e-03   3.89e-04   2.78e-05   2.25e-06      1.92
+Scalar_psi_gaussianK[57]                       5.83e-03   3.51e-04   2.70e-05   2.59e-06      1.86
+Scalar_psi_gaussianK[36]                       5.11e-03   6.13e-04   4.98e-05   4.01e-06      1.73
+Scalar_morlet_gaussianK[51]                    1.67e-03   1.22e-04   8.76e-06   5.33e-07      1.93
+Scalar_psi_gaussianK[15]                       1.54e-03   1.36e-04   1.07e-05   9.19e-07      1.79
+Scalar_morlet_gaussianK[16]                    1.43e-03   1.04e-04   7.33e-06   5.81e-07      1.88
+Scalar_morlet_gaussianK[0]                     1.05e-03   8.57e-05   6.42e-06   6.08e-07      1.80
+Scalar_psi_gaussianK[113]                      6.57e-04   4.01e-05   2.08e-06   9.47e-08      2.13
+Scalar_psi_gaussianK[80]                       6.37e-04   4.17e-05   3.08e-06   5.95e-07      1.70
+Scalar_psi_gaussianK[58]                       5.63e-04   3.96e-05   2.98e-06   5.78e-07      1.68
+  statistics with settled level > 1e-5 at the largest h (n=45): exponent median 1.86, quartiles 1.68 .. 12.61
+
+=== f. float32 evaluation floor of the moments on the saved final samples (relative to |e|) ===
+statistic                                     observed  f32 vs f64  roundoff pert
+Scalar_psi_gaussianK[34]                      3.70e-02    2.35e-07       1.60e-07
+Scalar_psi_gaussianK[78]                      3.50e-02    1.38e-06       6.00e-07
+Scalar_psi_gaussianK[56]                      3.16e-02    1.09e-06       5.15e-07
+Scalar_psi_gaussianK[35]                      1.71e-02    7.47e-08       9.25e-08
+Scalar_morlet_gaussianK[8]                    1.62e-02    9.42e-08       0.00e+00
+Scalar_psi_gaussianK[79]                      6.77e-03    3.90e-07       2.41e-07
+Scalar_psi_gaussianK[57]                      5.99e-03    5.52e-07       2.35e-07
+Scalar_psi_gaussianK[36]                      4.99e-03    7.71e-08       1.36e-07
+Scalar_morlet_gaussianK[51]                   1.67e-03    1.94e-07       2.29e-07
+Scalar_psi_gaussianK[15]                      1.55e-03    2.08e-07       0.00e+00
+Scalar_morlet_gaussianK[16]                   1.43e-03    1.41e-07       0.00e+00
+Scalar_morlet_gaussianK[0]                    1.05e-03    3.18e-08       0.00e+00
+Scalar_psi_gaussianK[113]                     6.69e-04    3.45e-07       1.89e-07
+Scalar_psi_gaussianK[80]                      6.47e-04    1.41e-07       1.98e-07
+Scalar_psi_gaussianK[58]                      5.70e-04    5.38e-08       9.63e-08
+  statistics with observed error > 1e-5 |e| (n=45): median observed 2.80e-04, median f32-vs-f64 9.42e-08, median roundoff-perturbation 9.25e-08
+  fraction of those whose observed error is below 3x the f32 floor: 0%; Spearman(observed, f32 floor) = +0.25
+
+=== e. scalar edge width sw x scale (targets and stat_scale recomputed from the data; walkers = saved final samples) ===
+  protocol: target = phi_bar(data) with the modified potentials, start = saved final walkers, one noise step of the last size + one pass;
+  the scale-1 row is the reference of THIS protocol (its start is not matched to the data, so only ratios between rows are meaningful)
+statistic                                         sw x 1      sw x 2
+Scalar_psi_gaussianK[34]                        4.25e-02    3.58e-02
+Scalar_psi_gaussianK[78]                        3.69e-02    6.11e-02
+Scalar_psi_gaussianK[56]                        3.33e-02    6.71e-02
+Scalar_psi_gaussianK[35]                        1.89e-02    2.28e-02
+Scalar_morlet_gaussianK[8]                      1.71e-02    1.53e-02
+Scalar_psi_gaussianK[79]                        6.99e-03    1.90e-02
+Scalar_psi_gaussianK[57]                        6.17e-03    2.35e-02
+Scalar_psi_gaussianK[36]                        5.43e-03    1.36e-02
+Scalar_morlet_gaussianK[51]                     1.77e-03    5.70e-03
+Scalar_psi_gaussianK[15]                        1.67e-03    3.29e-03
+Scalar_morlet_gaussianK[16]                     1.53e-03    4.10e-03
+Scalar_morlet_gaussianK[0]                      1.14e-03    1.49e-03
+Scalar_psi_gaussianK[113]                       7.04e-04    2.57e-03
+Scalar_psi_gaussianK[80]                        6.66e-04    4.48e-03
+Scalar_psi_gaussianK[58]                        5.90e-04    9.11e-03
+
+  Ito term I = h sigma^2 <Laplacian phi> / |e| on the saved final samples (|I| of the scalar statistics):
+statistic                                       sw x 0.5      sw x 1      sw x 2
+Scalar_psi_gaussianK[34]                        6.84e-01    6.85e-01    6.77e-01
+Scalar_psi_gaussianK[78]                        4.25e-02    8.92e-02    2.69e-01
+Scalar_psi_gaussianK[56]                        4.15e-02    7.78e-02    2.57e-03
+Scalar_psi_gaussianK[35]                        4.07e-01    4.00e-01    4.01e-01
+Scalar_morlet_gaussianK[8]                      9.21e-02    9.40e-02    9.67e-02
+Scalar_psi_gaussianK[79]                        6.90e-03    2.68e-02    1.35e-01
+Scalar_psi_gaussianK[57]                        7.11e-03    2.66e-02    3.58e-01
+Scalar_psi_gaussianK[36]                        1.68e-01    1.70e-01    1.74e-01
+Scalar_morlet_gaussianK[51]                     8.63e-03    1.28e-02    3.33e-02
+Scalar_psi_gaussianK[15]                        1.07e-01    1.07e-01    1.07e-01
+Scalar_morlet_gaussianK[16]                     8.43e-03    1.15e-02    2.42e-02
+Scalar_morlet_gaussianK[0]                      1.87e-02    1.83e-02    1.76e-02
+Scalar_psi_gaussianK[113]                       5.75e-03    1.07e-02    3.97e-02
+Scalar_psi_gaussianK[80]                        2.33e-03    7.51e-03    4.81e-02
+Scalar_psi_gaussianK[58]                        2.35e-03    6.55e-03    4.94e-02
+
+saved /lustre/fswork/projects/rech/wbg/ukv59en/MGD-for-Maximum-Entropy-Generation/terminal_phase_test/smoke3/turb_noscat4/part1_turb_noscat4.npz and .csv; total 30 s

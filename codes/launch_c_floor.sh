@@ -6,6 +6,7 @@
 # Usage (Jean Zay, from the repo root):
 #   MODE=check SYSTEMS=<one abs .pt> SAVED_DIR=<abs dir of the old theta files> LAMS="1e-4 1e-2 1" LABEL=x bash codes/launch_c_floor.sh
 #   MODE=scan  SYSTEMS="<abs .pt> ..." OUTDIR=<abs dir> EPS="0 5e-5 5e-4 5e-3 5e-2" LABEL=x bash codes/launch_c_floor.sh
+# THREADS=k (scan only): torch threads (default CPUS); the solve is ill-conditioned, so keep it fixed across arms.
 # STRIDE=m (scan only): keep every m-th node (grid-dependence test, default 1). One stride per job.
 # overrides: LAMS (default 0 1e-6 1e-5 1e-4 5e-4 1e-3 1e-2 1e-1 1), RIDGE (1e-7), TIME (10:00:00), CPUS (20),
 #   ACCOUNT (wbg@v100: the account prepost accepted on 11-11; prepost is not billed per the IDRIS docs).
@@ -28,7 +29,7 @@ case "${MODE}" in
     check) : "${SAVED_DIR:?set SAVED_DIR}"
            CMD="python -u ${HERE}/check_c_floor_eps0.py ${SYSTEMS} ${SAVED_DIR} --lams ${LAMS} --ridge ${RIDGE}" ;;
     scan)  : "${OUTDIR:?set OUTDIR}"
-           CMD="python -u ${HERE}/resolve_theta_reg.py ${SYSTEMS} --lams ${LAMS} --ridge ${RIDGE} --c_floor_eps ${EPS} --node_stride ${STRIDE:-1} --schedule uniform --mask auto --diagnose 0 --mmap --threads ${CPUS} --outdir ${OUTDIR}" ;;
+           CMD="python -u ${HERE}/resolve_theta_reg.py ${SYSTEMS} --lams ${LAMS} --ridge ${RIDGE} --c_floor_eps ${EPS} --node_stride ${STRIDE:-1} --schedule uniform --mask auto --diagnose 0 --mmap --threads ${THREADS:-${CPUS}} --outdir ${OUTDIR}" ;;
     *) echo "Error: MODE must be check or scan"; exit 1 ;;
 esac
 # GPU=v100: run on a V100 dev node instead (billed 1 GPU x elapsed, <= 2 h; the solve itself uses the CPU cores).

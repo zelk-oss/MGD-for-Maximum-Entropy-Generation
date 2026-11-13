@@ -490,6 +490,27 @@ def run_experiment(args, M, config, x1, filters, t, logger, outdir, device,
         logger.info('Extra corrector passes for 1-t < %g: until |phi_bar(I) - phi_bar(x)| <= %g SE '
                     'on every live statistic, at most %d', Solver.extra_corrector_tail,
                     Solver.extra_corrector_tau, Solver.extra_corrector_max)
+    # Terminal phase / final projection (opt-in, default off: nothing below runs and the SDE is unchanged)
+    Solver.terminal_phase = bool(getattr(args, 'terminal_phase', False))
+    if Solver.terminal_phase:
+        if getattr(args, 'theta_solver', None):
+            raise ValueError('--terminal_phase needs the plain SDE corrector (not --theta_solver)')
+        Solver.terminal_tol = float(args.terminal_tol)
+        Solver.terminal_shrink = float(args.terminal_shrink)
+        Solver.terminal_hold = int(args.terminal_hold)
+        Solver.terminal_h_min = float(args.terminal_h_min)
+        Solver.terminal_max_steps = int(args.terminal_max_steps)
+        Solver.terminal_in_system = bool(args.terminal_in_system)
+        logger.info('Terminal phase after the planned grid: shrink h x%g per step until max |phi_bar(I) - phi_bar(x)| <= %g SE, '
+                    'then hold %d steps; caps h >= %g, <= %d steps; terminal steps %s the regularised system',
+                    Solver.terminal_shrink, Solver.terminal_tol, Solver.terminal_hold, Solver.terminal_h_min,
+                    Solver.terminal_max_steps, 'IN' if Solver.terminal_in_system else 'NOT in')
+    Solver.final_projection = bool(getattr(args, 'final_projection', False))
+    if Solver.final_projection:
+        Solver.final_projection_tol = float(args.final_projection_tol)
+        Solver.final_projection_max = int(args.final_projection_max)
+        logger.info('Final projection: corrector passes until every live statistic is within %g (relative), at most %d',
+                    Solver.final_projection_tol, Solver.final_projection_max)
     xt, barphi_e, barphi_p, eta_t, theta_t, dH_t_bound, Theta_reg, t_reg = Solver.forward_regularised(
         lam=args.lam, n_subsample=args.n_subsample,
         time_limit_min=getattr(args, 'time_limit_min', None),
@@ -518,6 +539,22 @@ def run_experiment(args, M, config, x1, filters, t, logger, outdir, device,
     if adaptive is not None:
         t = Solver.t
         logger.info('%s; grid ends at 1 - t = %.2e', adaptive.summary(), 1 - float(t[-1]))
+    if Solver.terminal_phase:
+        t = Solver.t                                  # planned grid + the terminal steps (saved as sampling_times)
+        logger.info('%s; grid ends at 1 - t = %.3e', Solver.terminal_summary(), 1 - float(t[-1]))
+        term_path = outdir / 'saved_results' / 'aux_moments' / f'{config}_terminal.pt'
+        term_path.parent.mkdir(parents=True, exist_ok=True)
+        torch.save({'columns': ['k', 'h', 'max_z_after_step', 'index_of_that_statistic'],
+                    'log': torch.tensor(Solver.terminal_log, dtype=torch.float64),
+                    'terminal_start': Solver.terminal_start, 'info': Solver.terminal_info,
+                    'labels': Solver.potential_labels,
+                    'params': dict(tol=Solver.terminal_tol, shrink=Solver.terminal_shrink, hold=Solver.terminal_hold,
+                                   h_min=Solver.terminal_h_min, max_steps=Solver.terminal_max_steps,
+                                   in_system=Solver.terminal_in_system)}, term_path)
+        logger.info('Saved the terminal-phase log to %s', term_path)
+    if Solver.final_projection and Solver.final_projection_log is not None:
+        logger.info('Final projection: %d passes, max relative error %.3e -> %.3e',
+                    *Solver.final_projection_log[:1], *Solver.final_projection_log[1:])
 
     # Pass the global outdir as 'root' so it targets the original global directories
     save_results_theta_reg(xt, theta_t, dH_t_bound, t, outdir, config, Theta_reg=Theta_reg, t_reg=t_reg)

@@ -1,0 +1,35 @@
+  Theta_reg (L_6<0 constrained): lam3e-05_ridge0.0001_moment_mask_neg0.01_NOTCONVERGED_20261103_202814.pt  lam=3e-05  residual 3.27e-10  last node t=0.99995000
+[deduplicate_filters] filters_Q: 25 -> 22 channels for channel-list potentials (dropped duplicates [21, 22, 23], tol=1e-08)
+lagrangian seed 900: E (10000, 341) | L_6<0 constrained lam3e-05_ridge0.0001_moment_mask_neg0.01_NOTCONVERGED_20261103_202814.pt | families L_6:9, Scalar_psi_gaussianK:132, Scalar_morlet_gaussianK:60, Scattering_Fourth_Order_Mod2_Real_Q1:84, Scattering_Fourth_Order_Mod2_Imag_Q1:56
+ -> /lustre/fswork/projects/rech/wbg/ukv59en/MGD-for-Maximum-Entropy-Generation/kl_groups/results/run1/E_lagrangian_seed900.npz
+  Theta_reg (L_6<0 constrained): lam3e-05_ridge0.0001_moment_mask_neg0.01_NOTCONVERGED_20261103_223604.pt  lam=3e-05  residual 2.33e-10  last node t=0.99995000
+[deduplicate_filters] filters_Q: 25 -> 22 channels for channel-list potentials (dropped duplicates [21, 22, 23], tol=1e-08)
+lagrangian seed 901: E (10000, 341) | L_6<0 constrained lam3e-05_ridge0.0001_moment_mask_neg0.01_NOTCONVERGED_20261103_223604.pt | families L_6:9, Scalar_psi_gaussianK:132, Scalar_morlet_gaussianK:60, Scattering_Fourth_Order_Mod2_Real_Q1:84, Scattering_Fourth_Order_Mod2_Imag_Q1:56
+ -> /lustre/fswork/projects/rech/wbg/ukv59en/MGD-for-Maximum-Entropy-Generation/kl_groups/results/run1/E_lagrangian_seed901.npz
+  Theta_reg (L_6<0 constrained): lam3e-05_ridge0.0001_moment_mask_neg0.01_NOTCONVERGED_20261103_211226.pt  lam=3e-05  residual 4.84e-11  last node t=0.99995000
+[deduplicate_filters] filters_Q: 25 -> 22 channels for channel-list potentials (dropped duplicates [21, 22, 23], tol=1e-08)
+lagrangian seed 902: E (10000, 341) | L_6<0 constrained lam3e-05_ridge0.0001_moment_mask_neg0.01_NOTCONVERGED_20261103_211226.pt | families L_6:9, Scalar_psi_gaussianK:132, Scalar_morlet_gaussianK:60, Scattering_Fourth_Order_Mod2_Real_Q1:84, Scattering_Fourth_Order_Mod2_Imag_Q1:56
+ -> /lustre/fswork/projects/rech/wbg/ukv59en/MGD-for-Maximum-Entropy-Generation/kl_groups/results/run1/E_lagrangian_seed902.npz
+  Theta_reg (L_6<0 constrained): lam3e-05_ridge0.0001_moment_mask_neg0.01_NOTCONVERGED_20261104_031011.pt  lam=3e-05  residual 1.26e-10  last node t=0.99995000
+[deduplicate_filters] filters_Q: 25 -> 22 channels for channel-list potentials (dropped duplicates [21, 22, 23], tol=1e-08)
+lagrangian seed 903: E (10000, 341) | L_6<0 constrained lam3e-05_ridge0.0001_moment_mask_neg0.01_NOTCONVERGED_20261104_031011.pt | families L_6:9, Scalar_psi_gaussianK:132, Scalar_morlet_gaussianK:60, Scattering_Fourth_Order_Mod2_Real_Q1:84, Scattering_Fourth_Order_Mod2_Imag_Q1:56
+ -> /lustre/fswork/projects/rech/wbg/ukv59en/MGD-for-Maximum-Entropy-Generation/kl_groups/results/run1/E_lagrangian_seed903.npz
+  Theta_reg (L_6<0 constrained): lam3e-05_ridge0.0001_moment_mask_neg0.01_NOTCONVERGED_20261103_221503.pt  lam=3e-05  residual 1.93e-10  last node t=0.99995000
+[deduplicate_filters] filters_Q: 25 -> 22 channels for channel-list potentials (dropped duplicates [21, 22, 23], tol=1e-08)
+lagrangian seed 904: E (10000, 341) | L_6<0 constrained lam3e-05_ridge0.0001_moment_mask_neg0.01_NOTCONVERGED_20261103_221503.pt | families L_6:9, Scalar_psi_gaussianK:132, Scalar_morlet_gaussianK:60, Scattering_Fourth_Order_Mod2_Real_Q1:84, Scattering_Fourth_Order_Mod2_Imag_Q1:56
+ -> /lustre/fswork/projects/rech/wbg/ukv59en/MGD-for-Maximum-Entropy-Generation/kl_groups/results/run1/E_lagrangian_seed904.npz
+E_lagrangian_seed900.npz: N = 10000, n = 341; families: L_6 -> None, Scalar_psi_gaussianK -> scalar, Scalar_morlet_gaussianK -> scalar, Scattering_Fourth_Order_Mod2_Real_Q1 -> scat4_real, Scattering_Fourth_Order_Mod2_Imag_Q1 -> scat4_imag
+E_lagrangian_seed901.npz: N = 10000, n = 341; families: L_6 -> None, Scalar_psi_gaussianK -> scalar, Scalar_morlet_gaussianK -> scalar, Scattering_Fourth_Order_Mod2_Real_Q1 -> scat4_real, Scattering_Fourth_Order_Mod2_Imag_Q1 -> scat4_imag
+E_lagrangian_seed902.npz: N = 10000, n = 341; families: L_6 -> None, Scalar_psi_gaussianK -> scalar, Scalar_morlet_gaussianK -> scalar, Scattering_Fourth_Order_Mod2_Real_Q1 -> scat4_real, Scattering_Fourth_Order_Mod2_Imag_Q1 -> scat4_imag
+E_lagrangian_seed903.npz: N = 10000, n = 341; families: L_6 -> None, Scalar_psi_gaussianK -> scalar, Scalar_morlet_gaussianK -> scalar, Scattering_Fourth_Order_Mod2_Real_Q1 -> scat4_real, Scattering_Fourth_Order_Mod2_Imag_Q1 -> scat4_imag
+E_lagrangian_seed904.npz: N = 10000, n = 341; families: L_6 -> None, Scalar_psi_gaussianK -> scalar, Scalar_morlet_gaussianK -> scalar, Scattering_Fourth_Order_Mod2_Real_Q1 -> scat4_real, Scattering_Fourth_Order_Mod2_Imag_Q1 -> scat4_imag
+                                             H  boot_std      var2  ess_frac  log10_N_needed  flag
+group                                                                                             
+fam:Scalar_psi_gaussianK                  2698     123.8 4.551e+04    0.0001       3.953e+04     1
+fam:Scalar_morlet_gaussianK               2129     85.53 4.331e+04    0.0001       3.762e+04     1
+cat:scalar                               647.3     59.26      5234    0.0001            4546     1
+fam:Scattering_Fourth_Order_Mod2_Imag_Q1 59.91     20.95     2.323 0.0001066           2.018     1
+cat:scat4_imag                           59.91     20.95     2.323 0.0001066           2.018     1
+cat:scat4_real                           50.35     15.47     11.49 0.0001273           9.981     1
+fam:Scattering_Fourth_Order_Mod2_Real_Q1 50.35     15.47     11.49 0.0001273           9.981     1
+-> /lustre/fswork/projects/rech/wbg/ukv59en/MGD-for-Maximum-Entropy-Generation/kl_groups/results/run1/H_lagrangian.csv (1940 rows), flagged groups: 1027

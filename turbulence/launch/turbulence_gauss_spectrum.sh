@@ -19,6 +19,9 @@
 LAUNCH_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 EXP_NAME="turbulence_gauss_spectrum"
+# terminal phase / final projection (2026-11-12, opt-in env, see _submit_turb_sweep.sh): own label, never the reference folder
+[ "${TERMINAL_PHASE:-}" = "true" ] && EXP_NAME+="_term"
+[ "${FINAL_PROJECTION:-}" = "true" ] && EXP_NAME+="_fp"
 TERMS=(Scattering_Second_Order_Q1)
 SEED_LIST=(${SEEDS:-900 901 902 903 904})
 GAUSS_SPECTRUM=true

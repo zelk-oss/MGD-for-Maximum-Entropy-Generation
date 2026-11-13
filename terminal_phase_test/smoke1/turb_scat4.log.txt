@@ -1,0 +1,27 @@
+run: turbulencesynth_M256_J8_Q3_sigma3.5_nt55000_n1_10000_lam0.0_thomas_nsub1_moment_f64_dedupfilt1e-08_seed_900_terms9296e719_turbulence_nested_M3_bicw_allmass_scat4_20261101_1714
+  n1=10000 M=256 J=8 Q=3 nt=55000 sigma=3.5 ridge=0.0001 terms=['L_6', 'Scalar_psi_gaussianK', 'Scalar_morlet_gaussianK', 'Scattering_Fourth_Order_Mod2_Real_Q1', 'Scattering_Fourth_Order_Mod2_Imag_Q1']
+[deduplicate_filters] filters_Q: 25 -> 22 channels for channel-list potentials (dropped duplicates [21, 22, 23], tol=1e-08)
+last step h = 7.601e-09, sigma = 3.5, noise per sample 4.316e-04, ridge(s) [0.0001, 0.01, 1e-06], device cuda, 341 statistics, 2 draws
+check: moments of the saved samples vs aux barphi_p: median rel 0.0e+00 max 1.5e-06
+Traceback (most recent call last):
+  File "/lustre/fswork/projects/rech/wbg/ukv59en/MGD-for-Maximum-Entropy-Generation/codes/one_step_test.py", line 489, in <module>
+    main()
+  File "/lustre/fswork/projects/rech/wbg/ukv59en/MGD-for-Maximum-Entropy-Generation/codes/one_step_test.py", line 310, in main
+    o, chk = eval_variants(H, x0, h * hm, gen, rs, mp)
+             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/lustre/fswork/projects/rech/wbg/ukv59en/MGD-for-Maximum-Entropy-Generation/codes/one_step_test.py", line 130, in eval_variants
+    th_real, rhs = H.compute_theta(y, 0)
+                   ^^^^^^^^^^^^^^^^^^^^^
+  File "/lustre/fswork/projects/rech/wbg/ukv59en/MGD-for-Maximum-Entropy-Generation/codes/sde_routines.py", line 1604, in compute_theta
+    G_k                      = self.compute_G(y_k)
+                               ^^^^^^^^^^^^^^^^^^^
+  File "/lustre/fswork/projects/rech/wbg/ukv59en/MGD-for-Maximum-Entropy-Generation/codes/sde_routines.py", line 1909, in compute_G
+    grad_potential = self.compute_grad_potentials(batch)
+                     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/lustre/fswork/projects/rech/wbg/ukv59en/MGD-for-Maximum-Entropy-Generation/codes/sde_routines.py", line 1953, in compute_grad_potentials
+    grad_potential = torch.cat((grad_potential, potential.grad(x)), dim=1).detach()
+                                                ^^^^^^^^^^^^^^^^^
+  File "/lustre/fswork/projects/rech/wbg/ukv59en/MGD-for-Maximum-Entropy-Generation/codes/potentials/potentials_1d.py", line 704, in grad
+    output = torch.fft.ifft(filters_Q[:,:,None,None].conj()*torch.fft.fft(intermediate_output)).real
+                                                            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+torch.OutOfMemoryError: CUDA out of memory. Tried to allocate 5.49 GiB. GPU 0 has a total capacity of 15.77 GiB of which 3.32 GiB is free. Including non-PyTorch memory, this process has 12.45 GiB memory in use. Of the allocated memory 7.36 GiB is allocated by PyTorch, and 4.72 GiB is reserved by PyTorch but unallocated. If reserved but unallocated memory is large try setting PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True to avoid fragmentation.  See documentation for Memory Management  (https://pytorch.org/docs/stable/notes/cuda.html#environment-variables)

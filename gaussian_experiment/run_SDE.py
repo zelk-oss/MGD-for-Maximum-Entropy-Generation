@@ -213,6 +213,9 @@ def parse_args():
                          'Disabled (no check) when omitted.')
     p.add_argument('--no_save_aux_moments', action='store_true',
                     help='Disable saving of barphi_e / barphi_p aux moments')
+    p.add_argument('--spectrum_file', type=str, default=None,
+                   help='replace x1 by n1 draws (generator seed --data_seed) of the stationary Gaussian with spectrum '
+                        'S of this file (torch dict with S (1, M), unnormalised FFT power; gauss_scat4_test/make_spectrum.py)')
     p.add_argument('--seed', type=int, default=0, help='Random seed')
     p.add_argument('--data_seed', type=int, default=None,
                     help='Seed of the generated data x1 only; --seed then drives the SDE alone, '
@@ -398,6 +401,13 @@ def main():
     increments = raw.diff(dim=-1)  # (n1, 1, M)
 
     x1 = normalize(increments).to(device)
+    gauss_blob = None
+    if args.spectrum_file:      # x1 replaced by n1 draws of the stationary Gaussian with spectrum S (gauss_scat4_test/)
+        from codes.gauss_spectrum import sample_gaussian_spectrum
+        gauss_blob = torch.load(args.spectrum_file, map_location='cpu', weights_only=False)
+        S = gauss_blob['S'].double()
+        assert S.shape[-1] == args.M, (S.shape, args.M)
+        x1 = sample_gaussian_spectrum(S, args.n1, seed=args.data_seed or 0).float().to(device)
     B, channels, M = x1.shape
 
     config, exp_dir, fig_dir, potentials_dir, logger, loaded = resolve_or_setup_experiment_output(
@@ -408,6 +418,11 @@ def main():
     logger.info('Generated raw process shape: %s', raw.shape)
     logger.info('x1 (increments, normalized) final shape: %s', tuple(x1.shape))
     logger.info('Hurst = %s, intermittency = %s', args.hurst, args.intermittency)
+    if gauss_blob is not None:
+        torch.save({'S': gauss_blob['S'], 'data_seed': args.data_seed or 0, 'source_file': args.spectrum_file},
+                   exp_dir / 'gauss_spectrum.pt')
+        logger.info('spectrum_file: x1 = %d draws of the Gaussian with spectrum %s (var %.4f); S -> %s',
+                    args.n1, args.spectrum_file, x1.var().item(), exp_dir / 'gauss_spectrum.pt')
 
     with logged_run(logger):
         plot_increment_diagnostics(x1, args, fig_dir, config)

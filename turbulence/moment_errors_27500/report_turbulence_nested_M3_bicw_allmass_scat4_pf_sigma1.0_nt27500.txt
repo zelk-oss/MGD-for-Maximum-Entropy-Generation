@@ -1,0 +1,13 @@
+
+=== seed 900: turbulencesynth_M256_J8_Q3_sigma1.0_nt27500_n1_10000_lam0.0_thomas_nsub1_moment_f64_dedupfilt1e-08_seed_900_terms9296e719_turbulence_nested_M3_bicw_allmass_scat4_pf_20261111_1146
+  n1=10000 M=256 J=8 Q=3 sigma=1.0 terms=['L_6', 'Scalar_psi_gaussianK', 'Scalar_morlet_gaussianK', 'Scattering_Fourth_Order_Mod2_Real_Q1', 'Scattering_Fourth_Order_Mod2_Imag_Q1']
+[deduplicate_filters] filters_Q: 25 -> 22 channels for channel-list potentials (dropped duplicates [21, 22, 23], tol=1e-08)
+  check: rebuilt phi on saved samples vs aux barphi_p: median rel 2.1e-07, max 1.2e-05
+1. 341 statistics at t=1 (miss: rel > 0.01); z median 0.67 under independent-sample noise
+  all       n= 341  rel mean 1.94e-05 median 9.37e-08 p90 4.06e-06 max 1.80e-03 | z median 3.3e-07 | sign persistence (1-t<1e-2) median 60%
+  matched   n= 341  rel mean 1.94e-05 median 9.37e-08 p90 4.06e-06 max 1.80e-03 | z median 3.3e-07 | sign persistence (1-t<1e-2) median 60%
+2. Ito term, 192 Scalar statistics (Spearman of |I_n| with rel_n across statistics):
+   1-t= 1e-2 h=3.04e-06: Spearman +0.65 (p 1e-24); |I| median missed nan vs matched 2.21e-05
+   1-t= 1e-3 h=3.04e-07: Spearman +0.65 (p 1e-24); |I| median missed nan vs matched 2.21e-06
+   1-t=  end h=1.52e-08: Spearman +0.65 (p 1e-24); |I| median missed nan vs matched 1.10e-07
+  wrote /lustre/fswork/projects/rech/wbg/ukv59en/MGD-for-Maximum-Entropy-Generation/turbulence/moment_errors_27500/turbulencesynth_M256_J8_Q3_sigma1.0_nt27500_n1_10000_lam0.0_thomas_nsub1_moment_f64_dedupfilt1e-08_seed_900_terms9296e719_turbulence_nested_M3_bicw_allmass_scat4_pf_20261111_1146.csv (341 statistics)

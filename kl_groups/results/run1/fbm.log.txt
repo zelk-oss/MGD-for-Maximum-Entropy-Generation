@@ -1,0 +1,39 @@
+fbm seed 300: E (15000, 36) | in-run Theta_reg lam 1e-06 | families Scattering_Second_Order:6, Scattering_Fourth_Order_Mod2_Real_Q1:20, Scattering_Fourth_Order_Mod2_Imag_Q1:10
+ -> /lustre/fswork/projects/rech/wbg/ukv59en/MGD-for-Maximum-Entropy-Generation/kl_groups/results/run1/E_fbm_seed300.npz
+fbm seed 301: E (15000, 36) | in-run Theta_reg lam 1e-06 | families Scattering_Second_Order:6, Scattering_Fourth_Order_Mod2_Real_Q1:20, Scattering_Fourth_Order_Mod2_Imag_Q1:10
+ -> /lustre/fswork/projects/rech/wbg/ukv59en/MGD-for-Maximum-Entropy-Generation/kl_groups/results/run1/E_fbm_seed301.npz
+fbm seed 302: E (15000, 36) | in-run Theta_reg lam 1e-06 | families Scattering_Second_Order:6, Scattering_Fourth_Order_Mod2_Real_Q1:20, Scattering_Fourth_Order_Mod2_Imag_Q1:10
+ -> /lustre/fswork/projects/rech/wbg/ukv59en/MGD-for-Maximum-Entropy-Generation/kl_groups/results/run1/E_fbm_seed302.npz
+fbm seed 303: E (15000, 36) | in-run Theta_reg lam 1e-06 | families Scattering_Second_Order:6, Scattering_Fourth_Order_Mod2_Real_Q1:20, Scattering_Fourth_Order_Mod2_Imag_Q1:10
+ -> /lustre/fswork/projects/rech/wbg/ukv59en/MGD-for-Maximum-Entropy-Generation/kl_groups/results/run1/E_fbm_seed303.npz
+fbm seed 304: E (15000, 36) | in-run Theta_reg lam 1e-06 | families Scattering_Second_Order:6, Scattering_Fourth_Order_Mod2_Real_Q1:20, Scattering_Fourth_Order_Mod2_Imag_Q1:10
+ -> /lustre/fswork/projects/rech/wbg/ukv59en/MGD-for-Maximum-Entropy-Generation/kl_groups/results/run1/E_fbm_seed304.npz
+fbm seed 305: E (15000, 36) | in-run Theta_reg lam 1e-06 | families Scattering_Second_Order:6, Scattering_Fourth_Order_Mod2_Real_Q1:20, Scattering_Fourth_Order_Mod2_Imag_Q1:10
+ -> /lustre/fswork/projects/rech/wbg/ukv59en/MGD-for-Maximum-Entropy-Generation/kl_groups/results/run1/E_fbm_seed305.npz
+fbm seed 306: E (15000, 36) | in-run Theta_reg lam 1e-06 | families Scattering_Second_Order:6, Scattering_Fourth_Order_Mod2_Real_Q1:20, Scattering_Fourth_Order_Mod2_Imag_Q1:10
+ -> /lustre/fswork/projects/rech/wbg/ukv59en/MGD-for-Maximum-Entropy-Generation/kl_groups/results/run1/E_fbm_seed306.npz
+fbm seed 307: E (15000, 36) | in-run Theta_reg lam 1e-06 | families Scattering_Second_Order:6, Scattering_Fourth_Order_Mod2_Real_Q1:20, Scattering_Fourth_Order_Mod2_Imag_Q1:10
+ -> /lustre/fswork/projects/rech/wbg/ukv59en/MGD-for-Maximum-Entropy-Generation/kl_groups/results/run1/E_fbm_seed307.npz
+fbm seed 308: E (15000, 36) | in-run Theta_reg lam 1e-06 | families Scattering_Second_Order:6, Scattering_Fourth_Order_Mod2_Real_Q1:20, Scattering_Fourth_Order_Mod2_Imag_Q1:10
+ -> /lustre/fswork/projects/rech/wbg/ukv59en/MGD-for-Maximum-Entropy-Generation/kl_groups/results/run1/E_fbm_seed308.npz
+fbm seed 309: E (15000, 36) | in-run Theta_reg lam 1e-06 | families Scattering_Second_Order:6, Scattering_Fourth_Order_Mod2_Real_Q1:20, Scattering_Fourth_Order_Mod2_Imag_Q1:10
+ -> /lustre/fswork/projects/rech/wbg/ukv59en/MGD-for-Maximum-Entropy-Generation/kl_groups/results/run1/E_fbm_seed309.npz
+E_fbm_seed300.npz: N = 15000, n = 36; families: Scattering_Second_Order -> scat1-2, Scattering_Fourth_Order_Mod2_Real_Q1 -> scat4_real, Scattering_Fourth_Order_Mod2_Imag_Q1 -> scat4_imag
+E_fbm_seed301.npz: N = 15000, n = 36; families: Scattering_Second_Order -> scat1-2, Scattering_Fourth_Order_Mod2_Real_Q1 -> scat4_real, Scattering_Fourth_Order_Mod2_Imag_Q1 -> scat4_imag
+E_fbm_seed302.npz: N = 15000, n = 36; families: Scattering_Second_Order -> scat1-2, Scattering_Fourth_Order_Mod2_Real_Q1 -> scat4_real, Scattering_Fourth_Order_Mod2_Imag_Q1 -> scat4_imag
+E_fbm_seed303.npz: N = 15000, n = 36; families: Scattering_Second_Order -> scat1-2, Scattering_Fourth_Order_Mod2_Real_Q1 -> scat4_real, Scattering_Fourth_Order_Mod2_Imag_Q1 -> scat4_imag
+E_fbm_seed304.npz: N = 15000, n = 36; families: Scattering_Second_Order -> scat1-2, Scattering_Fourth_Order_Mod2_Real_Q1 -> scat4_real, Scattering_Fourth_Order_Mod2_Imag_Q1 -> scat4_imag
+E_fbm_seed305.npz: N = 15000, n = 36; families: Scattering_Second_Order -> scat1-2, Scattering_Fourth_Order_Mod2_Real_Q1 -> scat4_real, Scattering_Fourth_Order_Mod2_Imag_Q1 -> scat4_imag
+E_fbm_seed306.npz: N = 15000, n = 36; families: Scattering_Second_Order -> scat1-2, Scattering_Fourth_Order_Mod2_Real_Q1 -> scat4_real, Scattering_Fourth_Order_Mod2_Imag_Q1 -> scat4_imag
+E_fbm_seed307.npz: N = 15000, n = 36; families: Scattering_Second_Order -> scat1-2, Scattering_Fourth_Order_Mod2_Real_Q1 -> scat4_real, Scattering_Fourth_Order_Mod2_Imag_Q1 -> scat4_imag
+E_fbm_seed308.npz: N = 15000, n = 36; families: Scattering_Second_Order -> scat1-2, Scattering_Fourth_Order_Mod2_Real_Q1 -> scat4_real, Scattering_Fourth_Order_Mod2_Imag_Q1 -> scat4_imag
+E_fbm_seed309.npz: N = 15000, n = 36; families: Scattering_Second_Order -> scat1-2, Scattering_Fourth_Order_Mod2_Real_Q1 -> scat4_real, Scattering_Fourth_Order_Mod2_Imag_Q1 -> scat4_imag
+                                             H  boot_std  var2  ess_frac  log10_N_needed  flag
+group                                                                                         
+cat:scat1-2                              26.44     2.561 14.91  0.000139           12.95     1
+fam:Scattering_Second_Order              26.44     2.561 14.91  0.000139           12.95     1
+fam:Scattering_Fourth_Order_Mod2_Real_Q1 17.98     2.302 8.393 0.0002181            7.29     1
+cat:scat4_real                           17.98     2.302 8.393 0.0002181            7.29     1
+cat:scat4_imag                           7.011     1.579 1.208 0.0005091           1.049     1
+fam:Scattering_Fourth_Order_Mod2_Imag_Q1 7.011     1.579 1.208 0.0005091           1.049     1
+-> /lustre/fswork/projects/rech/wbg/ukv59en/MGD-for-Maximum-Entropy-Generation/kl_groups/results/run1/H_fbm.csv (580 rows), flagged groups: 281

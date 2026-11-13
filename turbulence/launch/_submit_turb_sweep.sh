@@ -103,6 +103,10 @@ fi
 [ -n "${N_PARTICLES}" ] && EXTRA_FLAGS+=" --n_particles ${N_PARTICLES}"   # snp_experiment/run_SDE.py only
 [ -n "${WELCH_NPERSEG}" ] && EXTRA_FLAGS+=" --welch_nperseg ${WELCH_NPERSEG}"   # snp_experiment/run_SDE.py only (with --gauss_spectrum)
 [ -n "${EXTRA_CORRECTOR_MAX}" ] && EXTRA_FLAGS+=" --extra_corrector_max ${EXTRA_CORRECTOR_MAX} --extra_corrector_tau ${EXTRA_CORRECTOR_TAU:-1.0} --extra_corrector_tail ${EXTRA_CORRECTOR_TAIL:-0.1}"
+# terminal phase / final projection (2026-11-12, opt-in): TERMINAL_PHASE=true [TERMINAL_TOL TERMINAL_SHRINK TERMINAL_HOLD TERMINAL_H_MIN TERMINAL_MAX_STEPS TERMINAL_IN_SYSTEM=true]
+[ "${TERMINAL_PHASE}" = "true" ] && EXTRA_FLAGS+=" --terminal_phase --terminal_tol ${TERMINAL_TOL:-0.1} --terminal_shrink ${TERMINAL_SHRINK:-0.8} --terminal_hold ${TERMINAL_HOLD:-300} --terminal_h_min ${TERMINAL_H_MIN:-1e-14} --terminal_max_steps ${TERMINAL_MAX_STEPS:-2000}"
+[ "${TERMINAL_PHASE}" = "true" ] && [ "${TERMINAL_IN_SYSTEM}" = "true" ] && EXTRA_FLAGS+=" --terminal_in_system"
+[ "${FINAL_PROJECTION}" = "true" ] && EXTRA_FLAGS+=" --final_projection --final_projection_tol ${FINAL_PROJECTION_TOL:-1e-3} --final_projection_max ${FINAL_PROJECTION_MAX:-10}"
 [ -n "${GGD_TAIL_QUANTILE}" ]     && EXTRA_FLAGS+=" --ggd_tail_quantile ${GGD_TAIL_QUANTILE}"
 [ -n "${GGD_NUM_REGIONS}" ]       && EXTRA_FLAGS+=" --ggd_num_regions ${GGD_NUM_REGIONS}"
 [ -n "${GGD_TAIL_ALPHA_BOUNDS}" ] && EXTRA_FLAGS+=" --ggd_tail_alpha_bounds ${GGD_TAIL_ALPHA_BOUNDS}"

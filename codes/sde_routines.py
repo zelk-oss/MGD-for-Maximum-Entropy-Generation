@@ -327,6 +327,30 @@ class SDE(torch.nn.Module):
         self.extra_corrector_tail = 0.1
         self.extra_corrector_log = []          # rows [k, passes, max z before, max z after]
         self._mom_x1 = None
+        # Terminal phase + final projection (2026-11-12, branch terminal-phase-test; notes: terminal_phase_test/part1_report.md).
+        # Both OFF by default: with them off forward_regularised executes exactly the code it ran before (bit-identical
+        # samples). Set by run_experiment from --terminal_phase / --final_projection and their parameters.
+        #   terminal_phase: after the planned grid, keep stepping with a step size chosen by a rule (see _terminal_update):
+        #       the largest post-corrector residual of the live statistics, in standard errors of their targets, is brought
+        #       below terminal_tol by shrinking h by terminal_shrink per step; then h is held for terminal_hold steps and the
+        #       run stops. terminal_h_min / terminal_max_steps are safety caps (a warning is printed if one is hit).
+        #       The terminal steps are NOT in the time-regularised (Thomas) system unless terminal_in_system.
+        #   final_projection: at the very end, iterate the corrector (chord, Gram of the last step) until every live statistic
+        #       is within final_projection_tol of its target (relative) or final_projection_max passes.
+        self.terminal_phase = False
+        self.terminal_tol = 0.1
+        self.terminal_shrink = 0.8
+        self.terminal_hold = 300
+        self.terminal_h_min = 1e-14
+        self.terminal_max_steps = 2000
+        self.terminal_in_system = False
+        self.terminal_log = []                 # rows [k, h, max z after the step, index of that statistic]
+        self.terminal_start = None             # index k of the first terminal step (= number of planned steps)
+        self.terminal_info = {}
+        self.final_projection = False
+        self.final_projection_tol = 1e-3
+        self.final_projection_max = 10
+        self.final_projection_log = None       # [passes, max rel error before, after]
         self.potential_labels = [f'{name}[{i}]' for name, p in self.potentials.items()
                                  for i in range(p.num_coefficients)]
 
@@ -465,7 +489,7 @@ class SDE(torch.nn.Module):
             return
         rate = float(np.median(self._iter_times))
         n_rate = len(self._iter_times)
-        total_iters = len(self.t) - 1
+        total_iters = getattr(self, '_n_planned_steps', None) or (len(self.t) - 1)   # terminal phase: planned steps only
         projected_s = (t_warm - loop_t0) + rate * (total_iters - n_warm)
         budget_s = loop_budget_s(time_limit_min)
         if projected_s > budget_s:
@@ -755,13 +779,49 @@ class SDE(torch.nn.Module):
         else:
             n_iter = len(self.t) - 1
 
+        # terminal phase (opt-in, default off): room for extra steps after the planned grid; see _terminal_update
+        terminal_on = bool(self.terminal_phase)
+        n_planned = n_iter
+        term_state = None
+        if terminal_on:
+            if adaptive is not None:
+                raise ValueError('--terminal_phase cannot be combined with an adaptive grid')
+            if param_storage_frequency != 1:
+                raise ValueError('--terminal_phase needs param_storage_frequency=1 (it reads every step\'s moments)')
+            if self.t.dtype != torch.float64:
+                raise ValueError(f'--terminal_phase needs a float64 time grid (got {self.t.dtype}); use --schedule two_phase')
+            cap = int(self.terminal_max_steps)
+            self._n_planned_steps = n_planned
+            self.t = torch.cat([self.t, torch.full((cap,), float('nan'), dtype=self.t.dtype, device=self.t.device)])
+            n_iter = n_planned + cap
+            self.terminal_log, self.terminal_start, self.terminal_info = [], None, {}
+            term_state = {'h': None, 'phase': 'planned', 'held': 0, 'n': 0, 'hit_min': False}
+
         self._rhs_dt_cache = None                     # no reuse across separate runs
         loop_t0 = time.time()
         for k in tqdm(range(n_iter)):
+            terminal_step = terminal_on and k >= n_planned
             if adaptive is not None:
                 self.t[k + 1] = adaptive.next_t(float(self.t[k]))
+            elif terminal_step:
+                self.t[k + 1] = self.t[k] + term_state['h']
             h = self.t[k + 1] - self.t[k]
-            self.x_k, y_k, I_k, eta_k, theta_k, dH_k, bk = self.iteration_step_projection(self.x_k, k)
+            if terminal_step:
+                # fail-safe: an error in a terminal step (NaN at a tiny h, ...) must not lose the whole run, whose planned grid is
+                # already done: stop the phase, keep everything up to the last completed step, say so loudly
+                try:
+                    step_out = self.iteration_step_projection(self.x_k, k)
+                except Exception as ex:
+                    import traceback
+                    traceback.print_exc()
+                    print(f'[terminal] WARNING: terminal step {k} FAILED ({type(ex).__name__}: {ex}); stopping the terminal phase, '
+                          f'keeping the state after step {k - 1}')
+                    self.terminal_info['reason'] = f'terminal step {k} failed: {type(ex).__name__}'
+                    k -= 1                                       # the failed step is not part of the run
+                    break
+            else:
+                step_out = self.iteration_step_projection(self.x_k, k)
+            self.x_k, y_k, I_k, eta_k, theta_k, dH_k, bk = step_out
             t_node = self.t[k + 1]
             ak = np.pi * t_node / 2.0
             cos_k, sin_k, tan_k = np.cos(ak), np.sin(ak), np.tan(ak)
@@ -782,7 +842,7 @@ class SDE(torch.nn.Module):
             if mom_x1 is None and (store_step or not legacy):
                 mom_x1 = self.compute_moments(self.x_k)
 
-            if sin_k > eps and cos_k > eps:                # skip t = 0 (sin = 0), t = 1 (cos = 0)
+            if sin_k > eps and cos_k > eps and (not terminal_step or self.terminal_in_system):   # skip t = 0 (sin = 0), t = 1 (cos = 0)
                 # raw Gram at y_k. CHANGED 2026-09-25: was self.compute_G(Xt), an exact
                 # repeat of the G(y_k) that compute_theta just computed for the corrector
                 # (Xt is y_k); reused instead: identical values, ~17% of the step at
@@ -836,8 +896,20 @@ class SDE(torch.nn.Module):
                 barphi_e.append(mom_I.mean(0))                         # phi(I_k), I_k = I(t_{k+1})
                 barphi_p.append(mom_x1.mean(0))
 
+            if terminal_on and k + 1 >= n_planned:         # the step that ended the planned grid, or a terminal step
+                try:
+                    stop_terminal = self._terminal_update(k, n_planned, h, mom_I, mom_x1, term_state)
+                except Exception as ex:                    # fail-safe, see above: never lose a finished planned grid
+                    import traceback
+                    traceback.print_exc()
+                    print(f'[terminal] WARNING: the terminal controller FAILED after step {k} ({type(ex).__name__}: {ex}); stopping')
+                    self.terminal_info['reason'] = f'terminal controller failed: {type(ex).__name__}'
+                    stop_terminal = True
+                if stop_terminal:
+                    break
             if adaptive is None:
-                self._check_time_budget(loop_t0, k + 1, time_limit_min)
+                if not terminal_step:
+                    self._check_time_budget(loop_t0, k + 1, time_limit_min)
                 continue
             adaptive.update(barphi_e[-1], barphi_p[-1])
             if adaptive.done(float(self.t[k + 1])):
@@ -855,6 +927,20 @@ class SDE(torch.nn.Module):
         if adaptive is not None:
             self.t = self.t[:k + 2]                       # grid points actually used
             print(adaptive.summary())
+        elif terminal_on:
+            self.t = self.t[:k + 2]                       # planned grid + the terminal steps actually taken
+            print(self.terminal_summary())
+
+        if self.final_projection:                         # opt-in, default off: iterate the corrector once more at the very end
+            try:
+                mom_final = self._final_projection(barphi_e[-1])
+            except Exception as ex:                       # fail-safe: keep the unprojected final state
+                import traceback
+                traceback.print_exc()
+                print(f'[final projection] WARNING: FAILED ({type(ex).__name__}: {ex}); keeping the final state without projection')
+                mom_final = None
+            if mom_final is not None:
+                barphi_p[-1] = mom_final
 
         if cnt > 0:                                                    # final partial block
             flush()
@@ -1696,6 +1782,133 @@ class SDE(torch.nn.Module):
         self._mom_x1 = mom                       # moments of the returned x
         self.extra_corrector_log.append([k, passes, z0, z.max().item()])
         return x, total
+
+    def _terminal_update(self, k, n_planned, h, mom_I, mom_x1, st):
+        """
+        Terminal phase controller (opt-in, see __init__). Called after step k, once k + 1 >= n_planned.
+
+        Measure: after the corrector of this step, the residual of every LIVE statistic in standard errors of its target,
+            z_n = |phi_bar_n(I_{k+1}) - phi_bar_n(x_{k+1})| / SE_n,   SE_n = std_i phi_n(I_{k+1}^i) / sqrt(B)
+        (the SE used by _extra_corrector), and zmax = max_n z_n with the index of that statistic.
+        Rule (Part 1 of the test, terminal_phase_test/part1_report.md: the final error is the stationary level of ONE
+        noise step + ONE corrector pass at the last step size, ~ h^2, reached within ~10 steps):
+          * end of the planned grid (k + 1 == n_planned): zmax <= terminal_tol -> nothing to do, stop; else the next step
+            is h * terminal_shrink and the phase is 'shrink';
+          * 'shrink': zmax > terminal_tol -> h <- h * terminal_shrink (not below terminal_h_min: a warning once);
+            zmax <= terminal_tol -> phase 'hold' with the current h;
+          * 'hold': after terminal_hold steps at that h, stop.
+        terminal_max_steps caps the number of terminal steps (a warning is printed if it is hit).
+        Returns True to stop the loop. Logs rows [k, h, zmax, idx] in self.terminal_log.
+        """
+        se = mom_I.double().std(0) / mom_I.shape[0] ** 0.5
+        z = (mom_I.double().mean(0) - mom_x1.double().mean(0)).abs() / se.clamp_min(1e-300)
+        live = getattr(self, '_live_theta', None)
+        if live is not None:
+            z = torch.where(live.to(z.device), z, torch.zeros_like(z))
+        zmax, idx = z.max(0)
+        zmax, idx, hf = float(zmax), int(idx), float(h)
+        label = self.potential_labels[idx] if idx < len(self.potential_labels) else str(idx)
+        if k + 1 == n_planned:
+            self.terminal_start = n_planned
+            self.terminal_info = {'z_end_planned': zmax, 'idx_end_planned': idx, 'h_end_planned': hf, 'reason': ''}
+            if zmax <= self.terminal_tol:
+                self.terminal_info['reason'] = 'criterion met at the end of the planned grid: no terminal phase'
+                print(f'[terminal] at the end of the planned grid max z = {zmax:.3g} ({label}) <= {self.terminal_tol:g}: '
+                      f'no terminal phase needed')
+                return True
+            st['h'], st['phase'] = max(hf * self.terminal_shrink, self.terminal_h_min), 'shrink'
+            print(f'[terminal] at the end of the planned grid max z = {zmax:.3g} ({label}) > {self.terminal_tol:g}: '
+                  f'terminal phase from h = {hf:.3e}, shrink x{self.terminal_shrink:g} per step')
+            return False
+        self.terminal_log.append([k, hf, zmax, idx])
+        st['n'] += 1
+        if st['phase'] == 'shrink':
+            if zmax <= self.terminal_tol:
+                st['phase'], st['held'] = 'hold', 0
+                print(f'[terminal] step {k}: max z = {zmax:.3g} <= {self.terminal_tol:g} at h = {hf:.3e} after {st["n"]} '
+                      f'terminal steps: holding this h for {self.terminal_hold} steps')
+            else:
+                nh = hf * self.terminal_shrink
+                if nh < self.terminal_h_min:
+                    nh = self.terminal_h_min
+                    if not st['hit_min']:
+                        st['hit_min'] = True
+                        print(f'[terminal] WARNING: h reached terminal_h_min = {self.terminal_h_min:.1e} with max z = '
+                              f'{zmax:.3g} ({label}) still above {self.terminal_tol:g}')
+                st['h'] = nh
+        else:
+            st['held'] += 1
+            if st['held'] >= self.terminal_hold:
+                self.terminal_info['reason'] = 'hold finished'
+                return True
+        if st['n'] >= self.terminal_max_steps:
+            self.terminal_info['reason'] = 'terminal_max_steps reached'
+            print(f'[terminal] WARNING: terminal_max_steps = {self.terminal_max_steps} reached in phase "{st["phase"]}" '
+                  f'with max z = {zmax:.3g} ({label}), h = {hf:.3e}')
+            return True
+        return False
+
+    def terminal_summary(self):
+        """One-line summary of the terminal phase."""
+        info = self.terminal_info
+        if self.terminal_start is None or not self.terminal_log:
+            return f'terminal phase: {info.get("reason") or "not entered"} (z at the end of the planned grid {info.get("z_end_planned", float("nan")):.3g})'
+        L = np.asarray(self.terminal_log, dtype=float)
+        return (f'terminal phase: {len(L)} steps from k = {self.terminal_start} ({info["reason"]}); h {L[0, 1]:.2e} -> {L[-1, 1]:.2e} '
+                f'(min {L[:, 1].min():.2e}); max z at the end of the planned grid {info["z_end_planned"]:.3g}, '
+                f'after the last terminal step {L[-1, 2]:.3g} (min over the phase {L[:, 2].min():.3g})')
+
+    def _final_projection(self, target):
+        """
+        Final projection (opt-in): at the very end, iterate the corrector on the final walkers until every live statistic is
+        within final_projection_tol (relative to |target|; statistics with |target| < 1e-12 ignored) or final_projection_max
+        passes. Same chord iteration as _extra_corrector (Gram G(y_k) of the last step, Jacobi scaling, ridge), a pass is kept
+        only if it lowers the rms relative residual (step halved at most twice). Replaces self.x_k; returns the moments of
+        the final walkers (for barphi_p[-1]) or None if no pass was needed/possible. theta_t and dH are NOT updated.
+        """
+        live = getattr(self, '_live_theta', None)
+        G = getattr(self, '_G_theta', None)
+        if live is None or G is None:
+            print('[final projection] no Gram of a last corrector step available: skipped')
+            return None
+        target = target.to(self.device)
+        x = self.x_k
+        keep = live & (target.abs() > 1e-12)
+        mom = self.compute_moments(x).mean(0)
+
+        def relerr(m):
+            return ((target - m).abs() / target.abs().clamp_min(1e-12))[keep].double()
+
+        e0 = relerr(mom)
+        Gl = G[live][:, live]
+        if self.solve_float64:
+            Gl = Gl.double()
+        D12 = torch.diag(Gl).sqrt()
+        Gs = Gl / (D12[:, None] * D12[None, :])
+        Gs = (Gs + Gs.T) / 2 + self.regularization * torch.eye(Gs.shape[-1], dtype=Gs.dtype, device=Gs.device)
+        passes, err = 0, e0
+        while float(err.max()) > self.final_projection_tol and passes < self.final_projection_max:
+            r = target - mom
+            th = torch.zeros_like(target)
+            th[live] = (torch.linalg.solve(Gs, r[live].to(Gs.dtype) / D12) / D12).to(th.dtype)
+            dx = self.compute_grad_phi_projected(x, th)
+            for alpha in (1.0, 0.5, 0.25):
+                x_try = x + alpha * dx
+                mom_try = self.compute_moments(x_try).mean(0)
+                err_try = relerr(mom_try)
+                if err_try.pow(2).mean().sqrt() < err.pow(2).mean().sqrt():
+                    break
+            else:
+                break
+            x, mom, err = x_try, mom_try, err_try
+            passes += 1
+        self.final_projection_log = [passes, float(e0.max()), float(err.max())]
+        print(f'[final projection] {passes} passes: max relative error {float(e0.max()):.3e} -> {float(err.max()):.3e} '
+              f'(tol {self.final_projection_tol:g}, {int(keep.sum())} statistics)')
+        if passes == 0:
+            return None
+        self.x_k = x
+        return mom
 
     def extra_corrector_summary(self):
         """One-line summary of the extra corrector passes (tail steps only)."""

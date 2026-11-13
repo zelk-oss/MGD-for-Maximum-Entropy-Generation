@@ -97,6 +97,9 @@ TAG=""
 # sigma or nt change: the constrained-BIC window bound uses the run's own step noise, so a refit would change the
 # statistics (and the max-ent model). Label gets _pf so these runs are told apart from fitted ones.
 [ -n "${POTENTIALS_FROM:-}" ] && TAG+="_pf"
+# terminal phase / final projection (2026-11-12, opt-in env, see _submit_turb_sweep.sh): own label, so these runs never touch the reference folders
+[ "${TERMINAL_PHASE:-}" = "true" ] && TAG+="_term"
+[ "${FINAL_PROJECTION:-}" = "true" ] && TAG+="_fp"
 
 for arm in ${ONLY}; do
     TERMS=("${BASE_TERMS[@]}"); GGD_TAIL_QUANTILE=0.99; GGD_NUM_REGIONS=""; DROP_STATS="${BASE_DROP_STATS}"
