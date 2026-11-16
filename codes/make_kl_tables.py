@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Var/2 tables of -log10 p / d per category of statistics, without running the notebooks: Lagrangian, Eulerian,
+"""Var/2 tables of -ln p / d per category of statistics, without running the notebooks: Lagrangian, Eulerian,
 S&P 500 and the overall table (the same code as talk_turbulence / talk_jets / talk_snp: talk_figures.kl_table).
 
 TWO versions, never mixed, marked ONLY in the file names (_generated / _data), nothing about it in the figures:

@@ -230,13 +230,13 @@ def plot_minkowski(R, name='minkowski', nus=None, n_batches=5):
 
 # ------------------------------------------------- -log p vs a Gaussian -------
 def plot_logp_vs_chi2(R, name='neglogp_vs_gaussian', bins=60, source='gen'):
-    """Histogram of u = -log10 p / d of the MGD maps (each seed centred on its own median, seeds pooled) against the
+    """Histogram of u = -ln p / d of the MGD maps (each seed centred on its own median, seeds pooled) against the
     exact distribution of the same quantity for a Gaussian field's own samples: -ln p = chi2_d / 2 + const for ANY
     covariance (x^T Sigma^-1 x ~ chi2_d), so no spectrum is needed. Centred on the median of chi2_d / 2. Legend: std in
     nats (Gaussian: sqrt(d/2); MGD: mean +- std over seeds)."""
     from scipy.stats import chi2
     d = R['d']
-    sc = tf.neglogp_scale(d)                                           # nats -> log10 per pixel
+    sc = tf.neglogp_scale(d)                                           # nats -> nats per pixel
     C = R['C_gen' if source == 'gen' else 'C_data']['TOTAL']           # ln p, (seeds, maps)
     u = np.concatenate([-(c - np.median(c)) for c in C]) * sc
     sd = np.array([c.std(ddof=1) for c in C])
@@ -250,7 +250,7 @@ def plot_logp_vs_chi2(R, name='neglogp_vs_gaussian', bins=60, source='gen'):
             label=f'MGD, cosmic web (std {sd.mean():.1f} ± {sd.std(ddof=1) if len(sd) > 1 else 0:.1f} nats)')
     ax.plot(ug, dens, color=tf.DATA, lw=1.8, label=rf'Gaussian field, $\chi^2_d/2$ (std {np.sqrt(d / 2):.1f} nats)')
     ax.set_yscale('log'); ax.set_ylim(bottom=max(dens.max(), 1) * 1e-4)
-    ax.set_xlabel(r'$-\log_{10} p\,/\,d$ (median subtracted)'); ax.set_ylabel('density')
+    ax.set_xlabel(r'$-\ln p\,/\,d$ (median subtracted)'); ax.set_ylabel('density')
     ax.legend(frameon=False, fontsize=9)
     fig.tight_layout()
     tf._save(fig, name)
@@ -315,7 +315,7 @@ def dk_table(R, source='gen', n_boot=200, seed=0):
     First-order term: Var_p(C_k)/2 (cumulant series 1/2 k2 - 1/6 k3 + 1/24 k4 ...). Per seed; table = mean +- std over
     seeds. 'boot rel. err' = bootstrap std of D_k over the maps / D_k (mean over seeds); 'ESS' = effective number of maps
     in the exp-average, (sum w)^2 / sum w^2 with w = exp(-(C_k - mean)) (min over seeds): small ESS = D_k set by few maps.
-    'per pixel (log10)' = D_k / (d ln 10), the units of the Var/2 table."""
+    'per pixel (nats)' = D_k / d, the units of the Var/2 table."""
     rng = np.random.default_rng(seed)
     C = category_contributions(R['C_gen' if source == 'gen' else 'C_data'])
     widths = {}
@@ -338,7 +338,7 @@ def dk_table(R, source='gen', n_boot=200, seed=0):
         D, V = np.array(D), np.array(V)
         rows[c] = {'number of moments': widths[c], 'D_k (nats)': D.mean(), '± D_k': D.std(ddof=1) if len(D) > 1 else np.nan,
                    'Var/2 (nats)': V.mean(), '± Var/2': V.std(ddof=1) if len(V) > 1 else np.nan,
-                   'D_k / (Var/2)': (D / V).mean(), 'D_k per pixel (log10)': D.mean() / (R['d'] * np.log(10)),
+                   'D_k / (Var/2)': (D / V).mean(), 'D_k per pixel (nats)': D.mean() / R['d'],
                    'boot rel. err': float(np.mean(np.array(B) / D)), 'ESS (maps)': float(np.min(E))}
     order = [c for c, _ in tf.ENERGY_CATEGORIES if c in rows]
     return pd.DataFrame(rows)[order]

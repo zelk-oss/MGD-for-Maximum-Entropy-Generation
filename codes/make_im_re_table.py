@@ -2,7 +2,7 @@
 """Table of the imaginary / real ratio of the Var/2 of the order-3 and order-4 statistics, Lagrangian and Eulerian
 (log p evaluated on the GENERATED signals, 5 seeds each; the same inputs as make_kl_tables.py --source generated).
 
-Per seed: Var over the signals of the -log10 p / d contribution of the imaginary category over that of the real one
+Per seed: Var over the signals of the -ln p / d contribution of the imaginary category over that of the real one
 (the Var/2 factors cancel); mean ± std over the seeds. Orders 3 and 4 are kept separate.
 It reuses the loaders of make_kl_tables.py (lagrangian / eulerian) by intercepting their kl_table call; nothing of
 that script changes.

@@ -896,20 +896,20 @@ def plot_energy_table_single(T, name, title):
     _draw_energy_table([(None, T)], cols, name, corner=title)
 
 
-# ---- Var/2 tables: variance of -log10 p / d per category (the width of the histograms, related to the KL divergence) ----
+# ---- Var/2 tables: variance of -ln p / d per category (the width of the histograms, related to the KL divergence) ----
 KL_ROWS = ('number of moments', 'Var/2', '± Var/2', 'std of total')
 STD_COL = 'std(−log p)'                                   # last column: a different quantity, drawn shaded
 
 
 def kl_table(C, widths, d, name=None):
-    """First-order KL per dimension of each category of ENERGY_CATEGORIES (columns), in log10 units (digits / dimension,
-    the units of the u = -log10 p / d axis): Var(ln p_k) / (2 d ln10), row 'Var/2'. Then the column STD_COL: the std of the
-    total u = -log10 p / d over the signals (the width of the histogram), a different quantity, in row 'std of total'.
+    """First-order KL per dimension of each category of ENERGY_CATEGORIES (columns), in nats per dimension
+    (the units of the u = -ln p / d axis): Var(ln p_k) / (2 d), row 'Var/2'. Then the column STD_COL: the std of the
+    total u = -ln p / d over the signals (the width of the histogram), a different quantity, in row 'std of total'.
     C = {family: (seeds, signals)} contributions theta_F . phi_F(x) to ln p (nats, as stored; 'TOTAL' ignored);
     d = length of the signals; widths = {family: number of statistics}. Per seed: variance over the signals of the
-    category's -log10 p / d (ddof = 1), divided by 2; the table gives the mean over seeds, '± Var/2' = std over seeds
+    category's -ln p / d (ddof = 1), divided by 2; the table gives the mean over seeds, '± Var/2' = std over seeds
     (NaN with one seed); the std column is the mean over seeds of the per-seed std (ddof = 1).
-    Units: (log10 per point)^2 for Var/2, log10 per point for the std. Saved as <name>.csv in the output folder."""
+    Units: (nats per point)^2 for Var/2, nats per point for the std. Saved as <name>.csv in the output folder."""
     import pandas as pd
     fams = [f for f in C if f.lower() != 'total']
     cat = {}
@@ -932,12 +932,11 @@ def kl_table(C, widths, d, name=None):
             for r in KL_ROWS[1:]:
                 out[r].append(np.nan)
             continue
-        E = -sum(np.atleast_2d(np.asarray(C[f], dtype=np.float64)) for f in fs) * sc    # (seeds, signals), -log10 p / d
+        E = -sum(np.atleast_2d(np.asarray(C[f], dtype=np.float64)) for f in fs) * sc    # (seeds, signals), -ln p / d
         n_seeds = E.shape[0]
-        # first-order KL per dimension, in log10 units (digits / dimension, the units of the u axis):
-        # Var(ln p_k) / (2 d ln10) = (d ln10) Var(u_k) / 2.  A KL changes unit LINEARLY (nats -> digits: / ln10),
-        # while a variance would change by ln10^2; and Var(ln p_k) grows like d, so dividing by d (not d^2) is intensive.
-        v = d * np.log(10.0) * E.var(1, ddof=1) / 2                                      # per seed
+        # first-order KL per dimension, in nats per dimension (the units of the u axis, u = -ln p / d):
+        # Var(ln p_k) / (2 d) = d Var(u_k) / 2.  Var(ln p_k) grows like d, so dividing by d (not d^2) is intensive.
+        v = d * E.var(1, ddof=1) / 2                                      # per seed
         out['number of moments'].append(int(sum(widths[f] for f in fs)))
         out['Var/2'].append(np.nan if c == STD_COL else float(v.mean()))
         out['± Var/2'].append(float(v.std(ddof=1)) if n_seeds > 1 and c != STD_COL else np.nan)
@@ -1055,7 +1054,7 @@ def _render_kl_table(blocks, cols, name, foot, corner='', shade_last=False, val_
 def _draw_kl_table(blocks, cols, name, corner='', note=''):
     """blocks = [(title or None, T)], T from kl_table. Per block: number of moments (small grey italics), Var/2 with
     its error (each cell with its own power of ten, on a second line). The last column (STD_COL, shaded) is another
-    quantity: the std of the total -log10 p / d, written in the same row."""
+    quantity: the std of the total -ln p / d, written in the same row."""
     rb = []
     for title, T in blocks:
         n = T.loc['number of moments', cols].to_numpy(dtype=float)
@@ -1065,9 +1064,9 @@ def _draw_kl_table(blocks, cols, name, corner='', note=''):
                  (('—', None) if m == 0 or not np.isfinite(b) else _sci_parts(b, x))
                  for c, m, a, b, x in zip(cols, n, s, v, e)]
         rb.append((title, ['—' if a == 0 else f'{int(a)}' for a in n], cells))
-    foot = r'Var$(\ln p_k)/(2d\ln 10)$ in digits per dimension, mean ± std over seeds'
+    foot = r'Var$(\ln p_k)/(2d)$ in nats per dimension, mean ± std over seeds'
     if STD_COL in cols:
-        foot += r'; shaded: std of $-\log_{10}p/d$'
+        foot += r'; shaded: std of $-\ln p/d$'
     if note:
         foot = f'{note}  |  {foot}'
     _render_kl_table(rb, cols, name, foot, corner=corner, shade_last=STD_COL in cols)
@@ -1100,8 +1099,8 @@ IM_RE_COLS = (('order 3 Im/Re', 'order 3 Im', 'order 3 Re'), ('order 4 Im/Re', '
 def im_re_ratio(C, widths, d):
     """Imaginary / real ratio of the Var/2 of the order-3 and of the order-4 category (ENERGY_CATEGORIES), same
     contributions as kl_table (C = {family: (seeds, signals)} of theta_F . phi_F(x), widths = {family: number of
-    statistics}). Per seed: Var over the signals (ddof = 1) of the category's -log10 p / d, Im over Re (the factor
-    d ln10 / 2 of Var/2 cancels); the table gives the mean over seeds and the std over seeds (NaN with one seed).
+    statistics}). Per seed: Var over the signals (ddof = 1) of the category's -ln p / d, Im over Re (the factor
+    d / 2 of Var/2 cancels); the table gives the mean over seeds and the std over seeds (NaN with one seed).
     Returns {column: (mean, std, n_im, n_re)}; None for an order the model has no Re/Im terms of."""
     fams = [f for f in C if f.lower() != 'total']
     cat = {}
@@ -1154,21 +1153,21 @@ def plot_confinement_table(tables, name):
     counts = [str(int(T.loc['number of moments', CONF_COL])) for T in have.values()]
     cells = [_sci_parts(T.loc['Var/2', CONF_COL], T.loc['± Var/2', CONF_COL]) for T in have.values()]
     _render_kl_table([(None, counts, cells)], list(have), name,
-                     r'Var$(\ln p_k)/(2d\ln 10)$ in digits per dimension, confinement term, mean ± std over seeds',
+                     r'Var$(\ln p_k)/(2d)$ in nats per dimension, confinement term, mean ± std over seeds',
                      corner='confinement')
 
 # -------------------------------------------------------------------- log p ----
 def neglogp_scale(d):
-    """Factor that turns nats into log10 per point: -log10 p / d = (-ln p) / (d ln 10)."""
-    return 1.0 / (d * np.log(10.0))
+    """Factor that turns nats into nats per point: -ln p / d."""
+    return 1.0 / d
 
 
-NLP_LABEL = r'$-\log_{10} p(x)\,/\,d$'
+NLP_LABEL = r'$-\ln p(x)\,/\,d$'
 
 
 def plot_logp_histogram(logp, name, rare=None, bins=100, rare_label='rare signals', min_freq=None, neg=True, note=None,
                         d=256, center='mean'):
-    """Histogram of -log10 p / d over signals (logp = ln p as stored, i.e. Theta . phi; d = length of the signal),
+    """Histogram of -ln p / d over signals (logp = ln p as stored, i.e. Theta . phi; d = length of the signal),
     centred at zero by subtracting its mean (center='median' for the median; log p is known up to a constant),
     normalised to unit area (density); log y. Legend without counts (they do not add up once the tail is cut).
     rare (bool mask): those signals in red, drawn in front of the light histogram of all signals (both
@@ -1182,12 +1181,12 @@ def plot_logp_histogram(logp, name, rare=None, bins=100, rare_label='rare signal
     v = v - (v.mean() if center == 'mean' else np.median(v))
     if neg:
         v = -v
-    v = v * neglogp_scale(d)                                         # nats -> log10 per point
+    v = v * neglogp_scale(d)                                         # nats -> nats per point
     N = len(v)
     if min_freq:
         lo, hi, *_ = logp_support(v, bins, min_freq)
         keep = (v >= lo) & (v <= hi)
-        print(f'log p histogram: tail cut at freq >= {min_freq:g} -> [{lo:+.3f}, {hi:+.3f}] (log10 p / d); '
+        print(f'log p histogram: tail cut at freq >= {min_freq:g} -> [{lo:+.3f}, {hi:+.3f}] (ln p / d); '
               f'{(v < lo).sum()} below, {(v > hi).sum()} above of {N} signals left out')
         v = v[keep]
         rare = None if rare is None else np.asarray(rare, bool)[keep]
@@ -1215,7 +1214,7 @@ def plot_logp_histogram(logp, name, rare=None, bins=100, rare_label='rare signal
 
 
 def plot_logp_gumbel(logp, name, d=256, bins=30, min_freq=1e-4, center='mean'):
-    """-log10 p / d histogram in the style of the S&P figure (light blue, density, log y, no axis labels) with a
+    """-ln p / d histogram in the style of the S&P figure (light blue, density, log y, no axis labels) with a
     maximum-likelihood Gumbel fit in red (scipy gumbel_r: long tail on the right, as -log p).
     logp = ln p as stored (negated here), one value per signal, centred as plot_logp_histogram (center='mean'|'median');
     pool several seeds by centring each first and concatenating. The fit uses ALL signals; the histogram and the
@@ -1223,12 +1222,12 @@ def plot_logp_gumbel(logp, name, d=256, bins=30, min_freq=1e-4, center='mean'):
     density normalised by all signals. Location and scale are printed and written in the legend."""
     v = np.asarray(logp, dtype=np.float64)
     v = -(v - (v.mean() if center == 'mean' else np.median(v)))
-    v = v * neglogp_scale(d)                                         # nats -> log10 per point
+    v = v * neglogp_scale(d)                                         # nats -> nats per point
     N = len(v)
     loc, scale = stats.gumbel_r.fit(v)
     lo, hi, *_ = logp_support(v, bins, min_freq)
     keep = (v >= lo) & (v <= hi)
-    print(f'Gumbel fit of -log10 p / d: loc {loc:.4f}, scale {scale:.4f} | tail cut -> [{lo:+.3f}, {hi:+.3f}]: '
+    print(f'Gumbel fit of -ln p / d: loc {loc:.4f}, scale {scale:.4f} | tail cut -> [{lo:+.3f}, {hi:+.3f}]: '
           f'{(v < lo).sum()} below, {(v > hi).sum()} above of {N} signals left out')
     v = v[keep]
     edges = np.linspace(v.min(), v.max(), bins + 1)
@@ -1246,10 +1245,10 @@ def plot_logp_gumbel(logp, name, d=256, bins=30, min_freq=1e-4, center='mean'):
 
 
 def plot_logp_widths(sets, name, bins=40, colors=None):
-    """-log10 p / d histograms of several datasets, one separate figure each (saved as <name>_1, <name>_2, ...), all
+    """-ln p / d histograms of several datasets, one separate figure each (saved as <name>_1, <name>_2, ...), all
     with the SAME x and y limits (log y), to see which concentrates more. sets: {label: (nlp, d)}, nlp = -log p in nats of the generated signals,
     (seeds, signals) or (signals,); d = signal length. Convention of plot_logp_histogram: each seed centred on its
-    own mean, nats -> log10 per point (neglogp_scale(d)), density (unit area), log y. Every histogram has `bins` bins
+    own mean, nats -> nats per point (neglogp_scale(d)), density (unit area), log y. Every histogram has `bins` bins
     over its own range (a narrow one still gets resolved); the std of each is written in its panel."""
     cols = colors or [MODEL, RARE, DATA, GREY]
     vals = {}
@@ -1272,17 +1271,17 @@ def plot_logp_widths(sets, name, bins=40, colors=None):
         fig.tight_layout()
         _save(fig, f'{name}_{k + 1}')
     stds = {k: float(v.std()) for k, v in vals.items()}
-    print('std of -log10 p / d:', {k: round(s, 5) for k, s in stds.items()})
+    print('std of -ln p / d:', {k: round(s, 5) for k, s in stds.items()})
     return stds
 
 
 def plot_logp_overlay(sets, name, bins=40, colors=None, chi2_dof=None):
-    """-log10 p / d histograms of several datasets on ONE axis (concentration of -log p of the generated signals:
+    """-ln p / d histograms of several datasets on ONE axis (concentration of -log p of the generated signals:
     real data model vs an exactly Gaussian data set). sets: {label: (nlp, d)}, nlp = -log p in nats of the generated
     signals, (seeds, signals) or (signals,); d = signal length. Same convention as plot_logp_widths: each seed centred
-    on its own mean (log p is known up to a constant), nats -> log10 per point (neglogp_scale(d)), density (unit area),
+    on its own mean (log p is known up to a constant), nats -> nats per point (neglogp_scale(d)), density (unit area),
     log y. All sets share the SAME bin edges (so the heights are comparable); the std of each is in the legend
-    (in log10 per point and in nats). No axis labels (stated in the caption / by the speaker)."""
+    (per point and in nats). No axis labels (stated in the caption / by the speaker)."""
     cols = colors or [MODEL, '#e8a33d', RARE, GREY]
     vals, nats = {}, {}
     for lab, (nlp, d) in sets.items():
@@ -1299,7 +1298,7 @@ def plot_logp_overlay(sets, name, bins=40, colors=None, chi2_dof=None):
                 label=f'{lab}: std {v.std():.3g} ({nats[lab]:.0f} nats)')
     if chi2_dof:
         # exact Gaussian: -ln p = chi2_k / 2 + const (k = d real dimensions), so with the centring (mean 0) and the
-        # nats -> log10-per-point factor c, v = (chi2 - k) * c / 2, chi2 = k + 2 v / c, density_v = pdf_chi2 * 2 / c
+        # nats -> per-point factor c = 1/d, v = (chi2 - k) * c / 2, chi2 = k + 2 v / c, density_v = pdf_chi2 * 2 / c
         k = chi2_dof
         c = neglogp_scale(next(iter(sets.values()))[1])
         xs = np.linspace(lo, hi, 600)
@@ -1311,7 +1310,7 @@ def plot_logp_overlay(sets, name, bins=40, colors=None, chi2_dof=None):
     ax.legend(loc='lower left', bbox_to_anchor=(0.0, 1.02), ncol=1, borderaxespad=0, handlelength=1.4, fontsize=12)
     fig.tight_layout()
     _save(fig, name)
-    print('std of -log10 p / d (nats in brackets):',
+    print('std of -ln p / d (nats in brackets):',
           {k: (round(float(v.std()), 5), round(nats[k], 1)) for k, v in vals.items()})
     return {k: float(v.std()) for k, v in vals.items()}
 
@@ -1325,7 +1324,7 @@ def plot_logp_gaussian(npz, name, seed_index=0, bins=80, n_scatter=3000):
     z = np.load(npz)
     M, s = int(z['M']), int(z['seeds'][seed_index])
     ex, mg = -z['exact_data'][seed_index], -z['logp_data'][seed_index]          # -log p (nats)
-    sc = neglogp_scale(M)                                                       # nats -> log10 per point, d = M
+    sc = neglogp_scale(M)                                                       # nats -> nats per point, d = M
     ex, mg = ex * sc, mg * sc
     sd = np.sqrt(M / 2) * sc
     fig, (a, b) = plt.subplots(1, 2, figsize=(13, 5))
@@ -1379,7 +1378,7 @@ def logp_support(v, bins=80, min_freq=1e-3):
 
 def plot_ranked_signals(signals, logp, name, n=10, ncol=5, bins=80, min_freq=1e-3, truncate=True, center='mean',
                         random=False, seed=None):
-    """Left: histogram of -log10 p / d over all the signals (centred at zero by its mean, or median with
+    """Left: histogram of -ln p / d over all the signals (centred at zero by its mean, or median with
     center='median'; logp = ln p as stored, negated here; d = length of the signals), normalised to unit area
     (density; min_freq still acts on the fraction of signals per bin), with an arrow at the -log p of each of n signals: for n evenly
     spaced values across the support, the signal closest to it. Right: those signals, framed with the colour of their
@@ -1401,7 +1400,7 @@ def plot_ranked_signals(signals, logp, name, n=10, ncol=5, bins=80, min_freq=1e-
     if min_freq:
         print(f'ranked signals: support capped at freq >= {min_freq:g} -> [{lo:+.1f}, {hi:+.1f}] nats; '
               f'{(v < lo).sum()} below, {(v > hi).sum()} above of {v.size} signals left out')
-    sc = neglogp_scale(_np(signals).shape[-1])                       # nats -> log10 per point, d = signal length
+    sc = neglogp_scale(_np(signals).shape[-1])                       # nats -> nats per point, d = signal length
     v, lo, hi, edges = v * sc, lo * sc, hi * sc, edges * sc
     binw = edges[1] - edges[0]
     dens = freq / binw                                               # unit area
