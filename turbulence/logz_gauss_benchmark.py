@@ -124,7 +124,7 @@ def one_seed(exp_dir, args, x_data, star):
     dH = _pt(sr / 'entropy_bounds' / f'{name}.pt').double().numpy()
     th_t = _pt(sr / 'lagrange_multipliers' / f'{name}.pt')
     th_t = (th_t if th_t.dim() == 2 else th_t['theta_t'])[-1].double().numpy()
-    pots = lg.build_pots(cfg, args.device)
+    pots = lg.build_pots(cfg, args.device, exp_dir)
     psi2 = lg.filters_of(pots)
     if psi2 is None:
         raise RuntimeError(f'model is not Scattering_Second_Order_Q1 only ({list(pots)}): exact log Z does not apply')
@@ -168,6 +168,9 @@ def one_seed(exp_dir, args, x_data, star):
                H_star=star['H_star'], H_gen_1=H_gen1, H_bound_1=Hb1,
                Hstar_minus_Hgen=star['H_star'] - H_gen1, Hstar_minus_Hbound=star['H_star'] - Hb1,
                Hgen_minus_Hbound=H_gen1 - Hb1, Hstar_minus_Hdata=star['H_star'] - H1)
+    alpha = float(cfg.get('whiten_alpha') or 0.0)          # entropies above are in y = C^(-alpha/2) x: H(x) = H(y) + H_shift
+    row.update(whiten_alpha=alpha,
+               H_shift=lg.entropy_shift(lg.load_gauss_spectrum(exp_dir)[0], alpha) if alpha else 0.0)
     print(f'\nseed {seed}, sigma {row["sigma"]:g}, nt {row["nt"]}, t_end {row["t_end"]:.6f} ({files[0].name}; m from {m_src})')
     print(f'  Fourier formula vs model phi: max rel err {rel:.1e}' + ('   !! exact log Z invalid' if rel > 1e-3 else ''))
     print(f'  entropy at t_end: H_bound {Hb:.3f} | exact H(p_t_end) {H_path[-1]:.3f} | diff {row["Hbound_minus_Hexact_tend"]:+.3f}'
@@ -198,7 +201,11 @@ def main():
     seed_dirs = sorted(d for d in args.group_dir.iterdir() if (d / 'config.json').exists())
     cfg0 = json.loads((seed_dirs[0] / 'config.json').read_text()); cfg0 = cfg0.get('args', cfg0)
     x_data = lg.load_data_x1(cfg0, args.device, seed_dirs[0])            # gauss_spectrum runs: redrawn from the saved S
-    psi2_0 = lg.filters_of(lg.build_pots(cfg0, args.device))
+    psi2_0 = lg.filters_of(lg.build_pots(cfg0, args.device, seed_dirs[0]))
+    alpha0 = float(cfg0.get('whiten_alpha') or 0.0)
+    if alpha0:   # every entropy below is in y = C^(-alpha/2) x; differences between them are the same as in x
+        print(f'whiten_alpha {alpha0:g}: all entropies in y coordinates; H(x) = H(y) + '
+              f'{lg.entropy_shift(lg.load_gauss_spectrum(seed_dirs[0])[0], alpha0):.4f} nats')
     if psi2_0 is None:
         raise RuntimeError('model is not Scattering_Second_Order_Q1 only: exact max-ent Gaussian does not apply')
     star = max_ent_gaussian(x_data, psi2_0, int(cfg0['M']))

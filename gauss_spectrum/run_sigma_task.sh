@@ -30,6 +30,13 @@ NBULK="${NBULK:-$(( NT / 5 ))}"
 TAG="${SIGMA//./p}"
 LABEL="${LABEL:-sigsweep_s${TAG}}"
 REGDIR="${REGDIR:-${DSOUT}/reg_system}"   # env REGDIR: saved regularised systems (large) -> $SCRATCH (M scan, 2026-11-12)
+# whitening test (2026-11-13, whitening_test/): WHITEN = --whiten_alpha (turbulence only; 0 = unchanged run),
+# SCHEDULE two_phase (default, as before) | power (with SCHED_EXP; power + SCHED_EXP 1 = uniform grid ending at 1 - 1/nt)
+WHITEN="${WHITEN:-0}"
+SCHEDULE="${SCHEDULE:-two_phase}"
+SCHED_EXP="${SCHED_EXP:-2}"
+WHITEN_ARG=""
+if [ "${WHITEN}" != "0" ]; then WHITEN_ARG="--whiten_alpha ${WHITEN}"; fi
 mkdir -p "${REGDIR}"
 for d in samples lagrange_multipliers lagrange_multipliers_regularised entropy_bounds sampling_times aux_moments; do
     mkdir -p "${DSOUT}/saved_results/${d}"
@@ -37,15 +44,15 @@ done
 cd "${PROJECT_DIR}"
 
 COMMON="--seed ${SEED} --timestamp ${TIMESTAMP} --n1 ${N1} --subseries_len ${SUBLEN} --target_len ${MLEN} --nt ${NT} --J ${JSC} \
- --sigma ${SIGMA} --interpolant Cos --schedule_exponent 2 --regularization 1e-4 --lam 0.0 --n_subsample 1 \
+ --sigma ${SIGMA} --interpolant Cos --schedule_exponent ${SCHED_EXP} --regularization 1e-4 --lam 0.0 --n_subsample 1 \
  --reg_solver thomas --reg_ridge 0.0 --time_limit_min ${TIME_LIMIT_MIN} --outdir ${DSOUT} \
  --terms Scattering_Second_Order_Q1 --label ${LABEL} --batch_size 5000 --solve_float64 --cond_every 10 \
- --schedule two_phase --n_bulk ${NBULK} --t_switch 0.9 --gauss_spectrum \
+ --schedule ${SCHEDULE} --n_bulk ${NBULK} --t_switch 0.9 --gauss_spectrum \
  --save_reg_system --reg_system_dir ${REGDIR} --skip_reg_solve"
 
-echo "======== ${DS} sigma ${SIGMA} seed ${SEED}: nt ${NT} (rule ${NT_RULE}), n_bulk ${NBULK}, n1 ${N1} ($(date))"
+echo "======== ${DS} sigma ${SIGMA} seed ${SEED}: nt ${NT} (rule ${NT_RULE}), n_bulk ${NBULK}, n1 ${N1}, schedule ${SCHEDULE} (exp ${SCHED_EXP}), whiten ${WHITEN} ($(date))"
 case "${DS}" in
-    turbulence) python -u turbulence/run_SDE.py ${COMMON} --Q 3 --gap_end 5e-5 ;;
+    turbulence) python -u turbulence/run_SDE.py ${COMMON} --Q 3 --gap_end 5e-5 ${WHITEN_ARG} ;;
     jets)       python -u jets/run_jet_SDE.py ${COMMON} --Q 1 --gap_end 7.5e-4 --dataset modane \
                     --deduplicate_filters --dedup_tol 1e-8 ;;
     *) echo "unknown dataset ${DS}"; exit 1 ;;

@@ -72,7 +72,8 @@ from codes.check_moments import *     # noqa: E402
 from codes.ortho_wavelet.ReadyToUseWavelets import *
 from codes.ortho_wavelet.periodic_dwt import PeriodicDWT
 from codes.time_schedules import add_schedule_args, build_time_grid  # noqa: E402
-from codes.gauss_spectrum import replace_with_gaussian  # noqa: E402
+from codes.gauss_spectrum import (replace_with_gaussian, whitening_multiplier, apply_multiplier,  # noqa: E402
+                                  whiten_filters, entropy_shift)
 from data.data_loader import *        # noqa: E402
 from data_loader import *             # noqa: E402
 
@@ -320,7 +321,14 @@ def parse_args():
                    help='Replace x1 by n1 draws of the stationary Gaussian with the data spectrum averaged '
                         'over x1 (codes/gauss_spectrum.py; fixed data seed 0, own name tag gaussspec). '
                         'S(w) is saved to <exp_dir>/gauss_spectrum.pt for the exact log p.')
-    add_schedule_args(p)                             # --schedule power | two_phase | adaptive
+    p.add_argument('--whiten_alpha', type=float, default=0.0,
+                   help='Run MGD on y = C^(-alpha/2) x, C = circulant data covariance (eigenvalues S/M, S = mean data '
+                        'power spectrum); potentials evaluated at x = C^(alpha/2) y (x-acting filters times '
+                        '(S/M)^(alpha/2), codes/whitening.py), so the model is unchanged. 0 = usual run, 1 = white data. '
+                        'Real data: samples saved in x, S in <exp_dir>/whitening.pt. With --gauss_spectrum (Gaussian '
+                        'test, Scat2 only): samples stay in y. Entropy bound in y: H(x) = H(y) + (alpha/2) sum log(S/M) '
+                        '(logged). Name tag wa<alpha>. whitening_test/.')
+    add_schedule_args(p)                            # --schedule power | two_phase | adaptive
 
     return p.parse_args()
 
@@ -497,8 +505,20 @@ def main():
         x1_raw = data_tensor[:args.n1]
     x1 = normalize(x1_raw).to(device)
     gauss_S = None
+    whiten_S, whiten_mult, x1_x = None, None, x1      # real-data whitening (codes/whitening.py); x1_x = data in x
     if args.gauss_spectrum:
         x1, gauss_S = replace_with_gaussian(x1, seed=0)
+        x1_x = x1
+        if args.whiten_alpha:       # Gaussian test (whitening_test/ job 145731): filters whitened below, samples saved in y
+            x1 = apply_multiplier(x1, whitening_multiplier(gauss_S, args.whiten_alpha))
+    elif args.whiten_alpha:
+        if args.dwt_order:
+            raise NotImplementedError('--whiten_alpha with --dwt_order: the decimated DWT is not a Fourier multiplier')
+        from codes.gauss_spectrum import average_spectrum
+        from codes.whitening import x_filter_multiplier
+        whiten_S = average_spectrum(x1).cpu()                       # (1, M) float64, of the normalised data
+        whiten_mult = x_filter_multiplier(whiten_S, args.whiten_alpha)
+        x1 = apply_multiplier(x1, whitening_multiplier(whiten_S, args.whiten_alpha))   # y = C^(-alpha/2) x
     B, channels, M = x1.shape
 
     config, exp_dir, fig_dir, potentials_dir, logger, loaded = resolve_or_setup_experiment_output(
@@ -513,15 +533,38 @@ def main():
     logger.info('Calculated scales applied: %d', scales_needed)
     logger.info('x1 final shape: %s (coarse_grained=%s)', tuple(x1.shape), coarse_grained)
     if gauss_S is not None:
-        torch.save({'S': gauss_S, 'data_seed': 0}, exp_dir / 'gauss_spectrum.pt')
+        torch.save({'S': gauss_S, 'data_seed': 0, 'whiten_alpha': float(args.whiten_alpha)}, exp_dir / 'gauss_spectrum.pt')
         logger.info('gauss_spectrum: x1 replaced by a stationary Gaussian with the data spectrum '
                     '(var %.4f), S saved to %s', x1.var().item(), exp_dir / 'gauss_spectrum.pt')
+        if args.whiten_alpha:
+            Sy = gauss_S / gauss_S.shape[-1] * whitening_multiplier(gauss_S, args.whiten_alpha) ** 2
+            logger.info('whiten_alpha %g: MGD runs on y = C^(-alpha/2) x; covariance eigenvalues of y span %.3e .. %.3e '
+                        '(x: %.3e .. %.3e); H(x) = H(y) + %.4f nats', args.whiten_alpha, Sy.min().item(), Sy.max().item(),
+                        (gauss_S / gauss_S.shape[-1]).min().item(), (gauss_S / gauss_S.shape[-1]).max().item(),
+                        entropy_shift(gauss_S, args.whiten_alpha))
+    if whiten_S is not None:
+        torch.save({'S': whiten_S, 'whiten_alpha': float(args.whiten_alpha), 'samples_space': 'x'},
+                   exp_dir / 'whitening.pt')
+        c = whiten_S / M
+        cy = c * whitening_multiplier(whiten_S, args.whiten_alpha) ** 2
+        logger.info('whiten_alpha %g (real data): MGD runs on y = C^(-alpha/2) x, C from the mean data spectrum '
+                    '(saved to whitening.pt); covariance eigenvalues x %.3e .. %.3e (kappa %.2e), y %.3e .. %.3e '
+                    '(kappa %.2e); samples saved in x; entropies of the run (bound) in y: H(x) = H(y) + %.4f nats',
+                    args.whiten_alpha, c.min().item(), c.max().item(), (c.max() / c.min()).item(),
+                    cy.min().item(), cy.max().item(), (cy.max() / cy.min()).item(),
+                    entropy_shift(whiten_S, args.whiten_alpha))
 
     with logged_run(logger):
         filters, filters_Phi = return_Filters(M, args.J, 1, device=device, include_phi=True,
                                               wav_type=args.wav_type)
         filters_Q = return_Filters(M, args.J, args.Q, device=device,
                                    wav_type=args.wav_type)  # used by L_6_psi / Scalar_psi_* (channel lists) and non-_Q1 Scattering_*
+        if args.whiten_alpha and args.gauss_spectrum:
+            if list(args.terms) != ['Scattering_Second_Order_Q1']:
+                raise NotImplementedError('--whiten_alpha: only checked for the Fourier-multiplier potential '
+                                          'Scattering_Second_Order_Q1 (gauss_spectrum experiment)')
+            filters, filters_Phi, filters_Q = (whiten_filters(f, gauss_S, args.whiten_alpha)
+                                               for f in (filters, filters_Phi, filters_Q))
 
         # --schedule power (default) is the legacy grid, cut at 1.0000 as before;
         # two_phase / adaptive: see codes/time_schedules.py
@@ -543,10 +586,11 @@ def main():
                                     t, logger, outdir, device, dwt=dwt,
                                     filters_Q=filters_Q, filters_Phi=filters_Phi,
                                     potentials_save_dir=potentials_dir,
-                                    adaptive=adaptive,
+                                    adaptive=adaptive, whiten_mult=whiten_mult,
                                     )
 
-        save_diagnostics(x1, result, t, args, config, fig_dir, logger)
+        # real-data whitening: samples are in x, compare with the data in x (Gaussian test: both in y, as before)
+        save_diagnostics(x1 if whiten_mult is None else x1_x, result, t, args, config, fig_dir, logger)
 
 
 if __name__ == '__main__':

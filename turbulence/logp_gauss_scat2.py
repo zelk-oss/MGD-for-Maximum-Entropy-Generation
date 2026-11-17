@@ -53,16 +53,25 @@ from filters_bank import return_Filters                                         
 from potentials_builder import get_1d_potentials                                # noqa: E402
 # same helpers run_SDE uses to build x1 (it star-imports them from codes/ and data/)
 from run_SDE import split_periodize_reshape, load_turbulence_1d, DefineWavelet  # noqa: E402
-from gauss_spectrum import sample_gaussian_spectrum, true_log_p                 # noqa: E402
+from gauss_spectrum import (sample_gaussian_spectrum, true_log_p, whitening_multiplier,  # noqa: E402
+                            apply_multiplier, whiten_filters, entropy_shift)
 
 
 # ---------------------------------------------------------------- loading
 
-def build_pots(cfg, device):
+def build_pots(cfg, device, exp_dir=None):
+    """Potentials as the run built them. --whiten_alpha runs: filters multiplied by (S/M)^(alpha/2) as in run_SDE,
+    S from <exp_dir>/gauss_spectrum.pt (exp_dir required)."""
     J, Q, M = cfg['J'], cfg['Q'], cfg['M']
     wav = cfg.get('wav_type', 'morlet')
     filters, filters_Phi = return_Filters(M, J, 1, device=device, include_phi=True, wav_type=wav)
     filters_Q = return_Filters(M, J, Q, device=device, wav_type=wav)
+    alpha = float(cfg.get('whiten_alpha') or 0.0)
+    if alpha:
+        if exp_dir is None:
+            raise ValueError('build_pots: whiten_alpha run, pass exp_dir (for gauss_spectrum.pt)')
+        S, _ = load_gauss_spectrum(exp_dir)
+        filters, filters_Phi, filters_Q = (whiten_filters(f, S, alpha) for f in (filters, filters_Phi, filters_Q))
     return get_1d_potentials(cfg['terms'], J, filters, Q,
                              filters_Q=filters_Q, filters_Phi=filters_Phi,
                              deduplicate_filters=bool(cfg.get('deduplicate_filters') or False),
@@ -88,7 +97,11 @@ def load_data_x1(cfg, device, exp_dir=None):
         S, data_seed = load_gauss_spectrum(exp_dir)
         if S is None:
             raise FileNotFoundError(f'gauss_spectrum run without {exp_dir}/gauss_spectrum.pt')
-        return sample_gaussian_spectrum(S, int(cfg['n1']), seed=data_seed).float().to(device)
+        x = sample_gaussian_spectrum(S, int(cfg['n1']), seed=data_seed).float()
+        alpha = float(cfg.get('whiten_alpha') or 0.0)
+        if alpha:                                                                # same op as run_SDE: y = C^(-alpha/2) x
+            x = apply_multiplier(x, whitening_multiplier(S, alpha))
+        return x.to(device)
     if cfg.get('n1_spread'):
         raise NotImplementedError('n1_spread runs: data selection not reproduced here')
     raw = load_turbulence_1d().to(device)
@@ -147,7 +160,7 @@ def one_seed(exp_dir, args, x_data, sweep_root):
     name, seed = exp_dir.name, int(cfg['seed'])
     Theta_reg, fname = load_theta_reg(sweep_root, name, args.lam, args.ridge)
     xt = load_samples(args.results_root, name)
-    pots = build_pots(cfg, args.device)
+    pots = build_pots(cfg, args.device, exp_dir)
     theta_1 = Theta_reg[-1].detach().cpu().double()                             # (r,)
     tp_model = theta_phi(xt, theta_1, pots, args.chunk, args.device)
     tp_data = theta_phi(x_data, theta_1, pots, args.chunk, args.device)
@@ -157,6 +170,9 @@ def one_seed(exp_dir, args, x_data, sweep_root):
              filters=filters_of(pots))
     extra = {}
     S, _ = load_gauss_spectrum(exp_dir)
+    alpha = float(cfg.get('whiten_alpha') or 0.0)
+    if S is not None and alpha:
+        S = S * whitening_multiplier(S, alpha) ** 2                             # spectrum of y = C^(-alpha/2) x
     if S is not None:
         # exact log p of the true Gaussian, relative to its mean over the true law's own samples
         # (x1), as the MGD log p is relative to its mean over the model's own samples

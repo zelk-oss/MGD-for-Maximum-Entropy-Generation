@@ -73,6 +73,47 @@ def welch_spectrum(x, nperseg):
     return torch.from_numpy(S)
 
 
+def whitening_multiplier(S, alpha):
+    """Fourier multiplier (S / M)^(-alpha/2), (C, M) float64 (--whiten_alpha, whitening_test/, 2026-11-13).
+
+    S / M = eigenvalues of the data covariance in the ortho-FFT basis (S as in average_spectrum). MGD is run on
+    y = IFFT(FFT(x) * (S/M)^(-alpha/2)) instead of x: alpha = 0 is the usual run, alpha = 1 makes the data white.
+    Exact change of variables (linear, invertible, circulant):
+      - potentials: every filter is multiplied by (S/M)^(+alpha/2) (whiten_filters), so phi(y; filters') = phi(x; filters)
+        for any potential that applies its filters as a Fourier multiplier (Scattering_Second_Order_1d does);
+      - the MGD reference noise y0 ~ N(0, I) is x0 ~ N(0, circ((S/M)^alpha)) in x;
+      - entropies: H(x) = H(y) + entropy_shift(S, alpha) for every law (data, samples, p*, the bound); the
+        max-ent problem is the same, so differences such as H(p*) - H(gen) or H(p*) - bound are unchanged."""
+    M = S.shape[-1]
+    return (S.double() / M) ** (-alpha / 2)
+
+
+def entropy_shift(S, alpha):
+    """H(x) - H(y) = log|det| of the map y -> x = (alpha/2) sum_w log(S(w)/M), nats (all channels)."""
+    M = S.shape[-1]
+    return float(alpha / 2 * torch.log(S.double() / M).sum())
+
+
+def apply_multiplier(x, mult):
+    """IFFT(FFT(x) * mult) along the last axis, real part, dtype/device of x. mult (C, M) or (M,), symmetric."""
+    m = mult.to(x.device, torch.float64)
+    y = torch.fft.ifft(torch.fft.fft(x.to(torch.float64), dim=-1) * m, dim=-1)
+    imag = y.imag.abs().max().item()
+    if imag > 1e-8 * max(1.0, y.real.abs().max().item()):
+        raise RuntimeError(f'apply_multiplier: result not real (max |imag| {imag:.2e}); multiplier not symmetric?')
+    return y.real.to(x.dtype)
+
+
+def whiten_filters(filters, S, alpha):
+    """filters (1, n, M) Fourier-domain bank -> filters * (S/M)^(+alpha/2) on the last axis, same dtype/device.
+    One channel only (C = 1): the 1D runs."""
+    if S.shape[0] != 1:
+        raise NotImplementedError('whiten_filters: one-channel spectra only')
+    m = (1.0 / whitening_multiplier(S, alpha))[0]                               # (M,), (S/M)^(+alpha/2)
+    return (filters.to(torch.complex128) * m.to(filters.device)).to(filters.dtype) if filters.is_complex() \
+        else (filters.double() * m.to(filters.device)).to(filters.dtype)
+
+
 def replace_with_gaussian(x1, seed=0, nperseg=None, n=None):
     """(Gaussian draws with the spectrum of x1 [dtype, device of x1], S (C, M) float64 cpu).
     nperseg=None: raw mean periodogram over the batch; else Welch-smoothed (welch_spectrum).

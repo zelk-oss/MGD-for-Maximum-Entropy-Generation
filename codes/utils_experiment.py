@@ -177,6 +177,9 @@ def _config_name_parts(args, M, include_seed=True):
     # x1 replaced by a Gaussian with the data spectrum (--gauss_spectrum): never reloads a real-data run
     if getattr(args, 'gauss_spectrum', False):
         parts.append('gaussspec')
+    # MGD run on whitened coordinates y = C^(-alpha/2) x (--whiten_alpha, codes/gauss_spectrum.py): never reloads an unwhitened run
+    if getattr(args, 'whiten_alpha', 0.0):
+        parts.append(f'wa{args.whiten_alpha:g}')
     # walkers/interpolants decoupled from the number of data samples (snp_experiment --n_particles)
     if getattr(args, 'n_particles', None):
         parts.append(f'np{args.n_particles}')
@@ -359,6 +362,7 @@ def resolve_reg_mode(args):
 def run_experiment(args, M, config, x1, filters, t, logger, outdir, device,
                    filters_Q=None, filters_Phi=None, normalize_potentials=False,
                    potentials_save_dir=None, adaptive=None, dwt=None,
+                   whiten_mult=None,
                    ):
     """adaptive: AdaptiveStepController from codes/time_schedules.build_time_grid, or
     None for a fixed grid `t`. With it, the SDE builds its own grid and the one
@@ -414,6 +418,11 @@ def run_experiment(args, M, config, x1, filters, t, logger, outdir, device,
             min_window_bic=min_window_bic,
         ).items() if v is not None},
     )
+    if whiten_mult is not None:
+        # real-data --whiten_alpha: x1 is already y = C^(-alpha/2) x; potentials become phi(C^(alpha/2) y)
+        # (codes/whitening.py). Before fit/load: the loaded fitted states take the potentials' own filters.
+        from codes.whitening import whiten_potentials
+        whiten_potentials(potentials, whiten_mult, log=logger.info)
     for spec in getattr(args, 'drop_stats', None) or []:     # NAME:CHANNEL:REGION
         name, ch, reg = spec.split(':')
         if not hasattr(potentials.get(name), 'drop_slots'):
@@ -556,6 +565,12 @@ def run_experiment(args, M, config, x1, filters, t, logger, outdir, device,
         logger.info('Final projection: %d passes, max relative error %.3e -> %.3e',
                     *Solver.final_projection_log[:1], *Solver.final_projection_log[1:])
 
+    if whiten_mult is not None:
+        # samples saved in x (= C^(alpha/2) y) so every analysis reads them as before; theta, Theta_reg and the
+        # moments are coordinate-free; the entropy bound (dH) is in y: H(x) = H(y) + entropy shift (logged)
+        from codes.whitening import to_x
+        xt = to_x(xt, whiten_mult)
+        logger.info('whitening: samples mapped back to x = C^(alpha/2) y before saving')
     # Pass the global outdir as 'root' so it targets the original global directories
     save_results_theta_reg(xt, theta_t, dH_t_bound, t, outdir, config, Theta_reg=Theta_reg, t_reg=t_reg)
 
