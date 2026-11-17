@@ -711,13 +711,17 @@ class Scattering_Fourth_Order_Mod2_Real_1d(Potential):
             intermediate_output = x_filtered_grad*torch.einsum('ijk, ajkb -> aib', m, torch.real(x_filtered_abs2_no_LF_filtered_2))
             return torch.fft.ifft(filters_Q.conj()*torch.fft.fft(intermediate_output)).real.sum(1)[:,None]/x.shape[-1]
             
-        intermediate_output = x_filtered_grad[:,:,None,None]*torch.real(x_filtered_abs2_no_LF_filtered_2)[:,None] #x_filtered_over_abs_no_LF
-        output = torch.fft.ifft(filters_Q[:,:,None,None].conj()*torch.fft.fft(intermediate_output)).real
+        # Full Jacobian (2026-11-17: gather). grad phi_abc = T[a,b,c] + T[b,a,c] with
+        # T[a,b,c] = W_a^*( 2 W_a x . Re(|psi_c|^2 * |W_b x|^2) ): each T depends on its own (a,b,c) only, so only
+        # the 2K entries the K kept triples need are computed (was: all n_Q x n_Q x n_f, then indexed).
+        a, b, c = indices.long()
+        aa, bb, cc = torch.cat([a, b]), torch.cat([b, a]), torch.cat([c, c])          # (a,b,c) then partner (b,a,c)
+        F = torch.real(x_filtered_abs2_no_LF_filtered_2)                             # (B, n_Q, n_f, M)
+        T = x_filtered_grad[:, aa] * F[:, bb, cc]                                    # (B, 2K, M)
+        T = torch.fft.ifft(filters_Q[:, aa].conj() * torch.fft.fft(T)).real
+        K = a.shape[0]
+        output = (T[:, :K] + T[:, K:]) / x.shape[-1]
 
-        output = output + torch.transpose(output, 1,2)      
-        output = output[:, indices[0], indices[1], indices[2]].reshape(x.shape[0], indices.shape[1], x.shape[-1])/x.shape[-1]
-
-        
         return output / self.norm_indices[:,None].to(x.device).to(x.dtype)
         
     def fit_micro(self,x):
@@ -835,25 +839,18 @@ class Scattering_Fourth_Order_Mod2_Imag_1d(Potential):
             output = output + output_transpose
             return output.imag
 
-        intermediate_output = 0.5*x_filtered_grad[:,:,None,None]*x_filtered_abs2_no_LF_filtered_2[:,None]
-        intermediate_output_conj = 0.5*x_filtered_grad[:,:,None,None].conj()*x_filtered_abs2_no_LF_filtered_2[:,None]
-
-        intermediate_output = torch.fft.ifft(filters_Q[:,:,None,None].conj()*torch.fft.fft(intermediate_output))
-        intermediate_output_conj = torch.fft.ifft(filters_Q_tilde_adj[:,:,None,None]*torch.fft.fft(intermediate_output_conj))
-
-        output = intermediate_output + intermediate_output_conj
-
-        intermediate_output = 0.5*x_filtered_grad[:,:,None,None]*x_filtered_abs2_no_LF_filtered_2_tilde[:,None]
-        intermediate_output_conj = 0.5*x_filtered_grad[:,:,None,None].conj()*x_filtered_abs2_no_LF_filtered_2_tilde[:,None]
-
-        intermediate_output = torch.fft.ifft(filters_Q[:,:,None,None].conj()*torch.fft.fft(intermediate_output))
-        intermediate_output_conj = torch.fft.ifft(filters_Q_tilde_adj[:,:,None,None]*torch.fft.fft(intermediate_output_conj))
-
-        output_transpose = intermediate_output + intermediate_output_conj
-
-        output = output + torch.transpose(output_transpose, 1,2)
-
-        output = output[:, indices[0], indices[1], indices[2]].reshape(x.shape[0], indices.shape[1], x.shape[-1])/x.shape[-1]
+        # Full Jacobian (2026-11-17: gather). grad phi_abc = Im( P[a,b,c] + P~[b,a,c] ), P from the envelope filtered
+        # by |psi_c|^2, P~ by |psi~_c|^2; each entry depends on its own (a,b,c) only, so only the K kept triples of P
+        # and their partners (b,a,c) of P~ are computed (was: both full n_Q x n_Q x n_f tensors, then indexed).
+        a, b, c = indices.long()
+        g = torch.cat([x_filtered_grad[:, a], x_filtered_grad[:, b]], 1)            # (B, 2K, M): W_a x | W_b x
+        e = torch.cat([x_filtered_abs2_no_LF_filtered_2[:, b, c],                    # P[a,b,c]
+                       x_filtered_abs2_no_LF_filtered_2_tilde[:, a, c]], 1)          # P~[b,a,c]
+        aa = torch.cat([a, b])
+        P = torch.fft.ifft(filters_Q[:, aa].conj() * torch.fft.fft(0.5 * g * e)) \
+            + torch.fft.ifft(filters_Q_tilde_adj[:, aa] * torch.fft.fft(0.5 * g.conj() * e))
+        K = a.shape[0]
+        output = (P[:, :K] + P[:, K:]) / x.shape[-1]
 
         return output.imag / self.norm_indices[:,None].to(x.device).to(x.dtype)
 
