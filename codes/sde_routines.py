@@ -2121,6 +2121,8 @@ class SDE(torch.nn.Module):
         rhs      = torch.zeros((self.num_potentials, 1)).to(self.device)
         I_k_dot  = self.gradient_interpolant(k)
 
+        # (2026-11-17: a forward-mode AD version (torch.func.jvp) was tested, grad_speed/check_jvp.py, job 341922: same
+        # accuracy, 1.24x faster on B+Scat4 but 0.93x on jets once the Jacobian had been made cheaper; not adopted.)
         for idx_batch in range(num_batches):
             batch        = I_k[idx_batch * batch_size:(idx_batch + 1) * batch_size]
             I_k_dot_batch = I_k_dot[idx_batch * batch_size:(idx_batch + 1) * batch_size]

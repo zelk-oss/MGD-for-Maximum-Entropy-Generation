@@ -676,17 +676,12 @@ class Scattering_Fourth_Order_Mod2_Real_1d(Potential):
         x_filtered = x_filtered/self.norm
         
         x_filtered_abs2 = abs_eps(x_filtered)**2 #(B,JQ,T)
-        
-        W_Wx = torch.fft.ifft(filters[:, :, None] * torch.fft.fft(x_filtered_abs2)[:, None]) #(B,JQ,J+1,T) second wavelet transform
-        output = torch.real(W_Wx[:, :, :, None] * W_Wx[:, :, None].conj()) #(B,JQ,J+1,J+1,T)
-        output = output.mean(-1) #(B,JQ,J+1,J+1)
-        output = output.permute(0, 3, 2, 1) #(B,J+1,J+1,JQ)
-        
-        indices = self.indices.long()
-        
-        output = output[:, indices[0], indices[1], indices[2]]
-        
-        output = output.reshape(x.shape[0], indices.shape[1])
+
+        W_Wx = torch.fft.ifft(filters[:, :, None] * torch.fft.fft(x_filtered_abs2)[:, None]) #(B,J+1,JQ,T): [c, a] = psi_c * E_a
+        # statistic (i0, i1, i2) = mean_t Re[ (psi_i2 * E_i1) conj(psi_i2 * E_i0) ], evaluated on the kept triples only
+        # (2026-11-17; was: all (J+1) x JQ x JQ products, a (B, J+1, JQ, JQ, T) intermediate, then indexed)
+        i0, i1, i2 = self.indices.long()
+        output = torch.real(W_Wx[:, i2, i1] * W_Wx[:, i2, i0].conj()).mean(-1)   # (B, K)
         return output
 
     def grad(self, x,  v=None, means=None):
@@ -786,14 +781,10 @@ class Scattering_Fourth_Order_Mod2_Imag_1d(Potential):
 
         x_filtered_abs2 = abs_eps(x_filtered)**2 #(B,JQ,T)  <-- mod2
 
-        W_Wx = torch.fft.ifft(filters[:, :, None] * torch.fft.fft(x_filtered_abs2)[:, None]) #(B,JQ,J+1,T)
-        output = torch.imag(W_Wx[:, :, :, None] * W_Wx[:, :, None].conj()) #(B,JQ,J+1,J+1,T)
-        output = output.mean(-1) #(B,JQ,J+1,J+1)
-        output = output.permute(0, 3, 2, 1) #(B,J+1,J+1,JQ)
-
-        indices = self.indices.long()
-        output = output[:, indices[0], indices[1], indices[2]]
-        output = output.reshape(x.shape[0], indices.shape[1])
+        W_Wx = torch.fft.ifft(filters[:, :, None] * torch.fft.fft(x_filtered_abs2)[:, None]) #(B,J+1,JQ,T): [c, a] = psi_c * E_a
+        # statistic (i0, i1, i2) = mean_t Im[ (psi_i2 * E_i1) conj(psi_i2 * E_i0) ], kept triples only (2026-11-17, as Real)
+        i0, i1, i2 = self.indices.long()
+        output = torch.imag(W_Wx[:, i2, i1] * W_Wx[:, i2, i0].conj()).mean(-1)   # (B, K)
         return output
 
     def grad(self, x,  v=None, means=None):
