@@ -145,6 +145,12 @@ class Scattering_Second_Order_1d(Potential):
     def grad(self, x, v=None,  means=None):
 
         filters = self.filters.to(x.device)
+        if v is not None:
+            # 2026-11-17: sum_j v_j 2 Re ifft(fft(x) |psi_j|^2) / norm_j^2 = 2 Re ifft(fft(x) sum_j (v_j / norm_j^2) |psi_j|^2):
+            # one FFT pair instead of one per channel; same quantity up to round-off
+            w = v[:, None] / self.norm**2                                       # (n, 1)
+            H = ((filters * filters.conj()) * w[None]).sum(1, keepdim=True)     # (1, 1, T)
+            return 2 * torch.fft.ifft(torch.fft.fft(x) * H).real / x.shape[-1]
         x_filtered_2 = torch.fft.ifft(torch.fft.fft(x)*(filters*filters.conj()))   # |psi_hat|^2: adjoint of a complex (Daubechies) filter is its conj
 
         output = x_filtered_2.real.reshape(x_filtered_2.shape[:1]+(-1,x.shape[-1]))
@@ -1040,6 +1046,12 @@ class L2p_norm(Potential):
         x_filtered = torch.fft.ifft(filters*torch.fft.fft(x))
             
         output = (x_filtered *(2* self.p) * (torch.abs(x_filtered)**(2*self.p-2)))
+        if v is not None:
+            # 2026-11-17: sum_j v_j Re ifft(conj(psi_j) fft(D_j)) / norm_j = Re ifft(sum_j (v_j / norm_j) conj(psi_j) fft(D_j)):
+            # one inverse FFT instead of one per channel; same quantity up to round-off
+            w = v[:, None] / self.norm                                          # (n, 1)
+            S = (filters.conj() * torch.fft.fft(output) * w[None]).sum(1, keepdim=True)
+            return torch.fft.ifft(S).real / x.shape[-1]
         output = torch.fft.ifft(filters.conj()*torch.fft.fft(output)).real
 
         output = output / self.norm
@@ -1812,6 +1824,26 @@ class Scalar_GGD_KRegion():
         fKx = self._get_filters_Kx(x.device).index_select(1, idx)
         return torch.fft.ifft(torch.fft.fft(D) * fKx.conj()).real / x.shape[-1]
 
+    def _grad_projected(self, x, v):
+        """sum_s v_s grad phi_s(x), (B, 1, T) (2026-11-17). grad phi_s = L_j(D_s) / stat_scale_s with
+        L_j(f) = Re ifft(fft(f) conj(psi_j)) / T linear (real coefficients), j the channel of slot s; so
+        sum_s v_s L_j(D_s) / scale_s = sum_j L_j(sum_{s in j} (v_s / scale_s) D_s), and the sum over j is taken in
+        Fourier space before one inverse FFT: J forward FFTs + 1 inverse instead of one pair per active slot. Same
+        quantity as (grad(x) * v).sum(1), up to round-off. The per-channel sum is a matrix product (deterministic),
+        not index_add_ (atomic adds on GPU, run-to-run differences)."""
+        with torch.no_grad():
+            idx = self.active_flat.to(x.device)
+            D = self._all_slot_D(x).index_select(1, idx)                       # (B, n_act, T)
+            w = v.to(D.dtype)
+            if self.stat_scale is not None:
+                w = w / self.stat_scale.to(device=x.device, dtype=D.dtype)
+            Wm = torch.zeros(self.J, idx.numel(), dtype=D.dtype, device=x.device)
+            Wm[idx % self.J, torch.arange(idx.numel(), device=x.device)] = w   # (J, n_act): channel of each slot
+            Dc = torch.matmul(Wm, D)                                            # (B, J, T)
+            filters = self.filters.to(x.device)
+            S = (torch.fft.fft(Dc) * filters.conj()).sum(1, keepdim=True)     # (B, 1, T)
+            return torch.fft.ifft(S).real / x.shape[-1]
+
     def _all_slot_D(self, x):
         """d phi_slot / d z (B, n_slots*J, T) for every slot, before the pull-back to x (_adjoint)."""
         device = x.device
@@ -1839,6 +1871,8 @@ class Scalar_GGD_KRegion():
 
     def grad(self, x, v=None, means=None):
         self._check_fitted()
+        if v is not None and self.dwt is None:
+            return self._grad_projected(x, v)
         with torch.no_grad():
             gc = self._active_slot_grad(x)
             if self.stat_scale is not None:
