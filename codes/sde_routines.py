@@ -2212,9 +2212,25 @@ class SDE(torch.nn.Module):
 
 
         if vector is None:
-            grad_potential = torch.tensor([], device=x.device)
+            # One (B, r, ...) output, each potential's block written into its own rows (2026-11-17). Was: torch.cat of
+            # the growing result once per potential, which re-copied all earlier blocks each time (~3x the final
+            # size at B+Scat4). Same values (copies); if the blocks do not all share one dtype, the old concatenation
+            # (with its type promotion) is used instead.
+            grad_potential, off = None, 0
             for potential in self.potentials.values():
-                grad_potential = torch.cat((grad_potential, potential.grad(x)), dim=1).detach()
+                g = potential.grad(x).detach()
+                if grad_potential is None:
+                    grad_potential = torch.empty((g.shape[0], self.num_potentials) + tuple(g.shape[2:]),
+                                                 dtype=g.dtype, device=g.device)
+                if g.dtype != grad_potential.dtype or off + g.shape[1] > self.num_potentials:
+                    grad_potential = None
+                    break
+                grad_potential[:, off:off + g.shape[1]] = g
+                off += g.shape[1]
+            if grad_potential is None or off != self.num_potentials:
+                grad_potential = torch.tensor([], device=x.device)
+                for potential in self.potentials.values():
+                    grad_potential = torch.cat((grad_potential, potential.grad(x)), dim=1).detach()
 
             if self.signal_dim == 0:
                 grad_potential = grad_potential.reshape(x.shape[0], self.num_potentials, 1)

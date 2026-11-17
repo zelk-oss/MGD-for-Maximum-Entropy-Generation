@@ -1807,6 +1807,22 @@ class Scalar_GGD_KRegion():
         return self._filters_Kx
 
     def _all_slot_grad(self, x):
+        """Gradient of every candidate slot (B, n_slots*J, T), active or not (fit-time tools)."""
+        return self._adjoint(self._all_slot_D(x), x)
+
+    def _active_slot_grad(self, x):
+        """Gradient of the active slots only (B, n_active, T), = _all_slot_grad(x)[:, active_flat] (2026-11-17).
+        The pointwise derivative d phi / d z is formed for every slot (cheap), but the pull-back to x (one FFT
+        pair per slot) is done for the active slots only: the inactive ones were discarded afterwards anyway."""
+        idx = self.active_flat.to(x.device)
+        if self.dwt is not None:
+            return self._all_slot_grad(x).index_select(1, idx)
+        D = self._all_slot_D(x).index_select(1, idx)
+        fKx = self._get_filters_Kx(x.device).index_select(1, idx)
+        return torch.fft.ifft(torch.fft.fft(D) * fKx.conj()).real / x.shape[-1]
+
+    def _all_slot_D(self, x):
+        """d phi_slot / d z (B, n_slots*J, T) for every slot, before the pull-back to x (_adjoint)."""
         device = x.device
         z = self._coeffs(x)
         az = self._magnitude(z)
@@ -1828,13 +1844,12 @@ class Scalar_GGD_KRegion():
             a = alpha[:, k][None, :, None]
             D.append(dws[k] * az ** a + ws[k] * a * z * az ** (a - 2.0))
         D += [dws[m] for m in self.mass_windows]
-        D_all = torch.cat(D, dim=1)
-        return self._adjoint(D_all, x)
+        return torch.cat(D, dim=1)
 
     def grad(self, x, v=None, means=None):
         self._check_fitted()
         with torch.no_grad():
-            gc = self._all_slot_grad(x).index_select(1, self.active_flat.to(x.device))
+            gc = self._active_slot_grad(x)
             if self.stat_scale is not None:
                 gc = gc / self.stat_scale.to(x.device)[None, :, None]
         if v is None:

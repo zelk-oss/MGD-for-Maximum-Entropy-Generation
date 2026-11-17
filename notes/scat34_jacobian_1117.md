@@ -68,6 +68,12 @@ $\mathcal K_4^{\top} = \{(b,a,c) : (a,b,c) \in \mathcal K_4\}$. That is $2K$ ter
 had two such full tensors (one per factor, the second with the frequency-reversed filter), $2 \times 576$, of which
 $2 \times 56 = 112$ are used. The function computed is the same; only the number of evaluated terms changed.
 
+**Diagonal variant** (`_diag`, $a \le b$, $K = 120 = 84 + 36$ diagonal triples). A diagonal triple $(a,a,c)$ is its own
+partner, so $\nabla\phi_{aac} = 2T_{aac}$. The set of distinct terms needed is therefore $2 \cdot 84 + 36 = 204$, not
+$2K = 240$. The code builds the partner list without removing duplicates, so it evaluates the 36 diagonal terms twice:
+the result is correct (it forms $T_{aac} + T_{aac}$, as the old code did), with 36 redundant evaluations. This variant
+is not used by any current launcher.
+
 **Check** (job 336982, V100, $M = 256$, $J = 8$, $B = 16$ random Gaussian walkers, `grad_speed/check_scat4_gather.py`):
 - new vs old (verbatim copy of the old code): max |diff| / max |old| = **0 exactly**, in float32 and float64, for
   Real, Real_diag and Imag. The result is bit-identical.
@@ -89,9 +95,28 @@ $$P_{jk} = \frac1M\ \mathrm{Re}\, W_j^{*}\Big( \tfrac{u_j}{|u_j|}\, \mathrm{Re}(
 \quad\text{(through } |u_j|,\ d|u_j| = \mathrm{Re}(\overline{u_j/|u_j|}\, du_j)\text{; code: result\_conv\_phase)},$$
 $$Q_{jk} = \frac1M\ \mathrm{Re}\big( h_k \star |u_j| \big)
 \quad\text{(through the linear factor; code: result\_conv\_modulus)}.$$
-(For the Imag class: in $P$, $\mathrm{Re}(h_k\star x)$ becomes $-\mathrm{Im}(h_k \star x)$; in $Q$,
-$Q_{jk} = -\frac1M \mathrm{Im}(\tilde h_k \star |u_j|)$ with $\hat{\tilde h}_k(\omega) = |\hat\psi_k(-\omega)|^2$, the
-frequency-reversed filter (code `filters_abs2_flip`). Same two-term structure.) Unlike Scat4 there is no $a \leftrightarrow b$ partner: $\nabla\phi_{jk}$ uses
+**Imag class.** $\phi^{\mathrm{Im}}_{jk} = \frac1M \sum_t \mathrm{Im}\big[\overline{u_k}\,(\psi_k\star|u_j|)\big]$.
+By Parseval and because $x$ is real, $\phi^{\mathrm{Im}}_{jk} = \frac1M \sum_t x(t)\,\mathrm{Im}(h_k \star |u_j|)(t)$.
+Let $\tilde h_k$ be the frequency-reversed filter, $\hat{\tilde h}_k(\omega) = |\hat\psi_k(-\omega)|^2$ (code
+`filters_abs2_flip`). For any real $f$, $\tilde h_k \star f = \overline{h_k \star f}$, since
+$\overline{\hat f(-\omega)} = \hat f(\omega)$. Hence $\mathrm{Im}(\tilde h_k\star f) = -\mathrm{Im}(h_k\star f)$. Using the
+self-adjointness of $h_k$ and $\tilde h_k$, the same statistic can be written
+$\phi^{\mathrm{Im}}_{jk} = -\frac1M \sum_t |u_j(t)|\,\mathrm{Im}(h_k\star x)(t)$. Its two gradient terms:
+$$P_{jk} = \frac1M\ \mathrm{Re}\, W_j^{*}\Big( \tfrac{u_j}{|u_j|}\, \big(-\mathrm{Im}(h_k \star x)\big) \Big),\qquad
+Q_{jk} = -\frac1M\ \mathrm{Im}\big(\tilde h_k \star |u_j|\big) = \frac1M\ \mathrm{Im}\big(h_k \star |u_j|\big).$$
+These are the signs in the code: `-torch.imag(x_filtered_2)` in $P$, and `- result_conv_modulus.imag` with
+`filters_abs2_flip` in $Q$. I checked this derivation against the Scat3 Imag code. Same two-term structure as the Real class.
+(For Scat4 Imag, $\phi^{\mathrm{Im}}_{abc} = \frac1M\sum_t \mathrm{Im}[(\psi_c\star E_a)\overline{(\psi_c\star E_b)}]$ is
+antisymmetric under $a \leftrightarrow b$ directly from the definition, since
+$\mathrm{Im}(z\bar w) = -\mathrm{Im}(w \bar z)$. That is why its index set uses $a<b$ only, with no diagonal.)
+
+**Differentiability.** $P_{jk}$ contains $u_j/|u_j|$, which is undefined where $u_j(t) = 0$. The code has **no guard**:
+`abs_eps` is called with its default $\varepsilon = 0$, i.e. $|u| = \sqrt{(\mathrm{Re}\,u)^2 + (\mathrm{Im}\,u)^2}$. An exact zero
+gives $0/0$ = NaN. For walkers with a continuous law, $u_j(t) = 0$ exactly is an event of probability zero; in float32 it
+would need both the real and the imaginary part to round to exactly 0. If it happens, the NaN reaches $G$ or the
+right-hand side, and `_live_potentials` (`sde_routines.py`) stops the run with a `FloatingPointError` naming the
+statistics; it does not continue silently. Scat4 Mod2 has no such point: $E_a = |u_a|^2$ is a polynomial in $x$, and its
+gradient $2u_a$ is defined everywhere. The GGD scalar potentials use $\sqrt{z^2 + \varepsilon_j}$ with $\varepsilon_j > 0$. Unlike Scat4 there is no $a \leftrightarrow b$ partner: $\nabla\phi_{jk}$ uses
 $P$ and $Q$ at the same $(j,k)$.
 
 Old code: $P$ and $Q$ on the full grid $j \in \{0..J-1\}$, $k \in \{0..J\}$: $2 \times 72 = 144$ terms, then restricted to
@@ -111,6 +136,16 @@ Old and new code compute the same set of vectors $\{\nabla\phi_k\}_{k \in \mathc
 sum of partial terms ($T_{abc} + T_{bac}$, or $P_{jk} + Q_{jk}$). Each partial term is computed from the shared
 first-layer quantities ($u$, $E$, $h\star E$) by element-wise products and FFTs along time only. There is no sum over
 the index before the restriction. So a partial term outside $\mathcal K \cup \mathcal K^\top$ never enters any
-returned value, and skipping it changes nothing. The terms skipped are not statistics of the model. They are the
-index combinations the model excludes: the diagonal $a = b$ (`offset=1`) and $c \le b$ (`lite=True`) for Scat4,
-and $k < j$ for Scat3.
+returned value, and skipping it changes nothing. The terms skipped are not statistics of the model; they are the
+index combinations the model excludes:
+- Scat4: entries $T_{a'b'c}$ with $a' = b'$ (excluded by `offset=1`), or with $c \le \max(a', b')$. The bound is
+  $\max(a', b')$, not $b'$, because the partner $(b,a,c)$ of a kept triple $(a,b,c)$, $a<b<c$, has its first two indices
+  swapped. An entry with $a' > b'$ is needed iff $c > a'$.
+- Scat3: pairs with $k < j$.
+
+**Mathematics vs numerics.** The argument above shows that the two codes compute the same real numbers: an exact
+statement about the functions. That the floating-point results are **bit-identical** (measured difference exactly 0,
+jobs 336982 and 337296) is a separate, empirical fact. It holds because cuFFT returns, for each signal in a batch,
+a result that does not depend on the batch size or on the other signals in it, and the element-wise operations are
+the same. This is observed, not implied by the argument. A different FFT library, GPU or PyTorch version could in
+principle break it, without breaking the mathematical equality, which would then hold to round-off.
