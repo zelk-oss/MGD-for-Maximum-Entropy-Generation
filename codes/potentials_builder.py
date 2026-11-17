@@ -234,18 +234,18 @@ def get_1d_potentials(terms, J, filters, Q=1, filters_Q=None, filters_Phi=None,s
     if 'Scattering_Second_Order_bulk' in terms:
         potentials['Scattering_Second_Order_bulk'] = Scattering_Second_Order_Bulk_1d(filters_Q)
 
+    # SCATTERING 3RD ORDER: always on the Q = 1 bank `filters`, whatever the run's Q (2026-11-17). Until then they took
+    # filters_Q: correct at Q = 1 (filters_Q == filters, same return_Filters call: jets, S&P unchanged), wrong at
+    # Q > 1 (the class indexes a J + 1 bank; it now refuses any other). Scat3/Scat4 exist on the Q = 1 bank only.
     if 'Scattering_Third_Order_Real' in terms:
-        potentials['Scattering_Third_Order_Real'] = Scattering_Third_Order_Real_1d(J, filters_Q)
+        potentials['Scattering_Third_Order_Real'] = Scattering_Third_Order_Real_1d(J, filters)
 
     if 'Scattering_Third_Order_Imag' in terms:
-        potentials['Scattering_Third_Order_Imag'] = Scattering_Third_Order_Imag_1d(J, filters_Q)
+        potentials['Scattering_Third_Order_Imag'] = Scattering_Third_Order_Imag_1d(J, filters)
 
     # without the J structurally-zero low-pass columns (Imag of a real low-pass output), see the class docstring
     if 'Scattering_Third_Order_Imag_nolp' in terms:
-        potentials['Scattering_Third_Order_Imag_nolp'] = Scattering_Third_Order_Imag_1d(J, filters_Q, include_lowpass=False)
-    
-    if 'Scattering_Fourth_Order_Real' in terms:
-        potentials['Scattering_Fourth_Order_Real'] = Scattering_Fourth_Order_Real_1d(J, Q, filters, filters_Q[:,:-1])
+        potentials['Scattering_Third_Order_Imag_nolp'] = Scattering_Third_Order_Imag_1d(J, filters, include_lowpass=False)
 
     # Q = 1 SCATTERING 2ND ORDER 
     if 'Scattering_Second_Order_Q1' in terms:
@@ -262,9 +262,6 @@ def get_1d_potentials(terms, J, filters, Q=1, filters_Q=None, filters_Phi=None,s
         potentials['Scattering_Fourth_Order_Real_Q1_diag'] = Scattering_Fourth_Order_Real_1d(J, 1, filters, filters[:,:-1], include_diag=True)
     if 'Scattering_Fourth_Order_Mod2_Real_Q1_diag' in terms:
         potentials['Scattering_Fourth_Order_Mod2_Real_Q1_diag'] = Scattering_Fourth_Order_Mod2_Real_1d(J, 1, filters, filters[:,:-1], include_diag=True)
-
-    if 'Scattering_Fourth_Order_Imag' in terms:
-        potentials['Scattering_Fourth_Order_Imag'] = Scattering_Fourth_Order_Imag_1d(J, Q, filters, filters_Q[:,:-1])
 
     if 'Scattering_Fourth_Order_Mod2_Real_Q1' in terms:
         potentials['Scattering_Fourth_Order_Mod2_Real_Q1'] = Scattering_Fourth_Order_Mod2_Real_1d(J, 1, filters, filters[:,:-1])

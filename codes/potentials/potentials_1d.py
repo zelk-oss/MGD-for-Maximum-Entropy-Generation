@@ -244,9 +244,19 @@ class Scattering_Second_Order_Bulk_1d(Potential):
         else:
             return (output * v[None, :, None]).sum(1)[:, None] / x.shape[-1]
         
+def _check_scat3_bank(J, filters, cls):
+    """Scat3 indexing (indices_third_order(J, 1)) assumes a Q = 1 bank: J band-passes + the low-pass last.
+    A Q > 1 bank (J*Q + 1 filters) used to be accepted silently and gave the J*(J+3)/2 pairs of its finest
+    filters, without the low-pass (bug found 2026-11-16): refuse it."""
+    if filters.shape[-2] != J + 1:
+        raise ValueError(f'{cls}: needs a Q = 1 bank of J + 1 = {J + 1} filters (low-pass last), got '
+                         f'{filters.shape[-2]}; use the Scattering_Third_Order_*_Q1 terms (Q = 1 bank `filters`)')
+
+
 class Scattering_Third_Order_Real_1d(Potential):
     def __init__(self, J, filters):
         super().__init__()
+        _check_scat3_bank(J, filters, 'Scattering_Third_Order_Real_1d')
         self.J = J
         self.filters = filters
         self.num_coefficients = int(J*((1+J)/2+1))
@@ -318,6 +328,7 @@ class Scattering_Third_Order_Imag_1d(Potential):
     """
     def __init__(self, J, filters, include_lowpass=True):
         super().__init__()
+        _check_scat3_bank(J, filters, 'Scattering_Third_Order_Imag_1d')
         self.J = J
         self.filters = filters
         self.include_lowpass = include_lowpass

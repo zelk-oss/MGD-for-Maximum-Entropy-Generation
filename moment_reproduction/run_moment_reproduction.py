@@ -47,7 +47,7 @@ EXTRA = [
     'L_6',                                      # 6th-order marginal moment
     'Scattering_First_Order',                   # E|W x| per channel
     'Scattering_Second_Order',                  # E|W |W x||: scale-to-scale envelope
-    'Scattering_Third_Order_Real',              # cross-scale phase (run's Q bank)
+    'Scattering_Third_Order_Real',              # cross-scale phase (Q=1 bank since 2026-11-17; turbulence rows before were on the Q=3 bank, wrong)
     'Scattering_Third_Order_Imag',
     'Scattering_Fourth_Order_Mod2_Real_Q1',     # the Scat4 imposed by mass_final / B + Scat4 / jets full
     'Scattering_Fourth_Order_Mod2_Imag_Q1',
