@@ -351,6 +351,11 @@ class SDE(torch.nn.Module):
         self.final_projection_tol = 1e-3
         self.final_projection_max = 10
         self.final_projection_log = None       # [passes, max rel error before, after]
+        # Open-loop synthesis with a prescribed theta (2026-11-13, option B1; lam_selection_criterion/bimodal_openloop.py).
+        # None (default): the corrector solves for theta_k as always (bit-identical to before). Set with
+        # set_prescribed_theta(t_nodes, Theta): the corrector move becomes h sigma^2 grad(Theta(t_{k+1}) . phi)(y_k), no
+        # corrector solve; the predictor (eta_k, from G(x_k) and the interpolant's moment velocity) is unchanged.
+        self.theta_prescribed = None
         self.potential_labels = [f'{name}[{i}]' for name, p in self.potentials.items()
                                  for i in range(p.num_coefficients)]
 
@@ -1458,6 +1463,48 @@ class SDE(torch.nn.Module):
         return E, grads
 
 
+    def set_prescribed_theta(self, t_nodes, Theta):
+        """
+        Open-loop synthesis (option B1, 2026-11-13): replace the corrector's solved theta_k by a given curve.
+
+        t_nodes (n,), Theta (n, r): CODE sign (theta_code = -theta_MGD) and normalised like the theta_k that
+        forward() returns (theta_k = corrector coefficients / (h sigma^2)), i.e. exactly what
+        _solve_regularised_thomas returns (Theta_reg = Theta[1:] at t_reg = t[1:]). Dead statistics must already
+        be 0 (the Thomas solve pins them). theta_k belongs to t_{k+1}, so step k uses Theta(t_{k+1}): linear
+        interpolation in t between nodes (exact on a node), held constant outside [t_nodes[0], t_nodes[-1]]
+        (the first steps of the grid have no Theta_reg node: they use Theta_reg's first value).
+        Pass None to switch back to the closed loop.
+        """
+        if t_nodes is None:
+            self.theta_prescribed = None
+            return
+        t_nodes = torch.as_tensor(t_nodes, dtype=torch.float64).cpu()
+        Theta = torch.as_tensor(Theta, dtype=torch.float64).cpu()
+        if Theta.shape != (len(t_nodes), self.num_potentials):
+            raise ValueError(f'Theta must be (n, r) = ({len(t_nodes)}, {self.num_potentials}), got {tuple(Theta.shape)}')
+        if not bool((t_nodes[1:] > t_nodes[:-1]).all()):
+            raise ValueError('t_nodes must be strictly increasing')
+        if not bool(torch.isfinite(Theta).all()):
+            raise ValueError('Theta has non-finite entries')
+        if self.extra_corrector_max or self.terminal_phase or self.final_projection:
+            raise ValueError('prescribed theta is not defined with extra_corrector / terminal_phase / final_projection')
+        self.theta_prescribed = (t_nodes, Theta)
+
+    def _prescribed_theta_at(self, t):
+        """Theta(t) of set_prescribed_theta, on self.device, float64 (cast to the walkers' dtype by the caller's product)."""
+        t_nodes, Theta = self.theta_prescribed
+        t = float(t)
+        j = int(torch.searchsorted(t_nodes, torch.tensor([t], dtype=torch.float64))[0])
+        if j <= 0:
+            out = Theta[0]
+        elif j >= len(t_nodes):
+            out = Theta[-1]
+        else:
+            t0, t1 = float(t_nodes[j - 1]), float(t_nodes[j])
+            w = (t - t0) / (t1 - t0)
+            out = Theta[j] if w == 1.0 else (1.0 - w) * Theta[j - 1] + w * Theta[j]
+        return out.to(self.device)
+
     def iteration_step_projection(self, x_k, k):
         """
         Perform a single predictor-corrector SDE integration step.
@@ -1510,7 +1557,11 @@ class SDE(torch.nn.Module):
         y_k         = x_k + h * drift + noise
 
         # Corrector
-        theta_k_raw, bk       = self.compute_theta(y_k, k)
+        if self.theta_prescribed is not None:              # open loop (B1): no solve, no moment target
+            theta_k_raw = (self._prescribed_theta_at(self.t[k + 1]) * (h * self.sigma ** 2)).to(y_k.dtype)
+            bk = None
+        else:
+            theta_k_raw, bk       = self.compute_theta(y_k, k)
         corrector      = self.compute_grad_phi_projected(y_k, theta_k_raw)
         x_k_plus_one   = y_k + corrector
         if self.extra_corrector_max:
