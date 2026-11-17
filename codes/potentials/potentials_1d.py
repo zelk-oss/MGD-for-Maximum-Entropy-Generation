@@ -301,14 +301,18 @@ class Scattering_Third_Order_Real_1d(Potential):
             
             return (result_conv_phase.sum(1) + result_conv_modulus.sum(1)).real[:,None]/x.shape[-1]
         
-        result_conv_phase = x_filtered_over_abs[:,:-1,None]*torch.real(x_filtered_2)[:,None]
-        result_conv_phase = torch.fft.ifft(filters[:,:-1,None].conj()*torch.fft.fft(result_conv_phase))
+        # Full Jacobian (2026-11-17). phi_jk = mean_t Re[conj(W_k x) (psi_k * |W_j x|)] = mean_t |W_j x| Re(h_k * x),
+        # h_k^ = |psi_k^|^2. grad phi_jk = P_jk + Q_jk: P (result_conv_phase) = derivative through |W_j x|
+        # = W_j^*( (W_j x/|W_j x|) Re(h_k * x) ) / M; Q (result_conv_modulus) = derivative through h_k * x
+        # = h_k * |W_j x| / M. Each depends on its own (j, k) only, so both are evaluated on the K kept pairs
+        # (was: on the full J x (J+1) grid, then restricted).
+        j, k = indices.long()
+        result_conv_phase = x_filtered_over_abs[:, j] * torch.real(x_filtered_2)[:, k]
+        result_conv_phase = torch.fft.ifft(filters[:, j].conj() * torch.fft.fft(result_conv_phase))
 
-        result_conv_modulus = torch.fft.ifft(filters_abs2[:,None]*torch.fft.fft(x_filtered_abs)[:,:-1,None])
+        result_conv_modulus = torch.fft.ifft(filters_abs2[:, k] * torch.fft.fft(x_filtered_abs)[:, j])
 
-        output = (result_conv_phase + result_conv_modulus).real
-
-        output = output[:, indices[0], indices[1]]/x.shape[-1]
+        output = (result_conv_phase + result_conv_modulus).real / x.shape[-1]
 
         return output
 
@@ -381,14 +385,14 @@ class Scattering_Third_Order_Imag_1d(Potential):
 
             return (result_conv_phase.sum(1).real - result_conv_modulus.sum(1).imag)[:,None]/x.shape[-1]
 
-        result_conv_phase = x_filtered_over_abs[:,:-1,None]*(-torch.imag(x_filtered_2))[:,None]
-        result_conv_phase = torch.fft.ifft(filters[:,:-1,None].conj()*torch.fft.fft(result_conv_phase))
+        # Full Jacobian (2026-11-17): same restriction to the kept pairs as the Real class.
+        j, k = indices.long()
+        result_conv_phase = x_filtered_over_abs[:, j] * (-torch.imag(x_filtered_2))[:, k]
+        result_conv_phase = torch.fft.ifft(filters[:, j].conj() * torch.fft.fft(result_conv_phase))
 
-        result_conv_modulus = torch.fft.ifft(filters_abs2_flip[:,None]*torch.fft.fft(x_filtered_abs)[:,:-1,None])
+        result_conv_modulus = torch.fft.ifft(filters_abs2_flip[:, k] * torch.fft.fft(x_filtered_abs)[:, j])
 
-        output = result_conv_phase.real - result_conv_modulus.imag
-
-        output = output[:, indices[0], indices[1]]/x.shape[-1]
+        output = (result_conv_phase.real - result_conv_modulus.imag) / x.shape[-1]
 
         return output
 

@@ -16,6 +16,7 @@ B="${B:-16}"
 B_TIME="${B_TIME:-500}"
 TIME="${TIME:-00:15:00}"
 CPUS="${CPUS:-10}"
+SCRIPT="${SCRIPT:-check_scat4_gather.py}"     # or check_scat3_gather.py (same options)
 case "${GPU}" in
   v100) ACCOUNT=wbg@v100; CONSTRAINT=v100; PARTITION=gpu_p13; QOS=qos_gpu-dev; MODULE_PRE="" ;;
   h100) ACCOUNT=wbg@h100; CONSTRAINT=h100; PARTITION=gpu_p6;  QOS=qos_gpu_h100-dev; MODULE_PRE="arch/h100" ;;
@@ -23,7 +24,7 @@ case "${GPU}" in
 esac
 LOGS="${OUT}/logs"
 mkdir -p "${LOGS}"
-echo "scat4 gather check: M ${M}, J ${J}, B ${B}, B_time ${B_TIME}, ${GPU} dev (${QOS}), ${TIME}"
+echo "${SCRIPT}: M ${M}, J ${J}, B ${B}, B_time ${B_TIME}, ${GPU} dev (${QOS}), ${TIME}"
 
 JOBID=$(sbatch --parsable --qos=${QOS} <<EOT
 #!/bin/bash
@@ -42,7 +43,7 @@ ${MODULE_PRE:+module load ${MODULE_PRE}}
 module load pytorch-gpu/py3/2.8.0
 export OMP_NUM_THREADS=${CPUS}
 cd "${PROJECT_DIR}"
-python -u grad_speed/check_scat4_gather.py --M ${M} --J ${J} --B ${B} --B_time ${B_TIME}
+python -u grad_speed/${SCRIPT} --M ${M} --J ${J} --B ${B} --B_time ${B_TIME}
 EOT
 )
 if [ -z "${JOBID}" ]; then echo "Error: sbatch returned no job id"; exit 1; fi
