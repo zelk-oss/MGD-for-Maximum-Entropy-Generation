@@ -47,9 +47,10 @@ def pair_groups(fam, start, idx, L):
     return g
 
 
-def main(dataset, n_boot):
+def main(dataset, n_boot, in_dir=None):
     rows, curves = [], {}
-    for f in sorted(RES.glob(f'E_{dataset}_seed*.npz')):
+    src = Path(in_dir) if in_dir else RES                       # energies E_*.npz read here; CSV / npz written to RES
+    for f in sorted(src.glob(f'E_{dataset}_seed*.npz')):
         D = np.load(f)
         seed, E = int(f.stem.split('seed')[1]), D['E']
         L = int(D['L']) if 'L' in D.files else None
@@ -83,11 +84,11 @@ def main(dataset, n_boot):
         for r in sub:
             c = E[:, groups[r['group']][5]].sum(1)
             curves[f'{seed}|{r["group"]}'] = np.vstack([H_vs_N(c, Ns), [N, r['H'], r['boot_std']]])
-    assert rows, f'no E_{dataset}_seed*.npz in {RES}'
+    assert rows, f'no E_{dataset}_seed*.npz in {src}'
     df = pd.DataFrame(rows)
     df.to_csv(RES / f'H_{dataset}.csv', index=False)
     np.savez(RES / f'H_vs_N_{dataset}.npz', **curves)
-    show = df[df.kind.isin(['category', 'family'])].groupby('group')[['H', 'boot_std', 'var2', 'ess_frac', 'log10_N_needed', 'flag']].mean()
+    show = df[df.kind.isin(['category', 'family'])].groupby('group')[['H', 'boot_std', 'var2', 'ess_frac', 'ln_N_needed', 'flag']].mean()
     print(show.sort_values('H', ascending=False).to_string(float_format=lambda v: f'{v:.4g}'))
     print(f'-> {RES / f"H_{dataset}.csv"} ({len(df)} rows), flagged groups: {int(df.flag.sum())}')
 
@@ -96,5 +97,6 @@ if __name__ == '__main__':
     ap = argparse.ArgumentParser()
     ap.add_argument('--dataset', required=True)
     ap.add_argument('--n_boot', type=int, default=200)
+    ap.add_argument('--in_dir', default=None, help='folder with the E_<dataset>_seed*.npz (default: KL_RESULTS)')
     a = ap.parse_args()
-    main(a.dataset, a.n_boot)
+    main(a.dataset, a.n_boot, a.in_dir)

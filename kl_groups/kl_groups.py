@@ -44,11 +44,65 @@ def H_estimate(C, n_boot=N_BOOT, seed=0):
                ess_frac=float(ess / N), wmax=float(w.max()), H_half=float(half), drift=float(H - half))
     # drift = H(N) - H(N/2) > 0 means H still grows with N: the tail is not converged
     out['flag'] = bool(out['ess_frac'] < ESS_MIN or out['wmax'] > WMAX_MAX or out['drift'] > 2 * out['boot_std'])
-    # Gaussian-A rule: ESS ~ N exp(-Var A), so N >> exp(Var A) = exp(2 var2) is needed (log10 to avoid overflow)
-    out['log10_N_needed'] = 2 * out['var2'] / np.log(10)
+    # Gaussian A: reliable iff N >> e^{D_KL(q_k||p)} = e^{Var(A)/2} = e^{var2} (Chatterjee-Diaconis); stored as ln N to avoid overflow
+    out['ln_N_needed'] = out['var2']
     # flagged: Jensen (E log W_bar <= log E W_bar) -> the estimate is a LOWER bound of H_k, reported as 'H >= value'
     out['regime'] = 'lower bound' if out['flag'] else 'measured'
+    # added 2026-11-13 (test bench on the d16 Gaussian): tail-shape warning + rigorous 95 % lower bound
+    out['khat'] = pareto_khat(a)
+    out['D_lb95'], out['lb_cap'] = D_lower_bound(a)
     return out
+
+
+def pareto_khat(a):
+    """Shape k of the generalised-Pareto tail of the weights w = e^{a} (PSIS diagnostic, Vehtari et al.), fitted to the
+    largest min(N/5, 3 sqrt N) weights by the Zhang-Stephens estimator with the PSIS prior adjustment (as arviz _gpdfit).
+    E[w] < inf needs k < 1, E[w^2] < inf needs k < 1/2. At N = 1e4 sd(khat) ~ 0.1, and khat is the LOCAL tail slope
+    (slowly varying factors bias it by ~0.1-0.3): a warning flag (khat >= 0.7 unreliable), not a measurement of k."""
+    a = np.sort(np.asarray(a, dtype=np.float64))
+    N = a.size
+    Mt = int(min(N / 5, 3 * np.sqrt(N)))
+    w = np.exp(a - a[-1])
+    x = w[-Mt:] - w[-Mt - 1]                                     # exceedances over the threshold, ascending
+    if x[-1] <= 0:
+        return np.nan
+    n = x.size
+    m = 30 + int(np.sqrt(n))
+    b = 1 - np.sqrt(m / (np.arange(1, m + 1) - 0.5))
+    b /= 3 * x[int(n / 4 + 0.5) - 1]
+    b += 1 / x[-1]
+    k = np.log1p(-b[:, None] * x).mean(axis=1)
+    ls = n * (np.log(-(b / k)) - k - 1)
+    wts = 1 / np.exp(ls - ls[:, None]).sum(axis=1)
+    wts /= wts.sum()
+    kp = np.log1p(-np.sum(b * wts) * x).mean()
+    return float((n * kp + 10 * 0.5) / (n + 10))
+
+
+def D_lower_bound(a, delta=0.05, seed=0, caps=np.arange(0.5, 40.5, 0.5)):
+    """One-sided (1 - delta) confidence LOWER bound on D = log E[e^{A - E A}] from samples a_i = A(x_i), x_i ~ p.
+    D = log E[e^{A - m}] + m - E[A] >= log E[e^{min(A - m, c)}] + m - E[A]   for any fixed m, c (capping lowers the weights).
+    m = mean of a held-out 10 % of the samples (so m is independent of the rest); on the other 90 %, for EVERY cap c of
+    the grid (union bound: level d1 / len(caps) each, so taking the best c is allowed):
+      E[e^{min(A-m,c)}] >= mean - sqrt(2 V ln(2 K/d1) / n) - 7 e^c ln(2 K/d1) / (3 (n - 1))   (empirical Bernstein,
+      Maurer & Pontil 2009, Thm 4; variables in [0, e^c]; d1 = delta/2, K = len(caps)), rigorous;
+      E[A] <= mean(a) + z_{1-d1} s / sqrt(n)   (one-sided normal on the 90 %: APPROXIMATE, CLT, needs Var A < inf).
+    Returns (lower bound, best c); -inf only if no cap gives a positive Bernstein bound (small caps normally do)."""
+    from scipy.stats import norm
+    a = np.asarray(a, dtype=np.float64)
+    idx = np.random.default_rng(seed).permutation(a.size)
+    n0 = max(a.size // 10, 1)
+    m, h = a[idx[:n0]].mean(), a[idx[n0:]]
+    n, d1 = h.size, delta / 2
+    L = np.log(2 * len(caps) / d1)
+    ea_up = h.mean() + norm.ppf(1 - d1) * h.std(ddof=1) / np.sqrt(n)
+    best, c_best = -np.inf, np.nan
+    for c in caps:
+        y = np.exp(np.minimum(h - m, c))
+        lcb = y.mean() - np.sqrt(2 * y.var(ddof=1) * L / n) - 7 * np.exp(c) * L / (3 * (n - 1))
+        if lcb > 0 and np.log(lcb) + m - ea_up > best:
+            best, c_best = np.log(lcb) + m - ea_up, c
+    return float(best), float(c_best)
 
 
 def H_groups(E, groups, **kw):

@@ -21,6 +21,7 @@ def short(s):
 
 ESS_MIN_ABS = 100    # reliable = many signals share the weight (absolute ESS), not ESS/N: small ESS/N is normal for fat tails
 DRIFT_MAX = 2.0      # and H(N) - H(N/2) <= DRIFT_MAX bootstrap std
+KHAT_MAX = 0.5       # and Pareto khat < 0.5 (finite variance of the weights e^{A}); used only if the CSV has khat
 
 
 def load(dataset, res=RES):
@@ -29,34 +30,51 @@ def load(dataset, res=RES):
     df = pd.read_csv(res / f'H_{dataset}.csv')
     df['ESS'] = df.ess_frac * df.N
     df['flag'] = (df.ESS < ESS_MIN_ABS) | (df.drift > DRIFT_MAX * df.boot_std)
+    # CSVs from 2026-11-13 on also carry khat (Pareto tail shape of the weights) and D_lb95 (rigorous 95 % lower bound).
+    # khat >= 0.5: infinite-variance weights -> ESS / bootstrap / drift are not valid error measures (d16 Gaussian bench:
+    # all such groups rated 'measured' by ESS alone were biased low by 0.1-2 nats).
+    if 'khat' in df:
+        df['flag'] |= ~(df.khat < KHAT_MAX)
     df['regime'] = np.where(df.flag, 'lower bound', 'measured')
     # Gaussian A: reliable iff N >> e^{D_KL(q_k||p)} = e^{Var(A)/2} = e^{var2} (Chatterjee-Diaconis); the CSV used e^{Var A}
-    df['log10_N_needed'] = df.var2 / np.log(10)
+    df['ln_N_needed'] = df.var2
     agg = df.groupby(['group', 'kind', 'family', 'category', 'j', 'jp', 'label', 'n_terms'], dropna=False).agg(
         H=('H', 'mean'), H_seed_std=('H', 'std'), H_min=('H', 'min'), H_max=('H', 'max'),
         boot=('boot_std', 'mean'), var2=('var2', 'mean'), var2_seed_std=('var2', 'std'),
         ess=('ess_frac', 'min'), ESS_min=('ESS', 'min'), wmax=('wmax', 'max'), drift=('drift', 'mean'), flag=('flag', 'any'),
-        log10_N_needed=('log10_N_needed', 'mean'), n_seeds=('seed', 'nunique'),
-        H_seeds=('H', list), var2_seeds=('var2', list), flag_seeds=('flag', list), N_seeds=('N', list)).reset_index()
+        ln_N_needed=('ln_N_needed', 'mean'), n_seeds=('seed', 'nunique'),
+        H_seeds=('H', list), var2_seeds=('var2', list), flag_seeds=('flag', list), N_seeds=('N', list),
+        **({'khat_max': ('khat', 'max'), 'D_lb95_min': ('D_lb95', 'min'), 'D_lb_seeds': ('D_lb95', list)}
+           if 'khat' in df else {})).reset_index()
     # a group is a lower bound if it is flagged in ANY seed: then D_k >= mean estimate, no error bar
     agg['regime'] = np.where(agg.flag, 'lower bound', 'measured')
     agg['err'] = np.maximum(agg.H_seed_std.fillna(0), agg.boot)
     return df, agg
 
 
-def gauss_cap(var2, N):
-    """Gaussian FLOOR of the H estimate: H_hat >= max_i(a_i - mean) - ln N (exact), and for Gaussian A with Var = 2*var2
-    max_i(a_i - mean) ~ sigma sqrt(2 ln N). Gaussian A: H_hat ~ var2 if N >> exp(var2), ~ floor if N << exp(var2);
-    var2 - floor = (sigma/sqrt2 - sqrt(ln N))^2 >= 0, zero exactly at the reliability threshold N = exp(sigma^2/2)."""
-    var2, N = np.asarray(var2, float), np.asarray(N, float)
-    return np.sqrt(2 * var2) * np.sqrt(2 * np.log(N)) - np.log(N)
+def _bar_groups(agg):
+    """The groups drawn by bars(), in the same order (descending mean D_hat)."""
+    d = agg[((agg.kind == 'family') & (agg.category != 'scalar')) | ((agg.kind == 'category') & (agg.family == 'scalar'))]
+    return d.sort_values('H', ascending=False)
+
+
+def bars_table(agg):
+    """Numbers behind bars(), same rows and order. ESS = (sum w)^2 / sum w^2 of the weights e^{a - mean} (absolute, out of N),
+    worst seed; wmax = largest single-sample share of the weight, worst seed; khat_max = Pareto tail shape, worst seed."""
+    d = _bar_groups(agg)
+    t = pd.DataFrame({
+        'group': [short(g.split(':', 1)[1]) for g in d.group], 'n_terms': d.n_terms.values,
+        'D_hat (mean)': d.H.values, '1/2 Var': d.var2.values, 'ESS_min': d.ESS_min.values, 'N': [int(max(n)) for n in d.N_seeds],
+        'wmax': d.wmax.values, 'regime': d.regime.values})
+    if 'khat_max' in d:
+        t['khat_max'] = d.khat_max.values
+    return t.set_index('group')
 
 
 def bars(agg, ax=None, title=''):
     """One column per group: scalar banks summed into ONE group, every other family on its own.
-    Per seed: H estimate (filled = measured, open = lower bound), 1/2 Var(A_k) (x), Gaussian floor (-)."""
-    d = agg[((agg.kind == 'family') & (agg.category != 'scalar')) | ((agg.kind == 'category') & (agg.family == 'scalar'))]
-    d = d.sort_values('H', ascending=False)
+    Per seed: H estimate (filled = measured, open = lower bound), 1/2 Var(A_k) (x)."""
+    d = _bar_groups(agg)
     ax = ax or plt.subplots(figsize=(max(5, 0.8 * len(d)), 3.8))[1]
     for i, (_, r) in enumerate(d.iterrows()):
         n = len(r.H_seeds)
@@ -65,8 +83,6 @@ def bars(agg, ax=None, title=''):
         ax.plot(x[~f], H[~f], 'o', color='C0', ms=5, label='$\\hat D_k$ measured' if i == 0 else None)
         ax.plot(x[f], H[f], 'o', mfc='none', color='C0', ms=5, label='$\\hat D_k$, lower bound ($D_k \\geq$)' if i == 0 else None)
         ax.plot(x, r.var2_seeds, 'x', color='C1', ms=5, label=r'$\frac{1}{2}\mathrm{Var}(A_k)$' if i == 0 else None)
-        ax.plot(x, gauss_cap(r.var2_seeds, r.N_seeds), '_', color='0.4', ms=9, mew=1.5,
-                label=r'Gaussian floor $\sigma\sqrt{2\ln N}-\ln N$ (one sample dominates)' if i == 0 else None)
         # spread across seeds of D_hat: mean +- std (ddof 1). For lower bounds this is the spread of the bounds, not an
         # error bar on D_k. Log axis: the lower whisker is clipped at a small positive value when std >= mean.
         m, s = float(np.mean(H)), float(np.std(H, ddof=1)) if n > 1 else 0.0
@@ -87,20 +103,44 @@ def _points(ax, x, d, **kw):
             label=None if 'label' in kw else r'$D_k \geq$ (lower bound)')
 
 
-def singles(agg, family_substr, top=40, ax=None, title=''):
-    d = agg[(agg.kind == 'single') & agg.family.str.contains(family_substr)].sort_values('H', ascending=False).head(top)
-    ax = ax or plt.subplots(figsize=(max(5, 0.25 * len(d)), 3.5))[1]
-    x = np.arange(len(d))
+def singles(agg, family_substr, ax=None, title=''):
+    """Every single term of the family, in the order of the potential, NOT sorted by value.
+    Scat4 (j, j', l): ordered by j, then j', then l; solid lines separate the j blocks, dotted lines the j' sub-blocks.
+    Other families: ordered by the term index [i] of the potential list."""
+    d = agg[(agg.kind == 'single') & agg.family.str.contains(family_substr)].copy()
+    d['idx'] = d.group.str.extract(r'\[(\d+)\]$')[0].astype(int)
+    scat4 = d.label.notna().all() and len(d) > 0
+    if scat4:
+        jjl = d.label.astype(str).str.split(',', expand=True).astype(int)
+        d['J'], d['JP'], d['L'] = jjl[0].values, jjl[1].values, jjl[2].values
+        d = d.sort_values(['J', 'JP', 'L'])
+    else:
+        d = d.sort_values('idx')
+    n = len(d)
+    ax = ax or plt.subplots(figsize=(min(20, max(6, 0.22 * n)), 3.8))[1]
+    x = np.arange(n)
     _points(ax, x, d, color='C0', label=r'$D_k$ measured')
     ax.plot([], [], '^', mfc='none', color='C0', label=r'$D_k \geq$ (lower bound)')
     ax.plot(x, d.var2, 'x', ms=4, color='C1', label=r'$\frac{1}{2}\mathrm{Var}(A_k)$')
-    ax.plot(x, gauss_cap(d.var2, [np.mean(n) for n in d.N_seeds]), '_', color='0.4', ms=7, mew=1.5,
-            label=r'Gaussian floor $\sigma\sqrt{2\ln N}-\ln N$')
-    # Scat4 terms carry (j, j', l); other families only an index: 'one:<family>[i]' -> '<short family>[i]'
-    ticks = [f'({l})' if isinstance(l, str) and l else short(g.split(':', 1)[1]) for g, l in zip(d.group, d.label)]
-    ax.set_xticks(x, ticks, rotation=90, fontsize=7)
-    ax.set_xlabel("single term ((j, j', l) for Scat4)"); ax.set_ylabel('nats'); ax.set_yscale('log')
-    ax.set_title(f'{title} top {len(d)} single terms'); ax.legend(fontsize=8)
+    if scat4:
+        ax.set_xticks(x, [f'{l}' for l in d.label], rotation=90, fontsize=6)
+        jv, jpv = d.J.values, d.JP.values
+        for i in range(1, n):
+            if jv[i] != jv[i - 1]:
+                ax.axvline(i - 0.5, color='k', lw=1)
+            elif jpv[i] != jpv[i - 1]:
+                ax.axvline(i - 0.5, color='0.6', lw=0.7, ls=':')
+        starts = [0] + [i for i in range(1, n) if jv[i] != jv[i - 1]] + [n]
+        for a, b in zip(starts[:-1], starts[1:]):
+            ax.text((a + b - 1) / 2, 1.01, f'j = {jv[a]}', transform=ax.get_xaxis_transform(), ha='center', va='bottom', fontsize=8)
+        ax.set_xlabel("single term (j, j', l); solid line = new j, dotted = new j'")
+    else:
+        ax.set_xticks(x[::5], [str(i) for i in d.idx.values[::5]], rotation=90, fontsize=6)
+        ax.set_xlabel('term index in the potential list')
+    ax.set_xlim(-0.7, n - 0.3)
+    ax.set_ylabel('nats'); ax.set_yscale('log')
+    ax.set_title(f'{title}: {n} single terms, potential order' + ('\n' if scat4 else ''), fontsize=9)
+    ax.legend(fontsize=8, loc='upper left', bbox_to_anchor=(1.01, 1))
     return ax
 
 
@@ -119,8 +159,8 @@ def pairs(agg, family_substr, title='', angle='all'):
     Hm = np.full((J, J), np.nan)
     for _, r in d.iterrows():
         Hm[int(r.j), int(r.jp)] = r.H
-    im = a2.imshow(np.log10(Hm), origin='lower', cmap='viridis')
-    plt.colorbar(im, ax=a2, label=r"$\log_{10} D_{j,j'}$ (nats)")
+    im = a2.imshow(np.log(Hm), origin='lower', cmap='viridis')
+    plt.colorbar(im, ax=a2, label=r"$\ln D_{j,j'}$ (nats)")
     a2.set_xlabel("j'"); a2.set_ylabel('j'); a2.set_title("(j, j') heatmap, all l")
     for _, r in d[d.flag].iterrows():
         a2.text(r.jp, r.j, r'$\geq$', color='r', ha='center', va='center')       # lower bound only
@@ -159,8 +199,9 @@ def summary(agg, kinds=('category', 'family', 'pair')):
                  D_k=[f'>= {h:.3g}' if f else f'{h:.3g} +- {e:.2g}' for h, e, f in zip(d.H, d.err, d.flag)],
                  ratio=d.H / d.var2)
     # H_seed_std / H_min / H_max: spread of the per-seed estimates (for a lower bound it is NOT an error bar)
-    return d[['name', 'n_terms', 'D_k', 'regime', 'H_seed_std', 'H_min', 'H_max', 'boot', 'var2', 'var2_seed_std',
-              'ratio', 'log10_N_needed', 'ESS_min', 'ess', 'wmax', 'drift', 'n_seeds']]
+    extra = ['khat_max', 'D_lb95_min'] if 'khat_max' in d else []     # D_lb95_min: rigorous 95 % lower bound, worst seed
+    return d[['name', 'n_terms', 'D_k', 'regime'] + extra + ['H_seed_std', 'H_min', 'H_max', 'boot', 'var2', 'var2_seed_std',
+              'ratio', 'ln_N_needed', 'ESS_min', 'ess', 'wmax', 'drift', 'n_seeds']]
 
 
 def vs_prediction(agg, pred, title=''):

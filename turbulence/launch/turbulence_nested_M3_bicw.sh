@@ -31,6 +31,9 @@
 #   ONLY=bicw_allmass_scat4 SEEDS="900 901 902 903 904" bash ...            # B+Scat4, 5 seeds (~18.6 h each)
 #   ONLY=bicw_allmass_scat4 SIGMA=6 NT=27500 N_BULK=2500 POTENTIALS_FROM=<run>/fitted_potentials bash ...
 #                                     # sigma x nt check of the entropy bound (2026-11-10), windows frozen
+#   ONLY=bicw_allmass_scat34d NT=2000 N_BULK=500 SCAT4_TIME=01:00:00 QOS=qos_gpu_h100-dev LABEL=timing bash ...
+#                                     # B + Scat3 Re/Im + Scat4 with diagonal (2026-11-17), timing
+# LABEL (optional): appended to the experiment name and label (e.g. smoke, timing). N1 (optional): walkers, default 10000.
 
 LAUNCH_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
@@ -47,7 +50,8 @@ RICH_TIME="${RICH_TIME:-16:00:00}"
 SCAT4_TIME="${SCAT4_TIME:-20:00:00}"
 
 # ── as turbulence_nested_M3.sh ──
-N1=10000
+N1="${N1:-10000}"
+USER_LABEL="${LABEL:-}"
 SUBSERIES_LEN=512
 TARGET_LEN=256
 J=8
@@ -100,6 +104,8 @@ TAG=""
 # terminal phase / final projection (2026-11-12, opt-in env, see _submit_turb_sweep.sh): own label, so these runs never touch the reference folders
 [ "${TERMINAL_PHASE:-}" = "true" ] && TAG+="_term"
 [ "${FINAL_PROJECTION:-}" = "true" ] && TAG+="_fp"
+[ -n "${USER_LABEL}" ] && TAG+="_${USER_LABEL}"
+[ "${N1}" != "10000" ] && TAG+="_n1${N1}"
 
 for arm in ${ONLY}; do
     TERMS=("${BASE_TERMS[@]}"); GGD_TAIL_QUANTILE=0.99; GGD_NUM_REGIONS=""; DROP_STATS="${BASE_DROP_STATS}"
@@ -111,6 +117,12 @@ for arm in ${ONLY}; do
                       # matched moments. B vs this = Scat4 alone; mass_final vs this = windows + masses
                       GGD_ALL_MASSES=true;   TIME="${SCAT4_TIME}"
                       TERMS+=(Scattering_Fourth_Order_Mod2_Real_Q1 Scattering_Fourth_Order_Mod2_Imag_Q1) ;;
+        bicw_allmass_scat34d)
+                      # 2026-11-17: B + Scat3 Re/Im (Q=1 bank; Imag without its identically-zero low-pass columns)
+                      # + Scat4 with the real diagonal a = b (as S&P, 2D, the MGD paper eq. 41, Morel's scat_spectra)
+                      GGD_ALL_MASSES=true;   TIME="${SCAT4_TIME}"
+                      TERMS+=(Scattering_Third_Order_Real Scattering_Third_Order_Imag_nolp
+                              Scattering_Fourth_Order_Mod2_Real_Q1_diag Scattering_Fourth_Order_Mod2_Imag_Q1) ;;
         bicw_rich)    GGD_ALL_MASSES=true;   TIME="${RICH_TIME}"
                       GGD_NUM_REGIONS=6;     GGD_TAIL_QUANTILE="0.99 0.999"
                       TERMS+=(Scalar_psi_gaussianK_imag Scalar_morlet_gaussianK_imag)
@@ -118,7 +130,7 @@ for arm in ${ONLY}; do
                       # the slot need not exist (--drop_stats fails then): the Gram pre-flight
                       # removes near-copies instead
                       DROP_STATS="" ;;
-        *) echo "unknown arm '${arm}'; use bicw | bicw_allmass | bicw_allmass_scat4 | bicw_rich"; exit 1 ;;
+        *) echo "unknown arm '${arm}'; use bicw | bicw_allmass | bicw_allmass_scat4 | bicw_allmass_scat34d | bicw_rich"; exit 1 ;;
     esac
     [ "${PREFLIGHT_ONLY}" = "true" ] && TIME="00:30:00"
     EXP_NAME="turbulence_nested_M3_${arm}${TAG}"

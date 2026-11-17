@@ -32,6 +32,7 @@ for p in ('codes', 'codes/filters', 'codes/potentials', 'data', 'turbulence', 'j
     sys.path.insert(0, str(ROOT / p))
 OUT = Path(os.environ.get('KL_RESULTS', HERE / 'results'))
 DEV = 'cuda' if torch.cuda.is_available() else 'cpu'
+ON_DATA = False          # set by --on_data
 
 
 def scat4_idx(pots):
@@ -64,10 +65,15 @@ def lagrangian(seed):
                                  Path(os.environ['LAG_SWEEP_DIR']), l6neg, unconstrained=True)
     else:                                # default (run1): lam 3e-5, L_6<0 file if present
         theta, desc = find_theta(config, 3e-5, 1e-4, 1e-2, False, T / 'saved_results' / 'theta_reg_lamsweep', l6neg)
-    xt = load_config(config, T, extras=False)['xt']
+    if ON_DATA:                          # the run's TRAINING windows x1 (same for every seed), rebuilt as run_SDE does
+        from logp_gauss_scat2 import load_data_x1
+        xt = load_data_x1(cfg, DEV).float()
+    else:
+        xt = load_config(config, T, extras=False)['xt']
     pots = load_potentials(exp, cfg, DEV)
     phi = phi_matrix(pots, xt.reshape(xt.shape[0], 1, -1).to(DEV))
-    return phi, theta, theta_column_map(pots, len(theta)), scat4_idx(pots), dict(J=cfg['J'], config=config, theta_desc=desc)
+    return phi, theta, theta_column_map(pots, len(theta)), scat4_idx(pots), \
+        dict(J=cfg['J'], config=config, theta_desc=desc, signals='training windows x1' if ON_DATA else 'generated')
 
 
 def jets(seed, arm='jets_full', window='end0.99'):
@@ -180,7 +186,12 @@ if __name__ == '__main__':
     ap.add_argument('--dataset', required=True, choices=list(LOAD))
     ap.add_argument('--seeds', type=int, nargs='+', required=True)
     ap.add_argument('--n_max', type=int, default=None, help='keep the first n_max samples (smoke tests)')
+    ap.add_argument('--on_data', action='store_true',
+                    help='energies on the TRAINING windows instead of the generated signals (lagrangian only); '
+                         'writes E_train_<dataset>_seed<S>.npz')
     a = ap.parse_args()
+    ON_DATA = a.on_data
+    assert not ON_DATA or a.dataset == 'lagrangian', '--on_data is implemented for lagrangian only'
     OUT.mkdir(parents=True, exist_ok=True)
     for s in a.seeds:
         try:
@@ -191,7 +202,7 @@ if __name__ == '__main__':
         phi = phi[:a.n_max] if a.n_max else phi
         assert phi.shape[1] == len(theta) == sum(w for _, w in cmap.values()), (phi.shape, len(theta))
         E = phi.astype(np.float64) * theta[None, :]
-        f = OUT / f'E_{a.dataset}_seed{s}.npz'
+        f = OUT / f'E_{"train_" if ON_DATA else ""}{a.dataset}_seed{s}.npz'
         np.savez(f, E=E, families=np.array(list(cmap)), starts=np.array([c[0] for c in cmap.values()]),
                  widths=np.array([c[1] for c in cmap.values()]), **idx, **{k: np.array(v) for k, v in meta.items()})
         print(f'{a.dataset} seed {s}: E {E.shape} | {meta["theta_desc"]} | families '

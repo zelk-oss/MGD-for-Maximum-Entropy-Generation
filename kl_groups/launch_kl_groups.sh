@@ -21,6 +21,8 @@ TIME="${TIME:-01:00:00}"
 CPUS="${CPUS:-10}"
 N_BOOT="${N_BOOT:-200}"
 NMAX=""; [ -n "${N_MAX:-}" ] && NMAX="--n_max ${N_MAX}"
+# ON_DATA=1: energies on the TRAINING windows (cache_energies --on_data, lagrangian only), no compute_H (not samples of p)
+ONDATA=""; [ -n "${ON_DATA:-}" ] && ONDATA="--on_data"
 case "${GPU}" in
   v100) ACCOUNT=wbg@v100; CONSTRAINT=v100; PARTITION=gpu_p13; QOS=qos_gpu-dev; MODULE_PRE="" ;;
   h100) ACCOUNT=wbg@h100; CONSTRAINT=h100; PARTITION=gpu_p6;  QOS=qos_gpu_h100-dev; MODULE_PRE="arch/h100" ;;
@@ -32,7 +34,13 @@ mkdir -p "${OUT}/slurm"
 CMDS=""
 for D in ${DATASETS}; do
   IFS=: read -r NAME SEEDS <<< "${D}"
-  CMDS+="( python -u kl_groups/cache_energies.py --dataset ${NAME} --seeds ${SEEDS//,/ } ${NMAX} && python -u kl_groups/compute_H.py --dataset ${NAME} --n_boot ${N_BOOT} ) > ${OUT}/${NAME}.log.txt 2>&1 || echo FAILED ${D}"$'\n'
+  if [ -n "${FROM_TAG:-}" ]; then      # FROM_TAG=run1: no energy caching, compute_H on results/<FROM_TAG>/E_*.npz -> <TAG>
+    CMDS+="python -u kl_groups/compute_H.py --dataset ${NAME} --n_boot ${N_BOOT} --in_dir ${PROJECT_DIR}/kl_groups/results/${FROM_TAG} > ${OUT}/${NAME}.log.txt 2>&1 || echo FAILED ${D}"$'\n'
+  elif [ -n "${ONDATA}" ]; then
+    CMDS+="python -u kl_groups/cache_energies.py --dataset ${NAME} --seeds ${SEEDS//,/ } ${NMAX} --on_data > ${OUT}/${NAME}_train.log.txt 2>&1 || echo FAILED ${D}"$'\n'
+  else
+    CMDS+="( python -u kl_groups/cache_energies.py --dataset ${NAME} --seeds ${SEEDS//,/ } ${NMAX} && python -u kl_groups/compute_H.py --dataset ${NAME} --n_boot ${N_BOOT} ) > ${OUT}/${NAME}.log.txt 2>&1 || echo FAILED ${D}"$'\n'
+  fi
 done
 echo "kl_groups: ${DATASETS}, out ${OUT}, ${GPU} dev (${QOS}), ${CPUS} CPUs, ${TIME}"
 
