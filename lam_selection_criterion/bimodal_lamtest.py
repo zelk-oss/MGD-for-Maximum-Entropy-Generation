@@ -168,6 +168,30 @@ def kl_exact(theta_ref, theta):
     return out
 
 
+def log_z_quad(theta):
+    """log Z(theta) = log int exp(theta . phi) dx by quadrature on GRID, (N,); inf where theta_4 >= 0."""
+    th = torch.as_tensor(theta, dtype=torch.float64).reshape(-1, R)
+    out = torch.logsumexp(th @ PHI.T, 1) + math.log(DX)
+    out[th[:, 3] >= 0] = float('inf')
+    return out
+
+
+def small_well(theta):
+    """P_theta(x < 0) on GRID, (N,); nan where theta_4 >= 0."""
+    lv = log_density(theta)
+    return (lv[:, GRID < 0].exp().sum(1) * DX)
+
+
+def log_z_path(Theta, t, mdot, m1):
+    """log Z at t = 1 along the curve Theta (L, n, 4), as the pipeline (codes/utils_entropy.py entropy_bound +
+    log_Z_bound, code sign): H(p_0) - int Theta . mdot dt + Theta(1) . m_1, H(p_0) = 1/2 log(2 pi e) (d = 1),
+    trapezoid on the system nodes (the pieces [0, t_1] and [t_n, 1] are left out: t_1 = 1.1e-4, 1 - t_n = 5e-5
+    on the default grid), mdot = the system's pathwise d/dt E[phi(I_t)], m_1 = E[phi(I)] at the last node."""
+    integrand = -(Theta * mdot[None]).sum(-1)                           # (L, n)
+    I = torch.trapezoid(integrand, x=torch.as_tensor(np.asarray(t, dtype=np.float64)), dim=1)
+    return 0.5 * math.log(2 * math.pi * math.e) + I + Theta[:, -1] @ m1
+
+
 def interp_moments(x0, x1, t):
     """Empirical E[phi(I_t)], I_t = cos a Z + sin a X, from the mixed sample moments E[Z^j X^l],
     j + l <= 4 (exact for the empirical measure). (N, 4) float64."""
@@ -352,8 +376,10 @@ def run_replica(args, k, s, x1):
     res = dict(run=k, seed=s, beta=args.beta, n_nodes=len(t), grid=info, t_sde_s=t_sde, t_truth_s=t_truth,
                maxent_residual=me_res, maxent_theta4_nonneg=int((~valid).sum()),
                maxent_invalid_t=[float(t[~valid].min()), float(t[~valid].max())] if (~valid).any() else None,
-               theta_star=th_star, theta_mle=theta_me[-1], kl_floor=kl_floor, cr_bound=R / (2 * args.n),
-               rules={}, cv={}, kl_end_true={}, kl_end_sample={}, theta_end={})
+               theta_star=th_star, theta_mle=theta_me[-1].clone(), kl_floor=kl_floor, cr_bound=R / (2 * args.n),
+               rules={}, cv={}, kl_end_true={}, kl_end_sample={}, theta_end={},
+               logz_true=float(log_z_quad(th_star)[0]), small_well_true=float(small_well(th_star)[0]),
+               logz={}, small_well={})
     lams = sorted(set([0.0] + list(args.lams)))
     res['lams'] = lams
     pidx = plot_nodes(t, args.n_plot)
@@ -382,11 +408,17 @@ def run_replica(args, k, s, x1):
         kl_loc = local_kl(Theta - theta_me[None], F_me)              # (L, n)
         kl_true = kl_exact(th_star, Theta[:, -1])                    # (L,)
         kl_samp = kl_exact(theta_me[-1], Theta[:, -1])
+        lz_est = log_z_path(Theta, S_['t'], S_['v'], m_t[-1].double())       # (L,) log Z by the pipeline's formula
+        lz_self = log_z_quad(Theta[:, -1])                                  # exact log Z of the end point Theta(1)
+        sw = small_well(Theta[:, -1])
         for i, lam in enumerate(lams):
             key = f'{sched}|{lam:g}'
+            res['logz'][key] = dict(est=float(lz_est[i]), err_true=float(lz_est[i]) - res['logz_true'],
+                                    err_self=float(lz_est[i] - lz_self[i]))
+            res['small_well'][key] = float(sw[i])
             kl_local_by[(sched, lam)], kl_true_by[(sched, lam)] = kl_loc[i], float(kl_true[i])
             res['kl_end_true'][key], res['kl_end_sample'][key] = float(kl_true[i]), float(kl_samp[i])
-            res['theta_end'][key] = Theta[i, -1]
+            res['theta_end'][key] = Theta[i, -1].clone()                 # clone: a view would save all of Theta
             res['plot']['Theta'][key] = Theta[i][torch.as_tensor(pidx)].float()
             res['plot']['kl_local'][key] = kl_loc[i][torch.as_tensor(pidx)].float()
         res['cv'][sched] = dict(eo_loss=path['cv_loss'].tolist(), eo_selected=path['lam_selected'],
@@ -415,7 +447,7 @@ def run_replica(args, k, s, x1):
                                 end_true=float(kl_exact(th_star, theta_nodes[-1:])[0]),
                                 end_sample=float(kl_exact(theta_me[-1], theta_nodes[-1:])[0]),
                                 **summarize(kl0.numpy(), t, wts, valid))
-    res['theta_end']['theta_t'] = theta_nodes[-1]
+    res['theta_end']['theta_t'] = theta_nodes[-1].clone()
     res['plot']['kl_local']['theta_t'] = kl0[torch.as_tensor(pidx)].float()
     res['t_total_s'] = time.time() - t0
     extra = dict(t=t, wts=wts, valid=valid, S=S_by, Theta=Theta_by, kl_local=kl_local_by, kl_true=kl_true_by,
@@ -437,24 +469,65 @@ def add_xseed_rules(args, reps, lams):
     windows = {'whole': np.arange(len(t)), **{f'end{e:g}': np.flatnonzero(t >= e) for e in args.xseed_ends}}
     for res, _ in reps:
         res['xseed'] = {}
+    S = len(reps)
+
+    def pooled_choice(P):
+        """P {(a, b): (L,) loss}: pooled argmin, per-pair argmins, leave-one-seed-out jackknife."""
+        pooled = sum(P.values())
+        sel = lams[int(np.argmin(pooled))]
+        pairs = [lams[int(np.argmin(v))] for v in P.values()]
+        jk = []
+        for s in range(S):
+            sub = [v for (a, b), v in P.items() if s not in (a, b)]
+            jk.append(lams[int(np.argmin(sum(sub)))] if sub else None)
+        return pooled, sel, pairs, jk
+
+    def store(name, sched, P, wname, nodes):
+        pooled, sel, pairs, jk = pooled_choice(P)
+        for res, ex in reps:
+            res['xseed'][name] = dict(loss=pooled.tolist(), selected=sel, n_nodes=int(len(nodes)),
+                                      per_pair=pairs, jackknife=jk)
+            res['rules'][name] = dict(lam=sel, sched=sched, edge=edge_flag(sel, lams),
+                                      end_true=ex['kl_true'][(sched, sel)],
+                                      end_sample=res['kl_end_sample'][f'{sched}|{sel:g}'],
+                                      **summarize(ex['kl_local'][(sched, sel)].numpy(), ex['t'], ex['wts'],
+                                                  ex['valid']))
+        return pooled
+
     for sched in SCHEDULES:
         for wname, nodes in windows.items():
             nd = torch.as_tensor(nodes)
-            loss = np.zeros(len(lams))
+            P_A, P_B, P_chk = {}, {}, {}
             for a, (_, ea) in enumerate(reps):
                 Th = ea['Theta'][sched][:, nd]                         # (L, nodes, 4)
                 for b, (_, eb) in enumerate(reps):
-                    if a != b:
-                        loss += tb.data_term(eb['S'][sched], Th, nodes, w).numpy()
-            sel = lams[int(np.argmin(loss))]
-            name = f'{sched}_xseed_{wname}'
-            for res, ex in reps:
-                res['xseed'][name] = dict(loss=loss.tolist(), selected=sel, n_nodes=int(len(nodes)))
-                res['rules'][name] = dict(lam=sel, sched=sched, edge=edge_flag(sel, lams),
-                                          end_true=ex['kl_true'][(sched, sel)],
-                                          end_sample=res['kl_end_sample'][f'{sched}|{sel:g}'],
-                                          **summarize(ex['kl_local'][(sched, sel)].numpy(), ex['t'], ex['wts'],
-                                                      ex['valid']))
+                    if a == b:
+                        continue
+                    # rule A (unchanged): Theta_A scored with seed B's data term (M_B, b_B)
+                    P_A[(a, b)] = tb.data_term(eb['S'][sched], Th, nodes, w).numpy()
+                    if wname == 'whole':
+                        continue
+                    # rule B (2026-11-18): 1/2 Th^T S_A Th - Th^T S_A theta_B(0), S_A = seed A's walker Cov(phi)
+                    T0B = eb['Theta'][sched][0][nd]                    # seed B's lam = 0 solve (lams[0] = 0)
+                    wn = torch.as_tensor(w[nodes])
+                    SA = tb._sym(ea['S'][sched]['C'][nd])
+                    SX = torch.einsum('kij,lkj->lki', SA, Th)
+                    P_B[(a, b)] = (((0.5 * Th - T0B[None]) * SX).sum(-1) * wn).sum(1).numpy()
+                    # check: rule A rewritten with M_B and theta_B(0) must equal rule A (M_B theta_B(0) = b_B)
+                    MB = tb.ridged(eb['S'][sched]['M'][nd], eb['S'][sched]['ridge'])
+                    MX = torch.einsum('kij,lkj->lki', MB, Th)
+                    P_chk[(a, b)] = (((0.5 * Th - T0B[None]) * MX).sum(-1) * wn).sum(1).numpy()
+            pooled_A = store(f'{sched}_xseed_{wname}', sched, P_A, wname, nodes)
+            if wname == 'whole':
+                continue
+            store(f'{sched}_xseed_sigma_{wname}', sched, P_B, wname, nodes)
+            pooled_chk = sum(P_chk.values())
+            rel = max(float(np.abs(P_A[k] - P_chk[k]).max() / max(np.abs(P_A[k]).max(), 1e-300)) for k in P_A)
+            same = int(np.argmin(pooled_A)) == int(np.argmin(pooled_chk))
+            for res, _ in reps:
+                res['xseed'][f'{sched}_check_MB_{wname}'] = dict(max_rel_diff=rel, same_argmin=same)
+            log(f'check {sched} {wname}: M_B form vs rule A, max rel diff {rel:.2e}, same argmin {same}'
+                + ('' if same else '   *** CHECK FAILED: combine will not report rule B ***'))
     gap = {}                                                           # target difference between replicas
     for lo, hi in WINDOWS:
         sel_t = ((t >= lo) & (t < hi)) if hi < 1 else (t >= lo)
@@ -498,6 +571,7 @@ def rule_order(blocks, xseed_ends=()):
         out += [f'{s}_cv_eo'] + [f'{s}_cv_block{B}' for B in blocks]
     for s in SCHEDULES:
         out += [f'{s}_xseed_whole'] + [f'{s}_xseed_end{e:g}' for e in xseed_ends]
+        out += [f'{s}_xseed_sigma_end{e:g}' for e in xseed_ends]
     for s in SCHEDULES:
         out += [f'{s}_oracle_end', f'{s}_oracle_mid']
     return out
@@ -553,6 +627,58 @@ def verdict_table(Rs, args):
         print(f"  {name:>22}: median {med:8.3g}x, runs within {HIGH:g}x: {int((ratio <= HIGH).sum())}/{len(ratio)}  {tag}")
 
 
+COMPARE = [('A  xseed M, t>=0.99', 'uniform_xseed_end0.99'), ('A  xseed M, t>=0.999', 'uniform_xseed_end0.999'),
+           ('B  xseed Sigma_A, t>=0.99', 'uniform_xseed_sigma_end0.99'),
+           ('B  xseed Sigma_A, t>=0.999', 'uniform_xseed_sigma_end0.999'),
+           ('C  guth, lam = 1', 'guth_lam1'), ('ref lam = 0 (raw)', 'lam0'),
+           ('ref oracle uniform', 'uniform_oracle_end'), ('ref oracle guth', 'guth_oracle_end')]
+
+
+def compare_table(Rs):
+    """Rules A, B, C (2026-11-18): KL at t = 1 / best lam of the same run (median, runs within 10x), lam chosen
+    (counts), jackknife (datasets whose 3 leave-one-out picks all equal the pooled pick), small-well mass
+    (median), log Z error at the chosen lam (median |est - log Z(theta*)| and |est - log Z(Theta(1))|), and
+    the lam that minimises |log Z error| on the grid (counts, per weighting)."""
+    if not any('logz' in r and r['logz'] for r in Rs):
+        print('compare_table: these runs have no log Z / small-well fields (made before 2026-11-18)')
+        return
+    fail = [k for r in Rs for k, v in r.get('xseed', {}).items() if k.startswith('uniform_check_MB') and not v['same_argmin']]
+    best = np.array([min(r['rules']['uniform_oracle_end']['end_true'], r['rules']['guth_oracle_end']['end_true'])
+                     for r in Rs])
+    print(f"\ncomparison (truth: small well {Rs[0]['small_well_true']:.4f}, log Z(theta*) {Rs[0]['logz_true']:.6g}); "
+          f"M_B check: {'ALL PASSED' if not fail else 'FAILED in ' + str(sorted(set(fail))) + ' -> rule B NOT valid'}")
+    print(f"{'rule':>27} | {'KL/best med':>11} {'<=10x':>6} | {'lam chosen (count)':>30} | {'jk stable':>9} | "
+          f"{'P(x<0) med':>10} | {'|dlogZ| true':>12} {'|dlogZ| self':>12}")
+    for label, name in COMPARE:
+        idx = [i for i, r in enumerate(Rs) if 'end_true' in r['rules'].get(name, {})]
+        rows = [(Rs[i], Rs[i]['rules'][name]) for i in idx]
+        if not rows or (label.startswith('B') and fail):
+            print(f"{label:>27} | {'not available' if not rows else 'check failed: not reported'}")
+            continue
+        ratio = np.array([d['end_true'] for _, d in rows]) / best[idx]
+        cnt = {}
+        for _, d in rows:
+            cnt[d['lam']] = cnt.get(d['lam'], 0) + 1
+        jk = [r['xseed'][name]['jackknife'] for r, _ in rows if name in r.get('xseed', {})]
+        jk_txt = (f"{sum(all(j == r['xseed'][name]['selected'] for j in js) for (r, _), js in zip(rows, jk)) // 3}"
+                  f"/{len(jk) // 3}" if jk else '-')                    # 3 replicas per dataset share the pick
+        keys = [f"{d['sched'] or 'uniform'}|{d['lam']:g}" for _, d in rows]
+        sw = np.nanmedian([r['small_well'][k] for (r, _), k in zip(rows, keys)])
+        lzt = np.median([abs(r['logz'][k]['err_true']) for (r, _), k in zip(rows, keys)])
+        lzs = np.median([abs(r['logz'][k]['err_self']) for (r, _), k in zip(rows, keys)])
+        print(f"{label:>27} | {np.median(ratio):11.3g} {int((ratio <= HIGH).sum()):3d}/{len(ratio):<2d} | "
+              f"{' '.join(f'{l_:.0e}x{c}' for l_, c in sorted(cnt.items())):>30} | {jk_txt:>9} | {sw:10.4f} | "
+              f"{lzt:12.3g} {lzs:12.3g}")
+    for sched in SCHEDULES:
+        best_lz = {}
+        for r in Rs:
+            errs = {lam: abs(r['logz'][f'{sched}|{lam:g}']['err_true']) for lam in r['lams']}
+            l_ = min(errs, key=errs.get)
+            best_lz[l_] = best_lz.get(l_, 0) + 1
+        print(f"  lam minimising |log Z - log Z(theta*)|, {sched} weights: "
+              + ' '.join(f'{l_:.0e}x{c}' for l_, c in sorted(best_lz.items())))
+
+
 def combine(args):
     for bdir in sorted(args.out.glob('beta_*')):
         files = sorted(bdir.glob('run_*.pt'))
@@ -582,6 +708,7 @@ def combine(args):
                   f"{(fin.mean() / floor.mean()) if len(fin) else np.nan:7.2f} {int((~np.isfinite(ends)).sum()):4d} | "
                   f"{np.median([d['[0.05,0.95)'] for d in rows]):20.4g}")
         verdict_table(Rs, args)
+        compare_table(Rs)
         print('noise of theta_t, median over runs (tau_int(<=100) | tau_int(<=lmax) | acf(1) | E[z^2]):')
         for w in Rs[0]['noise']:
             g_ = lambda key: np.median([r['noise'][w][key] for r in Rs if w in r['noise']])

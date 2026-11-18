@@ -18,6 +18,23 @@ is tested against the exact truth.
 Phase 2 only (this script): reads the systems (memory-mapped; only t, M, b, live, meta are touched)
 and the phase-1 Theta files, writes <out>/xseed_<arm>.pt and prints the table.
 
+--sigma_rule (rule B, added 2026-11-18; rule A above is unchanged): cross-seed CV in the walker-covariance metric,
+on t >= e for each --ends value only:
+
+    L_AB(lam) = sum_{k: t_k >= e} w_k [ 1/2 Theta_A,k^T Sigma_A,k Theta_A,k - Theta_A,k^T Sigma_A,k theta_B,k ]
+
+Sigma_A,k = Cov_w(phi) of the SCORED seed A (system key 'Sigma', node k; memory-mapped, only the nodes of the
+window are read); theta_B = seed B's lam = 0 Theta file (per-step solve with the run's ridge); statistics dead
+at node k in A or in B are set to 0 in both curves. Sigma_A, not Sigma_B: Sigma_B and theta_B come from the
+same walkers and would correlate in the cross term (user's specification). Up to a lam-independent term
+L_AB = 1/2 |Theta_A(lam) - theta_B|^2 in the Sigma_A metric.
+Also, as a check of the code, the same loss with seed B's ridged M as the metric (masked with B's live set
+only): since M_B theta_B = b_B on the live entries, it must equal rule A's loss to the solve's rounding
+(max relative difference printed; the run stops if the argmins differ).
+Both rules: per-pair argmins and a leave-one-seed-out jackknife of the pooled argmin (S values). Output
+<out>/xseed_<arm>_sigma.pt (the rule-A file xseed_<arm>.pt is not written in this mode).
+A pair loss that is NaN stops the run (both modes; it used to be dropped by nansum).
+
 Usage (Jean Zay, after phase 1; launch_turb_xseed.sh does both phases):
   python lam_selection_criterion/turb_xseed.py --systems S900.pt S901.pt ... --sweep_dir DIR \
       --lams 0 1e-6 ... --ridge 1e-4 --arm noSm30_reg1e-4 --out DIR
@@ -51,6 +68,9 @@ def parse_args():
     p.add_argument('--arm', required=True, help='name used in the output file')
     p.add_argument('--out', type=Path, required=True)
     p.add_argument('--chunk', type=int, default=256, help='nodes per block of the data-term sum')
+    p.add_argument('--sigma_rule', action='store_true',
+                   help='also rule B (Sigma_A metric, on the --ends windows), the M_B check and the jackknife; '
+                        'writes xseed_<arm>_sigma.pt instead of xseed_<arm>.pt')
     p.add_argument('--threads', type=int, default=int(os.environ.get('SLURM_CPUS_PER_TASK', 0)) or None)
     return p.parse_args()
 
@@ -75,14 +95,18 @@ def interp_rows(t_src, Th, t_dst):
     return (1 - w) * Th[..., j - 1, :] + w * Th[..., j, :]
 
 
-def data_terms(sysB, Th, ridge, windows, chunk):
+def data_terms(sysB, Th, ridge, windows, chunk, T0B=None):
     """Th (C, n-1, r): curves on B's nodes 1..n-1 (the phase-1 files drop node 0, as the solver
-    output). Returns {window: (C,) loss}."""
+    output). Returns {window: (C,) loss}.
+    T0B (n-1, r), optional (--sigma_rule check): seed B's lam = 0 curve; then also returns
+    {window: (C,) loss} of 1/2 X^T M_B X - X^T M_B T0B (same mask, same ridged M), which must equal the
+    rule-A loss to rounding because M_B T0B = b_B on the live entries."""
     t = sysB['t'].double().numpy()[1:]
     w = torch.as_tensor(trapezoid_node_weights(t))
     live = sysB['live'][1:].bool() if 'live' in sysB else None
     n = len(t)
     q = torch.zeros(Th.shape[0], n, dtype=torch.float64)
+    qc = torch.zeros(Th.shape[0], n, dtype=torch.float64) if T0B is not None else None
     for a in range(0, n, chunk):
         ks = range(a + 1, min(a + chunk, n) + 1)                       # system rows (node 0 dropped)
         M = torch.stack([sysB['M'][k] for k in ks]).double()
@@ -93,9 +117,51 @@ def data_terms(sysB, Th, ridge, windows, chunk):
         X = Th[:, a:a + len(ks)]
         if live is not None:
             X = X * live[a:a + len(ks)].to(X.dtype)
-        q[:, a:a + len(ks)] = 0.5 * torch.einsum('cki,kij,ckj->ck', X, M, X) - torch.einsum('cki,ki->ck', X, b)
-    return {name: (q[:, m] * w[m]).sum(1) for name, m in
-            ((name, torch.as_tensor(sel(t))) for name, sel in windows.items())}
+        MX = torch.einsum('kij,ckj->cki', M, X)
+        q[:, a:a + len(ks)] = 0.5 * (X * MX).sum(-1) - torch.einsum('cki,ki->ck', X, b)
+        if qc is not None:
+            Y = T0B[a:a + len(ks)]
+            if live is not None:
+                Y = Y * live[a:a + len(ks)].to(Y.dtype)
+            qc[:, a:a + len(ks)] = ((0.5 * X - Y[None]) * MX).sum(-1)    # X^T M Y = (M X) . Y, M symmetric
+    masks = {name: torch.as_tensor(sel(t)) for name, sel in windows.items()}
+    out = {name: (q[:, m] * w[m]).sum(1) for name, m in masks.items()}
+    if qc is None:
+        return out
+    return out, {name: (qc[:, m] * w[m]).sum(1) for name, m in masks.items()}
+
+
+def sigma_terms(sysA, ThA, others, ends, chunk):
+    """Rule B for the scored seed A. ThA (L, n-1, r): A's curves; others {b_i: (T0, liveB)}: seed B's
+    lam = 0 curve (n-1, r) and live mask (n-1, r) bool or None, both on A's nodes. Statistics dead in A or
+    in B at a node are set to 0 in both curves. Only the nodes with t >= min(ends) are read from A's Sigma.
+    Returns {b_i: {end: (L,) loss}}."""
+    t = sysA['t'].double().numpy()[1:]
+    w = torch.as_tensor(trapezoid_node_weights(t))
+    liveA = sysA['live'][1:].bool() if 'live' in sysA else None
+    nodes = np.flatnonzero(t >= min(ends))
+    L = ThA.shape[0]
+    q = {b_i: torch.zeros(L, len(nodes), dtype=torch.float64) for b_i in others}
+    for a in range(0, len(nodes), chunk):
+        nd = nodes[a:a + chunk]
+        ndt = torch.as_tensor(nd)
+        S = torch.stack([sysA['Sigma'][int(k) + 1] for k in nd]).double()   # system rows (node 0 dropped)
+        S = (S + S.transpose(1, 2)) / 2
+        X0 = ThA[:, ndt]
+        for b_i, (T0, liveB) in others.items():
+            live = torch.ones(X0.shape[1:], dtype=torch.bool)
+            if liveA is not None:
+                live &= liveA[ndt]
+            if liveB is not None:
+                live &= liveB[ndt]
+            mask = live.to(X0.dtype)
+            X, Y = X0 * mask, T0[ndt] * mask
+            SX = torch.einsum('kij,lkj->lki', S, X)
+            q[b_i][:, a:a + len(nd)] = ((0.5 * X - Y[None]) * SX).sum(-1)   # X^T S Y = (S X) . Y, S symmetric
+    wn = w[torch.as_tensor(nodes)]
+    tn = t[nodes]
+    return {b_i: {e: (qq[:, torch.as_tensor(tn >= e)] * wn[torch.as_tensor(tn >= e)]).sum(1) for e in ends}
+            for b_i, qq in q.items()}
 
 
 def main():
@@ -138,7 +204,12 @@ def main():
 
     # L[A, B, lam, window]
     S, L = len(seeds), len(lams)
+    if args.sigma_rule and 0.0 not in lams:
+        sys.exit('--sigma_rule needs lam = 0 in --lams (theta_B is the lam = 0 solve)')
+    i0 = lams.index(0.0) if 0.0 in lams else None
+    end_names = {e: f'end{e:g}' for e in args.ends}
     loss = {w: np.full((S, S, L), np.nan) for w in windows}
+    loss_chk = {end_names[e]: np.full((S, S, L), np.nan) for e in args.ends} if args.sigma_rule else None
     for b_i, sb in enumerate(seeds):
         t1 = time.time()
         sysB = load_system(sb['path'])
@@ -149,33 +220,117 @@ def main():
             for t_a, th in Theta[seeds[a_i]['config']]:
                 Th.append(th if same_grid else interp_rows(t_a, th, tB))
         Th = torch.stack(Th)                                           # (len(others) * L, n-1, r)
-        res = data_terms(sysB, Th, args.ridge, windows, args.chunk)
+        if args.sigma_rule:
+            t_b, T0B = Theta[sb['config']][i0]
+            res, chk = data_terms(sysB, Th, args.ridge, windows, args.chunk,
+                                  T0B=T0B if same_grid else interp_rows(t_b, T0B, tB))
+            for e, wn in end_names.items():
+                loss_chk[wn][others, b_i, :] = chk[wn].numpy().reshape(len(others), L)
+        else:
+            res = data_terms(sysB, Th, args.ridge, windows, args.chunk)
         for w in windows:
             loss[w][others, b_i, :] = res[w].numpy().reshape(len(others), L)
         del sysB, Th
-        print(f'  scored with seed {sb["config"][-40:]} ({time.time() - t1:.0f} s)', flush=True)
+        print(f'  rule A: scored with seed {sb["config"][-40:]} ({time.time() - t1:.0f} s)', flush=True)
+
+    loss_sig = None
+    if args.sigma_rule:
+        loss_sig = {end_names[e]: np.full((S, S, L), np.nan) for e in args.ends}
+        lives = {}
+        for b_i, sb in enumerate(seeds):                               # live masks only (small), on B's nodes
+            s_ = load_system(sb['path'])
+            lives[b_i] = s_['live'][1:].bool().clone() if 'live' in s_ else None
+            del s_
+        for a_i, sa in enumerate(seeds):
+            t1 = time.time()
+            sysA = load_system(sa['path'])
+            if 'Sigma' not in sysA:
+                sys.exit(f'{sa["path"].name}: no Sigma in the system (needed by --sigma_rule)')
+            tA = sysA['t'].double().numpy()[1:]
+            ThA = torch.stack([th for _, th in Theta[sa['config']]])   # (L, n-1, r), A's own grid
+            others = {}
+            for b_i, sb in enumerate(seeds):
+                if b_i == a_i:
+                    continue
+                t_b, T0 = Theta[sb['config']][i0]
+                lv = lives[b_i]
+                if not same_grid:                                      # B's curve and mask onto A's nodes
+                    T0 = interp_rows(t_b, T0, tA)
+                    j = np.clip(np.searchsorted(t_b, tA), 0, len(t_b) - 1)
+                    lv = None if lv is None else lv[torch.as_tensor(j)]
+                others[b_i] = (T0, lv)
+            res = sigma_terms(sysA, ThA, others, args.ends, args.chunk)
+            for b_i, d in res.items():
+                for e, wn in end_names.items():
+                    loss_sig[wn][a_i, b_i, :] = d[e].numpy()
+            del sysA, ThA
+            print(f'  rule B: scored seed {sa["config"][-40:]} in its Sigma metric ({time.time() - t1:.0f} s)', flush=True)
+
+    def check_finite(name, arr):
+        off = ~np.eye(S, dtype=bool)
+        bad = [(a, b) for a in range(S) for b in range(S) if off[a, b] and not np.isfinite(arr[a, b]).all()]
+        if bad:
+            sys.exit(f'{name}: non-finite pair loss for (A, B) = {bad} (seed order {[sd["config"][-40:] for sd in seeds]})')
+
+    def report(rule, w, arr):
+        """Pooled argmin, per-pair argmins, leave-one-seed-out jackknife."""
+        check_finite(f'rule {rule} {w}', arr)
+        off = ~np.eye(S, dtype=bool)
+        pooled = arr[off].sum(0)                                       # (L,)
+        i = int(np.argmin(pooled))
+        sel = lams[i]
+        pairs = [lams[int(np.argmin(arr[a, b]))] for a in range(S) for b in range(S) if a != b]
+        jk = []
+        for s in range(S):
+            keep = off.copy()
+            keep[s, :] = keep[:, s] = False
+            jk.append(lams[int(np.argmin(arr[keep].sum(0)))] if keep.any() else None)
+        edge = sel in (min(l_ for l_ in lams if l_ > 0), max(lams)) if sel > 0 else False
+        counts = {l_: pairs.count(l_) for l_ in sorted(set(pairs))}
+        print(f"\n  rule {rule} {w:>9}: selected lam = {sel:g}{'  (GRID EDGE: extend the grid)' if edge else ''}"
+              f"{'  (lam = 0: no smoothing preferred)' if sel == 0 else ''}")
+        print(f"             per pair: " + ', '.join(f'{l_:g} x{c}' for l_, c in counts.items()))
+        print(f"             jackknife (leave seed out, in seed order): " + ', '.join('none' if l_ is None else f'{l_:g}' for l_ in jk)
+              + ('  (2 seeds: no pair left when one is dropped)' if S == 2 else ''))
+        print('             pooled loss - min:  ' + '  '.join(f'{l_:g}: {v - pooled[i]:.3g}' for l_, v in zip(lams, pooled)))
+        return sel, pairs, jk, pooled
 
     out = dict(arm=args.arm, lams=lams, seeds=[sd['config'] for sd in seeds], ridge=args.ridge,
                schedule=args.schedule, same_grid=same_grid, loss=loss, selected={}, pair_selected={},
-               theta_files={})
+               jackknife={}, theta_files={})
     print(f'\n######## {args.arm}: cross-seed CV over {S} seeds ({S * (S - 1)} ordered pairs), '
           f'{args.schedule} weights, ridge {args.ridge:g}')
     for w in windows:
-        pooled = np.nansum(loss[w], axis=(0, 1))                       # (L,)
-        i = int(np.argmin(pooled))
-        sel = lams[i]
-        pairs = [lams[int(np.argmin(loss[w][a, b]))] for a in range(S) for b in range(S) if a != b]
-        out['selected'][w], out['pair_selected'][w] = sel, pairs
-        edge = sel in (min(l_ for l_ in lams if l_ > 0), max(lams)) if sel > 0 else False
-        counts = {l_: pairs.count(l_) for l_ in sorted(set(pairs))}
-        print(f"\n  {w:>9}: selected lam = {sel:g}{'  (GRID EDGE: extend the grid)' if edge else ''}"
-              f"{'  (lam = 0: no smoothing preferred)' if sel == 0 else ''}")
-        print(f"             per pair: " + ', '.join(f'{l_:g} x{c}' for l_, c in counts.items()))
-        print('             pooled loss - min:  ' + '  '.join(f'{l_:g}: {v - pooled[i]:.3g}' for l_, v in zip(lams, pooled)))
+        sel, pairs, jk, _ = report('A (M_B metric)', w, loss[w])
+        out['selected'][w], out['pair_selected'][w], out['jackknife'][w] = sel, pairs, jk
         out['theta_files'][w] = {sd['config']: str(out_path(args.sweep_dir, sd['config'], sel, args.ridge, 'moment',
                                                           args.schedule, sd['mask'])) for sd in seeds}
+    if args.sigma_rule:
+        out.update(loss_sigma=loss_sig, loss_check_MB=loss_chk, selected_sigma={}, pair_selected_sigma={},
+                   jackknife_sigma={}, theta_files_sigma={}, check_MB={})
+        print('\n  check: rule A recomputed as 1/2 X^T M_B X - X^T M_B theta_B(0) (must equal rule A to rounding)')
+        for wn in loss_chk:
+            check_finite(f'check {wn}', loss_chk[wn])
+            off = ~np.eye(S, dtype=bool)
+            a_, c_ = loss[wn][off], loss_chk[wn][off]
+            scale = np.abs(a_).max(axis=-1, keepdims=True).clip(1e-300)
+            rel = float((np.abs(a_ - c_) / scale).max())
+            same = int(np.argmin(a_.sum(0))) == int(np.argmin(c_.sum(0)))
+            out['check_MB'][wn] = dict(max_rel_diff=rel, same_argmin=same)
+            print(f'    {wn}: max |A - check| / max|A| per pair = {rel:.2e}, pooled argmin identical: {same}')
+            if not same:
+                sys.exit(f'CHECK FAILED ({wn}): the M_B form of the loss picks another lam than rule A; '
+                         f'rule B results not reported')
+        for wn in loss_sig:
+            sel, pairs, jk, _ = report('B (Sigma_A metric)', wn, loss_sig[wn])
+            out['selected_sigma'][wn], out['pair_selected_sigma'][wn], out['jackknife_sigma'][wn] = sel, pairs, jk
+            out['theta_files_sigma'][wn] = {sd['config']: str(out_path(args.sweep_dir, sd['config'], sel, args.ridge,
+                                                                       'moment', args.schedule, sd['mask']))
+                                            for sd in seeds}
+        print('\n  side by side (pooled argmin):  ' +
+              '  '.join(f"{wn}: A {out['selected'][wn]:g} | B {out['selected_sigma'][wn]:g}" for wn in loss_sig))
     args.out.mkdir(parents=True, exist_ok=True)
-    dest = args.out / f'xseed_{args.arm}.pt'
+    dest = args.out / (f'xseed_{args.arm}_sigma.pt' if args.sigma_rule else f'xseed_{args.arm}.pt')
     torch.save(out, dest)
     print(f'\n-> {dest}  (Theta of the selected lam per seed: out["theta_files"][window]); total {time.time() - t0:.0f} s')
 
