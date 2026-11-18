@@ -122,10 +122,20 @@ def parse_args():
                         'cell (SDE._solve_regularised_thomas). One solve per (lam, eps). eps in the units of the '
                         'generalised eigenvalues mu of C v = mu M v (codes/c_spectrum_gen.py). 0 = unchanged, '
                         'same file name as before; eps > 0 adds _cfl<eps> to the name.')
+    p.add_argument('--c_shrink', nargs='+', type=float, default=None,
+                   help='(2026-11-17, moment mode) replace C by (1 - alpha) C + alpha diag(C) in the time term '
+                        '(SDE._solve_regularised_thomas). One solve per (lam, alpha). alpha in [0, 1] (1 = pure '
+                        'diagonal), or a negative value = per-cell Gaussian plug-in alpha (needs n_walkers in the '
+                        'meta or --n_walkers). Adds _shr<alpha> (or _shrG) to the name. Exclusive with --c_floor_eps.')
     p.add_argument('--node_stride', type=int, default=1,
                    help='keep every m-th node (plus the last) before the solve: cells then span m steps, so the '
                         'directions of C filled by one step of SDE noise (mu ~ 2 h sigma^2) move to ~2 m h sigma^2. '
                         'Grid-dependence test (2026-11-11). 1 = all nodes, unchanged; m > 1 adds _stride<m> to the name.')
+    p.add_argument('--drop_last', type=int, default=0,
+                   help='(2026-11-18) drop the last N nodes before the solve, e.g. the terminal-phase rows of a run '
+                        'launched with --terminal_in_system (N = terminal steps logged in aux_moments/<cfg>_terminal.pt): '
+                        'solve on the planned grid only, from the same walkers. 0 = all nodes, unchanged; N > 0 adds '
+                        '_droplast<N> to the name. Not with --select.')
     p.add_argument('--mmap', action='store_true',
                    help='torch.load(..., mmap=True): the system stays file-backed instead of copied '
                         'into RAM (same numbers)')
@@ -298,6 +308,23 @@ def stride_inputs(inp, m):
     return out
 
 
+def drop_last_inputs(inp, n_drop):
+    """Keep nodes 0 .. n - n_drop - 1 (the first node stays: it is dropped after the solve as always)."""
+    n = len(inp['t'])
+    if not 0 < n_drop <= n - 3:
+        raise ValueError(f'--drop_last {n_drop} with {n} nodes: need 0 < N <= n - 3')
+    keep = n - n_drop
+    out = dict(inp)
+    out['t'] = inp['t'][:keep]
+    for key in ('M', 'C', 'b', 'v'):
+        out[key] = [inp[key][k] for k in range(keep)]
+    if inp.get('h') is not None:
+        out['h'] = np.asarray(inp['h'])[:keep]
+    if inp.get('live') is not None:
+        out['live'] = inp['live'][:keep]
+    return out
+
+
 def diagnose(inp, n_nodes):
     """Conditioning of the per-node blocks (Jacobi-scaled, float64): at lam=0 the solve is
     M_k theta = b_k (+ ridge), so an exactly rank-deficient M_k is singular."""
@@ -343,6 +370,13 @@ def main():
         log_mem(f'after load ({system_path.stat().st_size / 1e9:.1f} GB file, mmap {args.mmap})')
         mode = args.mode or system.get('meta', {}).get('reg_mode', 'legacy')
         inp = build_inputs(system, config, args, mode)
+        n_all = len(inp['t'])
+        if args.drop_last:
+            if args.select:
+                raise ValueError(f'[{config}] --drop_last is not supported with --select')
+            inp = drop_last_inputs(inp, args.drop_last)
+            print(f'[{config}] drop_last {args.drop_last}: {len(inp["t"])} of {n_all} nodes kept, last t '
+                  f'{inp["t"][-1]:.12f} (1 - t = {1 - inp["t"][-1]:.3e}; dropped up to 1 - t = {1 - float(system["t"][-1]):.3e})')
         if args.node_stride > 1:
             inp = stride_inputs(inp, args.node_stride)
             print(f'[{config}] node_stride {args.node_stride}: {len(inp["t"])} nodes kept')
@@ -363,7 +397,7 @@ def main():
             from codes.theta_reg_bounds import eps_from_sigma
             a_, b_ = (int(x) for x in args.neg_cols.split(':'))
             cols = list(range(a_, b_))
-            upper = -eps_from_sigma(system['Sigma'], cols, args.neg_eps_nats)
+            upper = -eps_from_sigma(system['Sigma'], cols, args.neg_eps_nats)[:len(inp['t'])]   # --drop_last
             upper[torch.as_tensor(inp['t']) < args.neg_t_min] = float('inf')
             neg = dict(cols=cols, eps_nats=args.neg_eps_nats, t_min=args.neg_t_min)
             print(f'[{config}] bounds Theta <= -eps on columns {a_}:{b_} at {int((inp["t"] >= args.neg_t_min).sum())} '
@@ -391,19 +425,26 @@ def main():
             print(f'[{config}] lam path ({len(res["lams"])} values) -> {dest}')
             continue
 
-        stride_tag = f'_stride{args.node_stride}' if args.node_stride > 1 else ''
-        eps_extra = lambda e: extra0 + (f'_cfl{e:g}' if e else '') + stride_tag
-        todo = [(lam, e) for e in args.c_floor_eps for lam in args.lams
+        stride_tag = (f'_stride{args.node_stride}' if args.node_stride > 1 else '') + \
+            (f'_droplast{args.drop_last}' if args.drop_last else '')
+        shrinks = args.c_shrink if args.c_shrink is not None else [None]
+        if args.c_shrink is not None and (mode != 'moment' or neg is not None or any(e for e in args.c_floor_eps)):
+            raise ValueError(f'[{config}] --c_shrink needs moment mode, no --neg_cols, no --c_floor_eps')
+        shr_tag = lambda s: '' if s is None else ('_shrG' if s < 0 else f'_shr{s:g}')
+        eps_extra = lambda e, s=None: extra0 + (f'_cfl{e:g}' if e else '') + shr_tag(s) + stride_tag
+        todo = [(lam, e, s) for s in shrinks for e in args.c_floor_eps for lam in args.lams
                 if args.overwrite or not out_path(args.outdir, config, lam, args.ridge, mode,
-                                                  args.schedule, inp['mask'], eps_extra(e)).exists()]
+                                                  args.schedule, inp['mask'], eps_extra(e, s)).exists()]
         if not todo:
-            print(f'[{config}] all {len(args.lams)} x {len(args.c_floor_eps)} (lam, eps) values already solved, skipping')
+            print(f'[{config}] all {len(args.lams)} x {len(args.c_floor_eps)} x {len(shrinks)} (lam, eps, shrink) '
+                  f'values already solved, skipping')
             continue
         solver_self = types.SimpleNamespace(num_potentials=inp['r'])
         failed = []
-        for lam, c_eps in todo:
-            extra = eps_extra(c_eps)
+        for lam, c_eps, c_shr in todo:
+            extra = eps_extra(c_eps, c_shr)
             solver_self.last_c_floor_shrink = None
+            solver_self.last_c_shrink_alpha = None
             t1 = time.time()
             try:
                 if neg is not None:
@@ -426,7 +467,7 @@ def main():
                         Theta = SDE._solve_regularised_thomas(
                             solver_self, inp['t'], inp['M'], inp['C'], inp['b'], inp['v'], lam,
                             ridge=args.ridge, mode=mode, dim=inp['dim'], schedule=args.schedule,
-                            live=inp['live'], c_floor_eps=c_eps)
+                            live=inp['live'], c_floor_eps=c_eps, c_shrink=c_shr, n_walkers=inp['n_walkers'])
                     neg_info = None
             except torch.linalg.LinAlgError as e:              # log, keep going with the next lam
                 print(f'[{config}] lam={lam:g} eps={c_eps:g}: FAILED after {time.time() - t1:.0f} s: {e}')
@@ -442,11 +483,15 @@ def main():
             torch.save({'Theta_reg': Theta[1:].clone(), 't_reg': torch.as_tensor(inp['t'][1:]),
                         'lam': lam, 'residual': solver_self.last_reg_residual, 'neg': neg_info,
                         'c_floor_eps': c_eps, 'c_floor_shrink': solver_self.last_c_floor_shrink,
+                        'c_shrink': c_shr, 'c_shrink_alpha': solver_self.last_c_shrink_alpha,
                         **common}, tmp)
             tmp.replace(dest)
             log_mem(f'after lam={lam:g}')
             shr = solver_self.last_c_floor_shrink
+            al = solver_self.last_c_shrink_alpha
             print(f'[{config}] lam={lam:g} eps={c_eps:g}' + (f' (median |mdot_eff|^2/|mdot|^2 {shr:.3g})' if shr is not None else '')
+                  + ('' if c_shr is None else f' shrink {"G" if c_shr < 0 else f"{c_shr:g}"} (alpha median '
+                     f'{np.median(al):.3g}, min {al.min():.3g}, max {al.max():.3g})')
                   + f': residual {solver_self.last_reg_residual:.2e}, '
                   f'finite {bool(torch.isfinite(Theta).all())}, {time.time() - t1:.0f} s -> {dest}')
 

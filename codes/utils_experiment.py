@@ -359,6 +359,19 @@ def resolve_reg_mode(args):
     return mode
 
 
+def log_peak_memory(logger):
+    """Log the peak memory of this process since it started (2026-11-18, for the 2D timing runs): GPU peak allocated
+    and peak reserved by PyTorch's allocator (the reserved figure is what the GPU actually holds), and CPU peak
+    resident set size (ru_maxrss, kB on Linux). Read-only: changes nothing in the computation."""
+    import resource
+    cpu = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss / 1024**2
+    if torch.cuda.is_available():
+        logger.info('Peak memory: GPU allocated %.2f GiB, GPU reserved %.2f GiB, CPU RSS %.2f GiB',
+                    torch.cuda.max_memory_allocated() / 2**30, torch.cuda.max_memory_reserved() / 2**30, cpu)
+    else:
+        logger.info('Peak memory: CPU RSS %.2f GiB', cpu)
+
+
 def run_experiment(args, M, config, x1, filters, t, logger, outdir, device,
                    filters_Q=None, filters_Phi=None, normalize_potentials=False,
                    potentials_save_dir=None, adaptive=None, dwt=None,

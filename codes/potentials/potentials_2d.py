@@ -117,7 +117,13 @@ class Scattering_Second_Order_2d(Potential):
 
     def grad(self, x, v=None, precomputed=None, means=None):
         filters = self.filters.to(x.device)
-        
+
+        if v is not None and precomputed is None:
+            # 2026-11-17 (port of the 1D change, 846ab19): sum_j v_j 2 Re ifft2(fft2(x) psi_j^2) / MN
+            # = 2 Re ifft2(fft2(x) sum_j v_j psi_j^2) / MN: one FFT pair instead of one per channel; same up to round-off
+            H = (filters**2 * v[None, :, None, None]).sum(1, keepdim=True)        # (1, 1, M, N)
+            return 2*torch.fft.ifft2(torch.fft.fft2(x)*H).real/(x.shape[-2]*x.shape[-1])
+
         if precomputed==None:
             x_filtered_2 = torch.fft.ifft2(torch.fft.fft2(x)*filters**2)
         else:
@@ -194,14 +200,17 @@ class Scattering_Third_Order_Real_2d(Potential):
             
             return (result_conv_phase.sum(1) + result_conv_modulus.sum(1)).real[:,None]/(x.shape[-2]*x.shape[-1])
         
-        result_conv_phase = x_filtered_over_abs[:,:-1,None]*torch.real(x_filtered_2)[:,None]
-        result_conv_phase = torch.fft.ifft2(filters[:,:-1,None]*torch.fft.fft2(result_conv_phase))
+        # Full Jacobian (2026-11-17, port of the 1D change b50b9bc). grad phi_jk = P_jk + Q_jk: P (result_conv_phase)
+        # = derivative through |W_j x| = W_j^*( (W_j x/|W_j x|) Re(psi_k^2 * x) ) / MN; Q (result_conv_modulus)
+        # = derivative through psi_k^2 * x = psi_k^2 * |W_j x| / MN. Each depends on its own (j, k) only, so both are
+        # evaluated on the K kept pairs (was: on the full JL x (JL+1) grid, then restricted).
+        j, k = indices.long()
+        result_conv_phase = x_filtered_over_abs[:, j]*torch.real(x_filtered_2)[:, k]
+        result_conv_phase = torch.fft.ifft2(filters[:, j]*torch.fft.fft2(result_conv_phase))
 
-        result_conv_modulus = torch.fft.ifft2(filters[:,None]**2*torch.fft.fft2(x_filtered_abs)[:,:-1,None])
+        result_conv_modulus = torch.fft.ifft2(filters[:, k]**2*torch.fft.fft2(x_filtered_abs)[:, j])
 
-        output = (result_conv_phase + result_conv_modulus).real
-
-        output = output[:, indices[0], indices[1]]/(x.shape[-2]*x.shape[-1])
+        output = (result_conv_phase + result_conv_modulus).real/(x.shape[-2]*x.shape[-1])
 
         return output
 
@@ -213,11 +222,14 @@ class Scattering_Fourth_Order_Real_2d(Potential):
         self.filters = filters
 
         self.num_coefficients = int(L*J/12*((2*J**2+1)*L**2+(3*J*(L+3)+3)*L+6))
+        # 2026-11-18: built once here (was: rebuilt by a Python loop at every forward/grad call, ~2090 triples at J 5,
+        # L 4), as the Imag classes already do. Same tensor, so results are bit-identical.
+        self.indices = indices_fourth_order(J, L)
 
     def forward(self, x):
 
         filters = self.filters.to(x.device)
-        
+
         x_filtered = torch.fft.ifft2(filters*torch.fft.fft2(x))
         x_filtered_abs = abs_eps(x_filtered)
         
@@ -226,8 +238,8 @@ class Scattering_Fourth_Order_Real_2d(Potential):
         output = output.mean(-1).mean(-1)
         output = output.permute(0, 3, 2, 1)
         
-        indices = indices_fourth_order(self.J,self.L).long()
-        
+        indices = self.indices.long()
+
         output = output[:, indices[0], indices[1], indices[2]]
         
         output = output.reshape(x.shape[0], indices.shape[1])
@@ -251,7 +263,7 @@ class Scattering_Fourth_Order_Real_2d(Potential):
 
         x_filtered_abs_no_LF_filtered_2 = torch.fft.ifft2((torch.fft.fft2(x_filtered_abs_no_LF)[:,:,None]*filters**2)) # (B,J*L,J*L+1,M,N) #no 2*, x_filtered_abs_no_LF
         
-        indices = indices_fourth_order(self.J,self.L)
+        indices = self.indices
 
 
 
@@ -295,6 +307,11 @@ class L2p_norm_2d(Potential):
         filters = self.filters.to(x.device)
         x_filtered = torch.fft.ifft2(filters*torch.fft.fft2(x))
         output = x_filtered*(2*self.p)*(torch.abs(x_filtered)**(2*self.p-2))
+        if v is not None:
+            # 2026-11-17 (port of the 1D change, 846ab19): sum_j v_j Re ifft2(conj(psi_j) fft2(D_j)) / MN
+            # = Re ifft2(sum_j v_j conj(psi_j) fft2(D_j)) / MN: one inverse FFT instead of one per channel; same up to round-off
+            S = (filters.conj()*torch.fft.fft2(output)*v[None, :, None, None]).sum(1, keepdim=True)
+            return torch.fft.ifft2(S).real/(x.shape[-2]*x.shape[-1])
         output = torch.fft.ifft2(filters.conj()*torch.fft.fft2(output)).real
         if v is None:
             return output/(x.shape[-2]*x.shape[-1])
@@ -351,11 +368,12 @@ class Scattering_Third_Order_Imag_2d(Potential):
             result_conv_modulus = torch.fft.ifft2(filters_abs2_flip*torch.fft.fft2(x_filtered_abs_weighted))
             return (result_conv_phase.sum(1).real - result_conv_modulus.sum(1).imag)[:, None]/norm
 
-        result_conv_phase = x_filtered_over_abs[:, :-1, None]*(-torch.imag(x_filtered_2))[:, None]
-        result_conv_phase = torch.fft.ifft2(filters[:, :-1, None].conj()*torch.fft.fft2(result_conv_phase))
-        result_conv_modulus = torch.fft.ifft2(filters_abs2_flip[:, None]*torch.fft.fft2(x_filtered_abs)[:, :-1, None])
-        output = result_conv_phase.real - result_conv_modulus.imag
-        return output[:, indices[0], indices[1]]/norm
+        # Full Jacobian (2026-11-17, port of the 1D change b50b9bc): same restriction to the kept pairs as the Real class.
+        j, k = indices.long()
+        result_conv_phase = x_filtered_over_abs[:, j]*(-torch.imag(x_filtered_2))[:, k]
+        result_conv_phase = torch.fft.ifft2(filters[:, j].conj()*torch.fft.fft2(result_conv_phase))
+        result_conv_modulus = torch.fft.ifft2(filters_abs2_flip[:, k]*torch.fft.fft2(x_filtered_abs)[:, j])
+        return (result_conv_phase.real - result_conv_modulus.imag)/norm
 
 
 def indices_fourth_order_imag(J, L):
@@ -426,18 +444,20 @@ class Scattering_Fourth_Order_Mod2_Real_2d(Potential):
         self.L = L
         self.filters = filters
         self.num_coefficients = int(L*J/12*((2*J**2+1)*L**2+(3*J*(L+3)+3)*L+6))
+        # 2026-11-18: built once here (was: rebuilt by a Python loop at every forward/grad call), as the Imag classes
+        # already do. Same tensor, so results are bit-identical.
+        self.indices = indices_fourth_order(J, L)
 
     def forward(self, x):
         filters = self.filters.to(x.device)
         x_filtered = torch.fft.ifft2(filters*torch.fft.fft2(x))
         x_filtered_abs2 = abs_eps(x_filtered)**2
-        W_Wx = torch.fft.ifft2(filters[:, :, None] * torch.fft.fft2(x_filtered_abs2)[:, None])
-        output = torch.real(W_Wx[:, :, :, None] * W_Wx[:, :, None].conj())
-        output = output.mean(-1).mean(-1)
-        output = output.permute(0, 3, 2, 1)
-        indices = indices_fourth_order(self.J, self.L).long()
-        output = output[:, indices[0], indices[1], indices[2]]
-        return output.reshape(x.shape[0], indices.shape[1])
+        W_Wx = torch.fft.ifft2(filters[:, :, None] * torch.fft.fft2(x_filtered_abs2)[:, None])   # (B, F, F, M, N): [c, a] = psi_c * E_a
+        # statistic (i0, i1, i2) = mean_u Re[ (psi_i2 * E_i1) conj(psi_i2 * E_i0) ], evaluated on the kept triples only
+        # (2026-11-17, port of the 1D change 6733c36; was: all F x F x F products, a (B, F, F, F, M, N) intermediate,
+        # then indexed)
+        i0, i1, i2 = self.indices.long()
+        return torch.real(W_Wx[:, i2, i1] * W_Wx[:, i2, i0].conj()).mean(-1).mean(-1)          # (B, K)
 
     def grad(self, x, v=None, precomputed=None, means=None):
         filters = self.filters.to(x.device)
@@ -446,7 +466,7 @@ class Scattering_Fourth_Order_Mod2_Real_2d(Potential):
         x_filtered_abs2_no_LF = abs_eps(x_filtered_no_LF)**2
         x_filtered_grad = 2*x_filtered_no_LF
         x_filtered_abs2_no_LF_filtered_2 = torch.fft.ifft2(torch.fft.fft2(x_filtered_abs2_no_LF)[:, :, None]*filters**2)
-        indices = indices_fourth_order(self.J, self.L)
+        indices = self.indices
         norm = x.shape[-2]*x.shape[-1]
 
         if v is not None:
@@ -456,10 +476,16 @@ class Scattering_Fourth_Order_Mod2_Real_2d(Potential):
             intermediate_output = x_filtered_grad*torch.einsum('ijk, ajkbc -> aibc', m, torch.real(x_filtered_abs2_no_LF_filtered_2))
             return torch.fft.ifft2(filters[:, :-1]*torch.fft.fft2(intermediate_output)).real.sum(1)[:, None]/norm
 
-        intermediate_output = x_filtered_grad[:, :, None, None]*torch.real(x_filtered_abs2_no_LF_filtered_2)[:, None]
-        output = torch.fft.ifft2(filters[:, :-1, None, None]*torch.fft.fft2(intermediate_output)).real
-        output = output + torch.transpose(output, 1, 2)
-        return output[:, indices[0], indices[1], indices[2]].reshape(x.shape[0], indices.shape[1], x.shape[-2], x.shape[-1])/norm
+        # Full Jacobian (2026-11-17, port of the 1D change 32101c3). grad phi_abc = T[a,b,c] + T[b,a,c] with
+        # T[a,b,c] = W_a^*( 2 W_a x . Re(psi_c^2 * |W_b x|^2) ): each T depends on its own (a,b,c) only, so only the
+        # 2K entries the K kept triples need are computed (was: all JL x JL x F, then indexed).
+        a, b, c = indices.long()
+        aa, bb, cc = torch.cat([a, b]), torch.cat([b, a]), torch.cat([c, c])          # (a,b,c) then partner (b,a,c)
+        Fr = torch.real(x_filtered_abs2_no_LF_filtered_2)                             # (B, JL, F, M, N)
+        T = x_filtered_grad[:, aa]*Fr[:, bb, cc]                                      # (B, 2K, M, N)
+        T = torch.fft.ifft2(filters[:, aa]*torch.fft.fft2(T)).real
+        K = a.shape[0]
+        return (T[:, :K] + T[:, K:])/norm
 
 
 class Scattering_Fourth_Order_Mod2_Imag_2d(Potential):
@@ -480,12 +506,11 @@ class Scattering_Fourth_Order_Mod2_Imag_2d(Potential):
         filters = self.filters.to(x.device)
         x_filtered = torch.fft.ifft2(filters*torch.fft.fft2(x))
         x_filtered_abs2 = abs_eps(x_filtered)**2
-        W_Wx = torch.fft.ifft2(filters[:, :, None] * torch.fft.fft2(x_filtered_abs2)[:, None])
-        output = torch.imag(W_Wx[:, :, :, None] * W_Wx[:, :, None].conj())
-        output = output.mean(-1).mean(-1)
-        output = output.permute(0, 3, 2, 1)
-        indices = self.indices.long()
-        return output[:, indices[0], indices[1], indices[2]].reshape(x.shape[0], indices.shape[1])
+        W_Wx = torch.fft.ifft2(filters[:, :, None] * torch.fft.fft2(x_filtered_abs2)[:, None])   # (B, F, F, M, N): [c, a] = psi_c * E_a
+        # statistic (i0, i1, i2) = mean_u Im[ (psi_i2 * E_i1) conj(psi_i2 * E_i0) ], kept triples only
+        # (2026-11-17, port of the 1D change 6733c36, as the Real class)
+        i0, i1, i2 = self.indices.long()
+        return torch.imag(W_Wx[:, i2, i1] * W_Wx[:, i2, i0].conj()).mean(-1).mean(-1)          # (B, K)
 
     def grad(self, x, v=None, precomputed=None, means=None):
         filters = self.filters.to(x.device)
@@ -504,7 +529,12 @@ class Scattering_Fourth_Order_Mod2_Imag_2d(Potential):
             intermediate_output = x_filtered_grad*torch.einsum('ijk, ajkbc -> aibc', m, S_A)
             return torch.fft.ifft2(filters[:, :-1]*torch.fft.fft2(intermediate_output)).real.sum(1)[:, None]/norm
 
-        intermediate_output = x_filtered_grad[:, :, None, None]*S_A[:, None]
-        output = torch.fft.ifft2(filters[:, :-1, None, None]*torch.fft.fft2(intermediate_output)).real
-        output = output - torch.transpose(output, 1, 2)
-        return output[:, indices[0], indices[1], indices[2]].reshape(x.shape[0], indices.shape[1], x.shape[-2], x.shape[-1])/norm
+        # Full Jacobian (2026-11-17, port of the 1D change 32101c3). grad phi_sBc = T[s,B,c] - T[B,s,c] with
+        # T[a,b,c] = W_a^*( 2 W_a x . S_c A_b ): each T depends on its own (a,b,c) only, so only the 2K entries the
+        # K kept triples need are computed (was: all JL x JL x F, then indexed).
+        a, b, c = indices.long()
+        aa, bb, cc = torch.cat([a, b]), torch.cat([b, a]), torch.cat([c, c])          # (a,b,c) then partner (b,a,c)
+        T = x_filtered_grad[:, aa]*S_A[:, bb, cc]                                     # (B, 2K, M, N)
+        T = torch.fft.ifft2(filters[:, aa]*torch.fft.fft2(T)).real
+        K = a.shape[0]
+        return (T[:, :K] - T[:, K:])/norm

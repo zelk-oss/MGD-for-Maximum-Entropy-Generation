@@ -60,7 +60,7 @@ from codes.utils_entropy import compute_gaussian_entropy        # noqa: E402
 from codes.filters_bank import return_Filters  # noqa: E402
 from codes.potentials_builder import get_2d_potentials          # noqa: E402
 from codes.time_schedules import add_schedule_args, build_time_grid   # noqa: E402
-from codes.utils_experiment import resolve_reg_mode             # noqa: E402
+from codes.utils_experiment import resolve_reg_mode, log_peak_memory   # noqa: E402
 
 device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 
@@ -356,6 +356,7 @@ def main():
                 solve_reg=not args.skip_reg_solve, adaptive=adaptive, reg_mode=resolve_reg_mode(args),
                 reg_schedule=args.reg_schedule)
             logger.info('SDE integration finished in %.1f s', timer.time() - t0)
+            log_peak_memory(logger)
             if adaptive is not None:
                 t = Solver.t
 

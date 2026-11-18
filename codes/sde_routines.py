@@ -1119,7 +1119,7 @@ class SDE(torch.nn.Module):
     def _solve_regularised_thomas(self, t, M, Gf, bb, cc, lam, eps_reg_theta=0.0,
                                   ridge=0.0, dtype=torch.float64, device='cpu',
                                   mode='legacy', dim=None, schedule='uniform', live=None, pin=None,
-                                  c_floor_eps=0.0):
+                                  c_floor_eps=0.0, c_shrink=None, n_walkers=None):
         """
         Same block-tridiagonal system as _solve_regularised, solved via block-Thomas
         elimination with block-Jacobi preconditioning instead of a dense (n*r, n*r)
@@ -1187,6 +1187,14 @@ class SDE(torch.nn.Module):
               (codes/c_spectrum_gen.py). 0 (default): this branch is never entered, the
               solve is the one above, unchanged. self.last_c_floor_shrink = median over
               cells of |mdot_eff|^2 / |mdot|^2 (live entries), as a diagnostic.
+
+        c_shrink : moment mode only (2026-11-17). None (default): unchanged. Otherwise the time term uses, per cell,
+              C_alpha = (1 - alpha) C + alpha diag(C) instead of C (mdot unchanged), so the cell minimiser solves
+              C_alpha Th' = mdot. alpha = c_shrink if c_shrink >= 0 (1 = pure diagonal: Th'_i = mdot_i / C_ii);
+              c_shrink < 0: per-cell Gaussian plug-in alpha* = sum_{i!=j} (c_ij^2 + c_ii c_jj) / ((N-1) sum_{i!=j}
+              c_ij^2), clipped to [0, 1] (needs n_walkers = N). C_alpha has full rank for alpha > 0 whenever every
+              live statistic has nonzero walker variance, whatever N; for alpha < 1 it keeps part of the
+              off-diagonal C. Exclusive with c_floor_eps. self.last_c_shrink_alpha = alpha per cell (n - 1,).
 
         (Called unbound by codes/resolve_theta_reg.py, codes/lam_select_cv.py and the
         bimodal port with a SimpleNamespace as self, so the body uses no other method
@@ -1282,6 +1290,38 @@ class SDE(torch.nn.Module):
 
                 def cb(k):                                 # -C (C + eps M)^-1 mdot on cell k
                     return cb_eff[k]
+
+            if c_shrink is not None:                       # 2026-11-17: shrink C toward its diagonal
+                if c_floor_eps:
+                    raise ValueError('c_shrink and c_floor_eps are exclusive')
+                live_np = None if live is None else np.asarray(live, dtype=bool).reshape(n, r)
+                Gb_full = Gb
+                alpha = np.empty(max(n - 1, 0))
+                for k in range(n - 1):
+                    if c_shrink >= 0:
+                        alpha[k] = float(c_shrink)
+                        continue
+                    # Gaussian plug-in for the Ledoit-Wolf / Schafer-Strimmer weight with target diag(C), from C and
+                    # N alone (the walker samples are not saved): Var(c_ij) ~ (c_ij^2 + c_ii c_jj) / (N - 1),
+                    # alpha* = sum_{i != j} Var(c_ij) / sum_{i != j} c_ij^2, clipped to [0, 1]; live entries only.
+                    if not n_walkers or n_walkers < 2:
+                        raise ValueError('c_shrink < 0 (Gaussian plug-in) needs n_walkers >= 2')
+                    C_ = Gb_full(k)
+                    lv = np.ones(r, dtype=bool) if live_np is None else (live_np[k] & live_np[k + 1])
+                    idx = torch.as_tensor(np.nonzero(lv)[0], device=device)
+                    Cl = C_[idx][:, idx]
+                    d = torch.diagonal(Cl)
+                    off2 = float((Cl ** 2).sum() - (d ** 2).sum())
+                    dd = float(d.sum() ** 2 - (d ** 2).sum())
+                    alpha[k] = 1.0 if off2 <= 0 else min(1.0, max(0.0, (off2 + dd) / (n_walkers - 1) / off2))
+                self.last_c_shrink_alpha = alpha
+
+                def Gb(k):                                 # (1 - alpha_k) C + alpha_k diag(C) on cell k
+                    C_ = Gb_full(k)
+                    if alpha[k] == 0.0:
+                        return C_
+                    D_ = torch.diag(torch.diagonal(C_))
+                    return D_ if alpha[k] == 1.0 else (1 - alpha[k]) * C_ + alpha[k] * D_
 
         def Db_raw(k):                                     # diagonal block A[k, k], unpinned
             D = a[k] * Mb(k)
