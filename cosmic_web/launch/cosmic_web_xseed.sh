@@ -8,6 +8,9 @@
 # Usage (repo root on Jean Zay), chained after the Theta_reg array (afterok):
 #   ARM=base GPU=v100 DEPEND=<Theta_reg array job id> bash cosmic_web/launch/cosmic_web_xseed.sh
 #   DRY=1 ...                                                                  # print only
+# TAG (2026-11-19): file suffix of the phase-1 solves: _shr1 (diagonal C), _shrG, _shr1_pinl6 ...; default '' = full C.
+#   Production: ARM=scat4 LABEL=scat4_np200_nt5000 TAG=_shr1 LAMS="1e-4 1e-3 1e-2 1e-1" GPU=h100 bash cosmic_web/launch/cosmic_web_xseed.sh
+#   (writes <XOUT>/xseed_<LABEL><TAG>.pt; rule A needs no lam = 0 file)
 # overrides: SEEDS, LAMS (same grid as phase 1), RIDGE (same as phase 1), LABEL, GPU (mandatory), TIME, CPUS,
 #   REG_SYSTEM_DIR, OUTDIR, XOUT
 
@@ -38,7 +41,7 @@ echo "  systems ${REG_SYSTEM_DIR}/*seed_<seed>_*.pt, Theta_reg sweep ${OUTDIR} -
 if [ -n "${DRY}" ]; then echo "(dry run: nothing submitted)"; exit 0; fi
 mkdir -p "${XOUT}" "${LOGDIR}"
 
-JOB=$(sbatch --parsable ${DEPEND:+--dependency=afterok:${DEPEND} --kill-on-invalid-dep=yes} <<EOT
+JOB=$(sbatch --parsable ${QOS:+--qos=${QOS}} ${DEPEND:+--dependency=afterok:${DEPEND} --kill-on-invalid-dep=yes} <<EOT
 #!/bin/bash
 #SBATCH --job-name=cw_xseed_${LABEL}
 #SBATCH --time=${TIME}
@@ -59,7 +62,7 @@ for SEED in ${SEED_LIST[@]}; do FILES+=( "${REG_SYSTEM_DIR}"/*seed_\${SEED}_*.pt
 if [ \${#FILES[@]} -ne ${#SEED_LIST[@]} ]; then echo "Error: expected ${#SEED_LIST[@]} system files, found \${#FILES[@]}"; printf '  %s\n' "\${FILES[@]}"; exit 1; fi
 echo "systems: \${FILES[@]}"
 python -u lam_selection_criterion/turb_xseed.py --systems "\${FILES[@]}" --sweep_dir "${OUTDIR}" \
-    --lams ${LAM_LIST[@]} --ridge ${RIDGE} --arm ${LABEL} --out "${XOUT}"
+    --lams ${LAM_LIST[@]} --ridge ${RIDGE} --arm ${LABEL} ${TAG:+--tag ${TAG}} --out "${XOUT}"
 EOT
 )
 if [ -z "${JOB}" ]; then echo "Error: sbatch returned no job id"; exit 1; fi

@@ -25,9 +25,13 @@ import torch
 import cw_common as cw
 
 
-def theta_file(arm, window, config, xs, lam, theta_dir):
+def theta_file(arm, window, config, xs, lam, theta_dir, tag=None):
     if xs is not None:
         return Path(xs['theta_files'][window][config]), float(xs['selected'][window])
+    if tag is not None:      # exact suffix: '' = full C, '_shr1', '_shrG', '_shr1_pinl6', ... (2026-11-18)
+        hits = sorted((Path(theta_dir) / config).glob(f'lam{lam:g}_ridge*_moment_mask{tag}.pt'))
+        assert hits, f'no Theta_reg file lam{lam:g}_ridge*_moment_mask{tag}.pt in {Path(theta_dir) / config}'
+        return hits[0], lam
     hits = sorted((Path(theta_dir) / config).glob(f'lam{lam:g}_ridge*.pt'))
     hits = [h for h in hits if 'neg' not in h.name and 'NOTCONVERGED' not in h.name]
     assert hits, f'no Theta_reg file lam{lam:g}_ridge*.pt in {Path(theta_dir) / config}'
@@ -47,6 +51,10 @@ def main():
     ap.add_argument('--window', default='end0.99', help='xseed window (what log p at t = 1 uses)')
     ap.add_argument('--lam', type=float, default=None, help='explicit lam instead of the xseed file (needs --theta_dir)')
     ap.add_argument('--theta_dir', default=None, help='folder with <config>/lam<lam>_ridge*.pt (resolve_theta_reg.py output)')
+    ap.add_argument('--tag', default=None,
+                    help='with --lam: exact file suffix after _moment_mask: "" = full C, _shr1, _shrG, _shr1_pinl6, ... '
+                         '(default: the old glob, first match, which is the FULL-C file when several exist)')
+    ap.add_argument('--out_tag', default='', help='appended to the output name logp_<arm><out_tag>.npz')
     ap.add_argument('--xseed_dir', type=Path, default=cw.RESULTS / 'xseed')
     ap.add_argument('--data_path', default=None, help='quijote.npy (default: the path in the run config)')
     ap.add_argument('--chunk', type=int, default=10, help='maps per forward pass (order-4 potentials are memory hungry)')
@@ -58,14 +66,15 @@ def main():
     for arm in a.arms:
         xs = None
         if a.lam is None:
-            xs = torch.load(a.xseed_dir / f'xseed_{arm}.pt', map_location='cpu', weights_only=False)
+            # with --tag (and no --lam) the xseed file of that variant: xseed_<arm><tag>.pt (turb_xseed.py --tag)
+            xs = torch.load(a.xseed_dir / f'xseed_{arm}{a.tag or ""}.pt', map_location='cpu', weights_only=False)
         else:
             assert a.theta_dir, '--lam needs --theta_dir'
         runs = cw.find_runs(arm, a.seeds)
         Cg, Cd, fam_names, widths, lam = [], [], None, None, None
         for s in a.seeds:
             exp_dir, cfg = runs[s]
-            f_theta, lam = theta_file(arm, a.window, cfg['config_name'], xs, a.lam, a.theta_dir)
+            f_theta, lam = theta_file(arm, a.window, cfg['config_name'], xs, a.lam, a.theta_dir, a.tag)
             sol = torch.load(f_theta, map_location='cpu', weights_only=False)
             assert sol['config'] == cfg['config_name'] and float(sol['lam']) == float(lam), (sol['config'], sol['lam'], lam)
             theta = sol['Theta_reg'][-1].double().numpy()
@@ -75,7 +84,7 @@ def main():
             fam_names, widths = list(fam), [w for _, w in fam.values()]
             print(f'{arm} seed {s}: lam {lam:g} | -log p total (generated): median {-np.median(Cg[-1][-1]):.5g}, '
                   f'std {Cg[-1][-1].std(ddof=1):.4g} | data: median {-np.median(Cd[-1][-1]):.5g}, std {Cd[-1][-1].std(ddof=1):.4g}')
-        dest = a.out / f'logp_{arm}.npz'
+        dest = a.out / f'logp_{arm}{a.out_tag}.npz'
         np.savez_compressed(dest, C_gen=np.stack(Cg), C_data=np.stack(Cd), families=np.array(fam_names),
                             widths=np.array(widths), seeds=np.array(a.seeds), lam=lam, M=int(cfg['M']))
         print(f'{arm}: -> {dest}')

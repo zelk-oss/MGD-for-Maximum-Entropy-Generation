@@ -127,6 +127,16 @@ def parse_args():
                         '(SDE._solve_regularised_thomas). One solve per (lam, alpha). alpha in [0, 1] (1 = pure '
                         'diagonal), or a negative value = per-cell Gaussian plug-in alpha (needs n_walkers in the '
                         'meta or --n_walkers). Adds _shr<alpha> (or _shrG) to the name. Exclusive with --c_floor_eps.')
+    p.add_argument('--pin_l6', type=str, default=None, metavar='START:STOP',
+                   help='(2026-11-18, moment mode) PINALL L_6 sign method: fix Theta_{k,i} = -eps_i at EVERY node k '
+                        'for the columns START:STOP (L_6 block: 0:21 for J=5 L=4, 0:13 for J=3), eps_{k,i} = '
+                        '--pin_eps_nats / sd_k(phi_i) (sd over the walkers, from Sigma_k), one Thomas solve. Only in '
+                        'Theta_reg; the SDE transport is untouched. Combines with --c_shrink (the pin acts on the '
+                        'shrunk system). Not with --neg_cols, --select, --node_stride > 1, --c_floor_eps. Adds '
+                        '_pinl6 (or _pinl6e<eps>) to the name, after _shr*.')
+    p.add_argument('--pin_eps_nats', type=float, default=1e-2,
+                   help='with --pin_l6: eps in nats per standard deviation of phi_i on the walkers (default 1e-2, '
+                        'the pinall standard of 2026-11-18)')
     p.add_argument('--node_stride', type=int, default=1,
                    help='keep every m-th node (plus the last) before the solve: cells then span m steps, so the '
                         'directions of C filled by one step of SDE noise (mu ~ 2 h sigma^2) move to ~2 m h sigma^2. '
@@ -325,6 +335,21 @@ def drop_last_inputs(inp, n_drop):
     return out
 
 
+def build_pin_l6(system, inp, args):
+    """(mask, value) of the pinall L_6 method for SDE._solve_regularised_thomas(pin=...): Theta_{k,i} = -eps_{k,i} on
+    the columns of --pin_l6 at every node, eps_{k,i} = --pin_eps_nats / sd_k(phi_i) with sd_k from the diagonal of
+    Sigma_k (same numbers as codes.theta_reg_bounds.eps_from_sigma, but only the pinned diagonal entries are read,
+    so a mmap-ed r x r system is not converted to float64). Returns (pin, cols, eps at the last node)."""
+    from codes.theta_reg_bounds import _bounds
+    a_, b_ = (int(x) for x in args.pin_l6.split(':'))
+    cols = torch.arange(a_, b_)
+    n = len(inp['t'])
+    sd = torch.stack([system['Sigma'][k][cols, cols].double() for k in range(n)]).clamp_min(0).sqrt()
+    eps = args.pin_eps_nats / sd.clamp_min(1e-300)
+    U, bounded = _bounds(n, inp['r'], cols, -eps, inp['live'])
+    return (bounded.clone(), torch.where(bounded, U, torch.zeros_like(U))), (a_, b_), eps[-1]
+
+
 def diagnose(inp, n_nodes):
     """Conditioning of the per-node blocks (Jacobi-scaled, float64): at lam=0 the solve is
     M_k theta = b_k (+ ridge), so an exactly rank-deficient M_k is singular."""
@@ -403,6 +428,18 @@ def main():
             print(f'[{config}] bounds Theta <= -eps on columns {a_}:{b_} at {int((inp["t"] >= args.neg_t_min).sum())} '
                   f'nodes, eps_nats {args.neg_eps_nats:g} (eps at the last node: '
                   f'{[f"{-float(u):.3g}" for u in upper[-1]]})')
+        pin, pin_info = None, None
+        if args.pin_l6 is not None:
+            if (args.select or mode != 'moment' or 'Sigma' not in system or neg is not None
+                    or args.node_stride > 1 or any(e for e in args.c_floor_eps)):
+                raise ValueError(f'[{config}] --pin_l6 needs a moment-mode system with Sigma, and no --select, '
+                                 f'--neg_cols, --node_stride > 1 or --c_floor_eps')
+            pin, (pa, pb), eps_last = build_pin_l6(system, inp, args)
+            pin_info = dict(cols=(pa, pb), eps_nats=args.pin_eps_nats, n_pinned=int(pin[0].sum()))
+            print(f'[{config}] pinall L_6: Theta = -eps on columns {pa}:{pb} at all {len(inp["t"])} nodes '
+                  f'({pin_info["n_pinned"]} entries), eps_nats {args.pin_eps_nats:g}; value at the last node '
+                  f'(-eps/sd per filter): {[f"{-float(u):.3g}" for u in eps_last]}')
+        pin_tag = '' if pin is None else ('_pinl6' if args.pin_eps_nats == 1e-2 else f'_pinl6e{args.pin_eps_nats:g}')
         extra0 = neg_tag(args)
         if any(e for e in args.c_floor_eps) and (neg is not None or args.select or mode != 'moment'):
             raise ValueError(f'[{config}] --c_floor_eps > 0 needs moment mode, no --neg_cols, no --select')
@@ -431,7 +468,7 @@ def main():
         if args.c_shrink is not None and (mode != 'moment' or neg is not None or any(e for e in args.c_floor_eps)):
             raise ValueError(f'[{config}] --c_shrink needs moment mode, no --neg_cols, no --c_floor_eps')
         shr_tag = lambda s: '' if s is None else ('_shrG' if s < 0 else f'_shr{s:g}')
-        eps_extra = lambda e, s=None: extra0 + (f'_cfl{e:g}' if e else '') + shr_tag(s) + stride_tag
+        eps_extra = lambda e, s=None: extra0 + (f'_cfl{e:g}' if e else '') + shr_tag(s) + pin_tag + stride_tag
         todo = [(lam, e, s) for s in shrinks for e in args.c_floor_eps for lam in args.lams
                 if args.overwrite or not out_path(args.outdir, config, lam, args.ridge, mode,
                                                   args.schedule, inp['mask'], eps_extra(e, s)).exists()]
@@ -467,7 +504,8 @@ def main():
                         Theta = SDE._solve_regularised_thomas(
                             solver_self, inp['t'], inp['M'], inp['C'], inp['b'], inp['v'], lam,
                             ridge=args.ridge, mode=mode, dim=inp['dim'], schedule=args.schedule,
-                            live=inp['live'], c_floor_eps=c_eps, c_shrink=c_shr, n_walkers=inp['n_walkers'])
+                            live=inp['live'], c_floor_eps=c_eps, c_shrink=c_shr, n_walkers=inp['n_walkers'],
+                            pin=pin)
                     neg_info = None
             except torch.linalg.LinAlgError as e:              # log, keep going with the next lam
                 print(f'[{config}] lam={lam:g} eps={c_eps:g}: FAILED after {time.time() - t1:.0f} s: {e}')
@@ -484,7 +522,7 @@ def main():
                         'lam': lam, 'residual': solver_self.last_reg_residual, 'neg': neg_info,
                         'c_floor_eps': c_eps, 'c_floor_shrink': solver_self.last_c_floor_shrink,
                         'c_shrink': c_shr, 'c_shrink_alpha': solver_self.last_c_shrink_alpha,
-                        **common}, tmp)
+                        'pin_l6': pin_info, **common}, tmp)
             tmp.replace(dest)
             log_mem(f'after lam={lam:g}')
             shr = solver_self.last_c_floor_shrink

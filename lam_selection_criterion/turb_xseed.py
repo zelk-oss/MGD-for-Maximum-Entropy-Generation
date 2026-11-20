@@ -68,6 +68,10 @@ def parse_args():
     p.add_argument('--arm', required=True, help='name used in the output file')
     p.add_argument('--out', type=Path, required=True)
     p.add_argument('--chunk', type=int, default=256, help='nodes per block of the data-term sum')
+    p.add_argument('--tag', default='',
+                   help='(2026-11-19) suffix of the phase-1 Theta_reg files after _moment_mask: "" = full C (as before), '
+                        '_shr1 = diagonal C, _shrG = shrunk C, _shr1_pinl6 = diagonal + L_6 pinned (resolve_theta_reg.py '
+                        '--c_shrink / --pin_l6). Also appended to the output name: xseed_<arm><tag>.pt')
     p.add_argument('--sigma_rule', action='store_true',
                    help='also rule B (Sigma_A metric, on the --ends windows), the M_B check and the jackknife; '
                         'writes xseed_<arm>_sigma.pt instead of xseed_<arm>.pt')
@@ -187,7 +191,7 @@ def main():
         cfg = config_of(path)
         curves = []
         for lam in lams:
-            f = out_path(args.sweep_dir, cfg, lam, args.ridge, 'moment', args.schedule, mask)
+            f = out_path(args.sweep_dir, cfg, lam, args.ridge, 'moment', args.schedule, mask, args.tag)
             if not f.exists():
                 sys.exit(f'missing phase-1 file {f}')
             d = torch.load(f, map_location='cpu', weights_only=False)
@@ -304,7 +308,7 @@ def main():
         sel, pairs, jk, _ = report('A (M_B metric)', w, loss[w])
         out['selected'][w], out['pair_selected'][w], out['jackknife'][w] = sel, pairs, jk
         out['theta_files'][w] = {sd['config']: str(out_path(args.sweep_dir, sd['config'], sel, args.ridge, 'moment',
-                                                          args.schedule, sd['mask'])) for sd in seeds}
+                                                          args.schedule, sd['mask'], args.tag)) for sd in seeds}
     if args.sigma_rule:
         out.update(loss_sigma=loss_sig, loss_check_MB=loss_chk, selected_sigma={}, pair_selected_sigma={},
                    jackknife_sigma={}, theta_files_sigma={}, check_MB={})
@@ -325,12 +329,12 @@ def main():
             sel, pairs, jk, _ = report('B (Sigma_A metric)', wn, loss_sig[wn])
             out['selected_sigma'][wn], out['pair_selected_sigma'][wn], out['jackknife_sigma'][wn] = sel, pairs, jk
             out['theta_files_sigma'][wn] = {sd['config']: str(out_path(args.sweep_dir, sd['config'], sel, args.ridge,
-                                                                       'moment', args.schedule, sd['mask']))
+                                                                       'moment', args.schedule, sd['mask'], args.tag))
                                             for sd in seeds}
         print('\n  side by side (pooled argmin):  ' +
               '  '.join(f"{wn}: A {out['selected'][wn]:g} | B {out['selected_sigma'][wn]:g}" for wn in loss_sig))
     args.out.mkdir(parents=True, exist_ok=True)
-    dest = args.out / (f'xseed_{args.arm}_sigma.pt' if args.sigma_rule else f'xseed_{args.arm}.pt')
+    dest = args.out / (f'xseed_{args.arm}{args.tag}_sigma.pt' if args.sigma_rule else f'xseed_{args.arm}{args.tag}.pt')
     torch.save(out, dest)
     print(f'\n-> {dest}  (Theta of the selected lam per seed: out["theta_files"][window]); total {time.time() - t0:.0f} s')
 
