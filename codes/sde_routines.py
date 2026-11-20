@@ -758,6 +758,25 @@ class SDE(torch.nn.Module):
         zx01 = (x0 * self.x_1).reshape(B, -1).sum(1) if interp_time_terms else None   # Z . x_1
         cnt = 0
 
+        # Spool the r x r blocks to disk (2026-11-19): kept in host RAM they cost
+        # n_nodes * 2 r^2 * 4 B (r 4294, 500 nodes: 74 GB) and OOM-killed the 2D
+        # production runs 391581/391585 at step 4160. Each block is written once at
+        # its flush and reopened memory-mapped: clean file-backed pages, which the
+        # kernel reclaims under memory pressure instead of killing the job. Same
+        # float32 values as before, so the saved system and any solve are unchanged.
+        spool = None
+        if reg_solver == 'thomas' and reg_system_path is not None:
+            spool = Path(str(reg_system_path) + '.spool')
+            spool.mkdir(parents=True, exist_ok=True)
+            print(f"Spooling the r x r blocks of the regularised system to {spool}")
+
+        def keep(kk, X):
+            if spool is None or kk not in ('M', 'G', 'Sigma'):
+                return X
+            f = spool / f'{kk}_{len(nodes[kk]):06d}.pt'
+            torch.save(X.contiguous(), f)
+            return torch.load(f, mmap=True, weights_only=True)
+
         def flush():
             for kk in keys:
                 v = acc[kk]
@@ -768,9 +787,9 @@ class SDE(torch.nn.Module):
                 elif kk == 'Sigma':
                     # accumulated centred in float64; kept float32 like M (the saved copy
                     # is float32 too, so an offline re-solve reproduces the in-run one)
-                    nodes[kk].append(store((v / cnt).float()))
+                    nodes[kk].append(keep(kk, store((v / cnt).float())))
                 else:
-                    nodes[kk].append(store(v / cnt))
+                    nodes[kk].append(keep(kk, store(v / cnt)))
 
         if adaptive is not None:
             if param_storage_frequency != 1:
@@ -972,6 +991,7 @@ class SDE(torch.nn.Module):
         print("Last times:", t_reg[-5:])
         print("Last dt:", np.diff(t_reg[-5:]))
 
+        reg_saved = False
         if reg_system_path is not None:                  # before the solve: survives a solve OOM
             # Non-fatal: the samples, theta_t and moments are saved by the caller AFTER
             # this method returns, so an exception here (SCRATCH quota, I/O error, memory
@@ -981,6 +1001,7 @@ class SDE(torch.nn.Module):
                                       lam=lam, n_subsample=n_subsample, reg_solver=reg_solver,
                                       reg_mode=reg_mode, dim=d, n_walkers=int(self.x_k.shape[0]),
                                       sigma=float(self.sigma), regularization=float(self.regularization))
+                reg_saved = True
             except Exception as e:
                 import traceback
                 traceback.print_exc()
@@ -1001,6 +1022,20 @@ class SDE(torch.nn.Module):
             Theta_reg = self._solve_regularised(t_reg, M_reg, C_reg, b_reg, v_reg, lam)
 
         self._print_memory("After _solve_regularised")
+
+        if spool is not None and not reg_saved:
+            print(f"WARNING: system not saved; its r x r blocks are kept in {spool} "
+                  f"(<kind>_<node>.pt, nodes before the cut, first node included)")
+        elif spool is not None:
+            # the system is in reg_system_path now: remove this run's own spool files.
+            # A mapped file stays readable after unlink.
+            del nodes, sysd, M_reg, C_reg
+            for f in spool.glob('*.pt'):
+                f.unlink()
+            try:
+                spool.rmdir()
+            except OSError as e:
+                print(f"WARNING: spool directory {spool} not removed ({e})")
 
         print("Stacking outputs")
 
