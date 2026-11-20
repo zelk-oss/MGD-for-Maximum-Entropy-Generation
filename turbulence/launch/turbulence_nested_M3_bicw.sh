@@ -33,7 +33,10 @@
 #                                     # sigma x nt check of the entropy bound (2026-11-10), windows frozen
 #   ONLY=bicw_allmass_scat34d NT=2000 N_BULK=500 SCAT4_TIME=01:00:00 QOS=qos_gpu_h100-dev LABEL=timing bash ...
 #                                     # B + Scat3 Re/Im + Scat4 with diagonal (2026-11-17), timing
+#   SUBSERIES_LEN=1024 TARGET_LEN=512 J=9 DROP_STATS_BASE= ONLY=bicw_allmass_scat34d PREFLIGHT_ONLY=true NT=27500 N_BULK=2500 N1=5000 LABEL=bench bash ...
+#                                     # fit + Gram check at another signal length (2026-11-20, grad_speed/bench_signal_length.py)
 # LABEL (optional): appended to the experiment name and label (e.g. smoke, timing). N1 (optional): walkers, default 10000.
+# SUBSERIES_LEN / TARGET_LEN / J (optional): window length, length after coarse-graining, number of scales (default 512 / 256 / 8).
 
 LAUNCH_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
@@ -52,17 +55,17 @@ SCAT4_TIME="${SCAT4_TIME:-20:00:00}"
 # ── as turbulence_nested_M3.sh ──
 N1="${N1:-10000}"
 USER_LABEL="${LABEL:-}"
-SUBSERIES_LEN=512
-TARGET_LEN=256
-J=8
+SUBSERIES_LEN="${SUBSERIES_LEN:-512}"
+TARGET_LEN="${TARGET_LEN:-256}"
+J="${J:-8}"
 Q=3
 SIGMA="${SIGMA:-3.5}"
 NT="${NT:-55000}"
 SCHEDULE_ARGS="--schedule two_phase --n_bulk ${N_BULK:-5000} --t_switch 0.9 --gap_end 5e-5"
 BATCH_SIZE=5000
 REGULARIZATION=1e-4
-BASE_DROP_STATS="Scalar_morlet_gaussianK:8:1"
-COND_EVERY=10
+# DROP_STATS_BASE="" (set but empty) drops nothing: the default is the near-copy found at M=256, J=8 only
+BASE_DROP_STATS="${DROP_STATS_BASE-Scalar_morlet_gaussianK:8:1}"
 
 SOLVE_FLOAT64=true
 DEDUPLICATE_FILTERS=true
@@ -133,6 +136,7 @@ for arm in ${ONLY}; do
         *) echo "unknown arm '${arm}'; use bicw | bicw_allmass | bicw_allmass_scat4 | bicw_allmass_scat34d | bicw_rich"; exit 1 ;;
     esac
     [ "${PREFLIGHT_ONLY}" = "true" ] && TIME="00:30:00"
+    [ -n "${TIME_OVERRIDE:-}" ] && TIME="${TIME_OVERRIDE}"     # 2026-11-18: any arm, e.g. a 15-min smoke
     EXP_NAME="turbulence_nested_M3_${arm}${TAG}"
     LABEL="${EXP_NAME}"
     REG_SYSTEM_DIR="${SCRATCH:+${SCRATCH}/MGD-for-Maximum-Entropy-Generation/turbulence/reg_system/${EXP_NAME}}"
