@@ -129,11 +129,11 @@ A question from the user gets an answer, not file edits.
 
 # Local safety
 
-- `rm -rf` and `git push --force` are blocked the same way, with no
-  exceptions carved out for a specific case, even if it looks safe in the
-  moment. If either is genuinely needed, explain what and why, and let the
-  user run it themselves or temporarily relax the rule in
-  `~/.claude/settings.json`.
+- `git push --force` is blocked, with no exceptions. `rm -rf` is allowed only
+  on Claude's own scratchpad (`/tmp/claude-1000/<project>/...`): one plain
+  `rm` per command, absolute paths (guard `~/.claude/hooks/guard_rm.py`).
+  Anywhere else, or if the guard refuses: say "I wanted to rm -rf X because
+  Y" and give the user the command to run; never leave leftovers silently.
 - `data/data_files/`, `saved_results/` (and its per-subproject copies under
   `jets/`, `turbulence/`, `codes/`), and `*/experiments/*/figures/` hold
   compute results that took real GPU/cluster time to produce. Editing/
