@@ -41,13 +41,30 @@ def find_runs(arm, seeds=SEEDS, cw=CW):
     return found
 
 
+def _dataset_module():
+    """run_SDE.py of the dataset CW belongs to (cosmic_web, or turbulence_2d with CW_ROOT=<repo>/turbulence_2d), loaded
+    by file path so that `run_SDE` is never resolved to the wrong folder; falls back to the cosmic-web one when CW (a
+    scratch copy for smoke tests) has none. 2026-11-18: this is what lets the analysis scripts run on turbulence_2d."""
+    import importlib.util
+    src = CW / 'run_SDE.py'
+    if not src.exists():
+        src = CODE / 'run_SDE.py'
+    spec = importlib.util.spec_from_file_location('dataset_run_SDE', src)
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
+
+
 def load_x1(cfg, data_path=None):
-    """The n1 standardised maps (n1, 1, M, M) of the run."""
-    from run_SDE import load_quijote_2d, smoke_data
+    """The n1 standardised maps (n1, 1, M, M) of the run (same loader and standardisation as the dataset's run_SDE.py)."""
     from codes.utils import normalize
+    mod = _dataset_module()
     if cfg.get('smoke_data'):                      # synthetic maps of the smoke tests (run_SDE.py --smoke_data)
-        return normalize(smoke_data(cfg['n1'], cfg['smoke_size']))
-    data = load_quijote_2d(data_path or cfg['data_path'], fact=cfg['fact'], apply_log=not cfg['data_is_log'])
+        return normalize(mod.smoke_data(cfg['n1'], cfg['smoke_size']))
+    if hasattr(mod, 'load_turbulence_2d'):         # 2D Navier-Stokes vorticity (.mat, signed: no log)
+        data = mod.load_turbulence_2d(data_path or cfg['data_path'], fact=cfg['fact'])
+    else:                                          # cosmic web (Quijote .npy)
+        data = mod.load_quijote_2d(data_path or cfg['data_path'], fact=cfg['fact'], apply_log=not cfg['data_is_log'])
     return normalize(data[:cfg['n1']])
 
 
