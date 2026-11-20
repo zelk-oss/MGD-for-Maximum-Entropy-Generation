@@ -58,6 +58,75 @@ a bold `▶ RUN (JZ)` / `▶ RUN (local)` label line, then a fenced ```bash bloc
 a command to run inline in a sentence. The user runs it and pastes back the
 output if there's something to report back.
 
+# Analysis notebooks and code
+
+## Core principle
+Answer exactly the question asked. Add unrequested content only if the result
+would otherwise be wrong or misleading (e.g. missing window in an FFT, unit
+conversion, a needed sanity check); explain why in one sentence. Anything else
+that seems useful: suggest it in one line in chat, don't add it. If a request
+is vague, ask for clarification (one short question) before doing anything.
+A question from the user gets an answer, not file edits.
+
+## Notebook types
+- `explore_*.ipynb`: working notebooks for the user. Quick checks and rough
+  plots are fine, but "edit in place" and "no duplicates" still apply.
+- `report_*.ipynb`: notebooks shared with colleagues. All rules below apply
+  strictly.
+- New notebook and type not obvious: ask which one (one short question).
+- To share results from an explore notebook, create or update a report
+  notebook with only the essential steps; don't turn the explore one into a
+  report. When a report notebook is done, review it with the `tidy-notebook`
+  skill.
+- Existing notebooks keep their names; the prefixes apply to new ones.
+
+## Notebooks
+- Top: title + 2–4 lines with question, method, main result (update the result
+  line once computed).
+- One figure per question by default; more only if asked or required by the
+  core principle.
+- Plots: essential. Axis labels with units, legend only with multiple series,
+  no extra panels "for context". Readable by a colleague as is.
+- Markdown in English, short, plain language, readable by someone who doesn't
+  know the project. Define every symbol, acronym and variable at first use.
+  Never use internal shorthand from our conversations ("run B", "the previous
+  fix"). Explain what and why, not how. Don't restate numbers visible in
+  outputs; state the conclusion.
+- Claude edits notebooks (and `.py` files) itself, unless the user says they
+  will do the change themselves.
+- Edit in place: when asked for a change, modify the existing cells. Never
+  append corrected versions at the end or leave obsolete cells. The notebook
+  must run top to bottom. Run with `--inplace`, no `_executed` copies.
+- Remove debug output (shapes, `head()`, intermediate checks) before finishing.
+
+## Code
+- Simplest solution that works. No speculative parameters, classes, config
+  files, CLI or logging unless asked.
+- Compute-heavy analyses are `.py` scripts run as jobs on JZ; notebooks only
+  load saved results and plot. Helper functions stay in the notebook until a
+  second notebook needs them, then move to `codes/` (shared) or to a `.py`
+  module in the experiment folder.
+- Comments only for non-obvious choices (the why).
+
+## Files and folders
+- Layout: one top-level folder per experiment (`turbulence/`, `jets/`,
+  `cosmic_web/`, ...) with its notebooks, `.py` scripts and `launch/`;
+  shared code in `codes/`; results in `saved_results/` and `data/` (protected,
+  see Local safety). Create a new top-level folder only for a new experiment.
+- Before creating a file, check whether an existing one fits and extend it.
+  If you create one, say so in one line with the reason.
+- No versioned copies (`_v2`, `_final`, `_new`, `_old`, `.bak`, `_executed`):
+  modify the original. Throwaway `test_*` scripts are deleted when done
+  (ask first if they are the user's); real tests live in a `tests/` folder.
+- Never delete the user's files without asking.
+
+## Chat replies
+- When done: files changed + main result in 1–3 lines. No recap of steps.
+
+## Maintaining these rules
+- If the user corrects you twice on the same thing, propose a one-line
+  addition to this file.
+
 # Local safety
 
 - `rm -rf` and `git push --force` are blocked the same way, with no
