@@ -88,6 +88,7 @@ if [ "${SUBMIT_RUNS}" = "true" ]; then
 #SBATCH -C ${GPU_CONSTRAINT}
 #SBATCH --partition=${GPU_PARTITION}
 #SBATCH --array=0-$((NTASKS-1))
+${QOS:+#SBATCH --qos=${QOS}}
 #SBATCH --gres=gpu:1
 #SBATCH --cpus-per-task=${GPU_CPUS}
 #SBATCH --time=${GPU_TIME}

@@ -65,7 +65,7 @@ MODULE_PRE="${MODULE_PRE:-}"          # loaded before MODULE, e.g. arch/h100 on 
 # ── paths ────────────────────────────────────────────
 LAUNCH_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 TURB_DIR="${SWEEP_DIR:-$(cd "${LAUNCH_DIR}/.." && pwd)}"   # SWEEP_DIR: another experiment folder with its own run_SDE.py (snp_experiment)
-PYTHON_SCRIPT="${TURB_DIR}/run_SDE.py"
+PYTHON_SCRIPT="${PYTHON_SCRIPT:-${TURB_DIR}/run_SDE.py}"   # PYTHON_SCRIPT=grad_speed/run_SDE_fast.py: fast eager potentials (absolute path needed)
 OUTDIR="${TURB_DIR}"
 LOG_DIR="${OUTDIR}/saved_results/logs"
 mkdir -p "${LOG_DIR}"

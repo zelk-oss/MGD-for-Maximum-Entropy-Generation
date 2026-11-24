@@ -72,7 +72,168 @@ class Potential(nn.Module):
 
 
 
-    ## ----------------------------------------------------- Potentials definitions -----------------------------------------------------    
+    ## ----------------------------------------------------- Fast exact Scat3 / Scat4 (2026-11-23) -----------------------------------------------------
+# Same quantities as the original code in exact arithmetic, fewer FFTs and passes (notes/scat4_fast_report_1122.md,
+# notes/fast_families_report_1122.md; long-run equivalence M=64/128, 2026-11-23). x is real, so a real part of an
+# inverse FFT is the irfft of the Hermitian half spectrum, and mean_t Re/Im[...] of two filtered signals is a sum over
+# frequencies (Parseval). Constants are cached per (device, M, dtype) and rebuilt if filters / indices are replaced.
+
+_fft, _ifft, _rfft, _irfft = torch.fft.fft, torch.fft.ifft, torch.fft.rfft, torch.fft.irfft
+
+
+def _cdtype(dt):
+    return torch.complex128 if dt == torch.float64 else torch.complex64
+
+
+def _as_dtype(f, dt):
+    return f.to(_cdtype(dt)) if f.is_complex() else f.to(dt)
+
+
+def _cached(p, x, refs, build):
+    key = (x.device, x.shape[-1], x.dtype)
+    c = p.__dict__.get('_fast_cache')
+    if c is not None and c['key'] == key and all(r is s for r, s in zip(c['refs'], refs)):
+        return c
+    c = build(x.device, x.shape[-1], x.dtype)
+    c['key'], c['refs'] = key, refs
+    p.__dict__['_fast_cache'] = c
+    return c
+
+
+def _hermitian_half(Z, neg_h, h):
+    """First M/2+1 bins of (Z(k) + conj Z(-k)) / 2: its irfft is Re ifft(Z)."""
+    return 0.5 * (Z[..., :h] + Z[..., neg_h].conj())
+
+
+def _scat3_cache(p, x, imag, indices):
+    def build(dev, M, dt):
+        f = _as_dtype(p.filters.to(dev), dt)
+        psi2 = (f * f.conj()).real if f.is_complex() else f * f                       # |psi_k|^2, (1, nf, M)
+        psi2n = psi2[..., (-torch.arange(M, device=dev)) % M]                           # |psi_k(-w)|^2
+        h = M // 2 + 1
+        idx = indices.long().to(dev)
+        return dict(M=M, f=f, fc=f.conj(), psi2=psi2, psi2n=psi2n, j=idx[0], k=idx[1],
+                    w=((-0.5j * (psi2 - psi2n))[..., :h].to(_cdtype(dt)) if imag else (0.5 * (psi2 + psi2n))[..., :h]),
+                    w_parseval=psi2 / M ** 2)
+    return _cached(p, x, (p.filters,), build)
+
+
+def _scat3_forward(p, x, imag, indices):
+    """mean_t Re/Im[conj(W_l x) (psi_l * |W_i x|)] = (1/M^2) sum_k |psi_l|^2 conj(X) A^_i (Parseval)."""
+    c = _scat3_cache(p, x, imag, indices)
+    X = _fft(x)
+    Ah = _fft(abs_eps(_ifft(c['f'] * X)))                                              # (B, nf, M)
+    S = torch.bmm(Ah, (c['w_parseval'] * X.conj()).transpose(1, 2))                    # [i, l]
+    out = S[:, c['j'], c['k']]
+    return out.imag if imag else out.real
+
+
+def _scat3_weight(c, x, imag):
+    """Re (Real) or -Im (Imag) of |psi_k|^2 * x, (B, nf, M), by irfft."""
+    W = _irfft(_rfft(x) * c['w'], n=c['M'])
+    return -W if imag else W
+
+
+def _scat3_jac(p, x, imag, indices):
+    """Phase and modulus terms added in Fourier space, one inverse FFT on the K rows.
+    Imag: Re ifft(Zp) - Im ifft(Zm) = Re ifft(Zp + i Zm)."""
+    c = _scat3_cache(p, x, imag, indices)
+    j, k = c['j'], c['k']
+    Wx = _ifft(c['f'] * _fft(x))
+    A = abs_eps(Wx)
+    W = _scat3_weight(c, x, imag)
+    Zp = c['fc'][:, j] * _fft((Wx / A)[:, j] * W[:, k])
+    Zm = (c['psi2n'] if imag else c['psi2'])[:, k] * _fft(A)[:, j]
+    return _ifft(Zp + 1j * Zm if imag else Zp + Zm).real / c['M']
+
+
+def _scat3_grad_v(p, x, v, imag, indices):
+    """sum_i v_i grad phi_i, all channel sums in Fourier space, one inverse FFT."""
+    c = _scat3_cache(p, x, imag, indices)
+    nf = c['f'].shape[1]
+    m = torch.zeros((nf - 1, nf), device=x.device, dtype=x.dtype)
+    m[c['j'], c['k']] = v.to(x.dtype)
+    Wx = _ifft(c['f'] * _fft(x))
+    A = abs_eps(Wx)
+    W = _scat3_weight(c, x, imag)
+    rcp = (Wx[:, :-1] / A[:, :-1]) * torch.einsum('ij, aib -> ajb', m.T, W)
+    Zp = (c['fc'][:, :-1] * _fft(rcp)).sum(1, keepdim=True)
+    aw = torch.einsum('ij, aib -> ajb', m, A[:, :-1])
+    Zm = ((c['psi2n'] if imag else c['psi2']) * _fft(aw)).sum(1, keepdim=True)
+    return _ifft(Zp + 1j * Zm if imag else Zp + Zm).real / c['M']
+
+
+def _scat4_cache(p, x, imag):
+    def build(dev, M, dt):
+        f = _as_dtype(p.filters.to(dev), dt)
+        fQ = _as_dtype(p.filters_Q.to(dev), dt)
+        a, b, cc = p.indices.long().to(dev)
+        K, h = a.shape[0], M // 2 + 1
+        aa, bb, cc2 = torch.cat([a, b]), torch.cat([b, a]), torch.cat([cc, cc])
+        psi2 = (f * f.conj()).real if f.is_complex() else f * f
+        neg = (-torch.arange(M, device=dev)) % M
+        psi2n = psi2[..., neg]
+        ni = p.norm_indices.to(dev).to(dt)
+        # weight of the second layer on the half spectrum: Re P (Real) or Im P (Imag), P = ifft(|psi_c|^2 fft(E))
+        w = (-0.5j * (psi2 - psi2n))[..., :h].to(_cdtype(dt)) if imag else (0.5 * (psi2 + psi2n))[..., :h]
+        return dict(M=M, K=K, h=h, f=f, fQ=fQ, a=a, b=b, c=cc, aa=aa, bb=bb, cc2=cc2, w=w, neg_h=neg[:h],
+                    w_parseval=psi2 / M ** 2, fQc_aa=fQ[:, aa].conj(), ni=ni, scale2=2.0 / (M * ni))
+    return _cached(p, x, (p.filters, p.filters_Q, p.indices, p.norm_indices), build)
+
+
+def _scat4_first_layer(c, x):
+    Wx = _ifft(c['fQ'] * _fft(x))
+    return Wx, abs_eps(Wx) ** 2
+
+
+def _scat4_weight(c, E):
+    return _irfft(_rfft(E)[:, :, None] * c['w'], n=c['M'])                             # (B, nQ, nf, M) real
+
+
+def _scat4_forward(p, x, imag):
+    """mean_t Re/Im[(psi_c*E_i1) conj(psi_c*E_i0)] = (1/M^2) sum_k |psi_c(k)|^2 E^_i1 conj(E^_i0) (Parseval)."""
+    c = _scat4_cache(p, x, imag)
+    Eh = _fft(abs_eps(_ifft(c['fQ'] * _fft(x)) / p.norm) ** 2)                         # (B, nQ, M)
+    B, nQ, M = Eh.shape
+    nf = c['w_parseval'].shape[1]
+    X = (c['w_parseval'][:, :, None, :] * Eh[:, None]).reshape(B, nf * nQ, M)
+    S = torch.bmm(X, Eh.conj().transpose(1, 2)).reshape(B, nf, nQ, nQ)
+    i0, i1, i2 = p.indices.long().to(x.device)
+    out = S[:, i2, i1, i0]
+    return out.imag if imag else out.real
+
+
+def _scat4_jac(p, x, imag):
+    """Real: partner rows (a,b,c) + (b,a,c) summed in Fourier space, one ifft on K rows.
+    Imag (real filter bank): Im[W*(Wx e) + conj W*(Wx conj e)] = 2 Re W*(Wx Im e) and P~ = conj P, so the same
+    one-branch algorithm as Real with weight Im P and partner sign -1."""
+    c = _scat4_cache(p, x, imag)
+    K = c['K']
+    Wx, E = _scat4_first_layer(c, x)
+    W = _scat4_weight(c, E)
+    T = Wx[:, c['aa']] * W[:, c['bb'], c['cc2']]                                       # (B, 2K, M); factor 2 in scale2
+    Z = c['fQc_aa'] * _fft(T)
+    if imag:
+        t = _ifft(Z).real
+        return (t[:, :K] - t[:, K:]) * c['scale2'][:, None]
+    return _ifft((Z[:, :K] + Z[:, K:]) * c['scale2'][:, None]).real
+
+
+def _scat4_grad_v(p, x, v, imag):
+    """sum_k v_k grad phi_k (real filter bank): h_i = sum_jk m~[i,j,k] W_jk, m~ = m + m^T (Real) or m - m^T (Imag),
+    one product with W x, filter, sum over i in Fourier space, one irfft. Shape (B, 1, M)."""
+    c = _scat4_cache(p, x, imag)
+    nQ, nf = c['fQ'].shape[1], c['f'].shape[1]
+    m = torch.zeros((nQ, nQ, nf), device=x.device, dtype=x.dtype)
+    m[c['a'], c['b'], c['c']] = v.to(x.dtype) / c['ni']
+    m = m - m.transpose(0, 1) if imag else m + m.transpose(0, 1)
+    Wx, E = _scat4_first_layer(c, x)
+    hW = torch.einsum('ijk,ajkb->aib', m, _scat4_weight(c, E))                         # (B, nQ, M)
+    Y = (c['fQ'].conj() * _fft(Wx * hW)).sum(1, keepdim=True) * (2.0 / c['M'])
+    return _irfft(_hermitian_half(Y, c['neg_h'], c['h']), n=c['M'])
+
+
+    ## ----------------------------------------------------- Potentials definitions -----------------------------------------------------
 
 
     # ----- Scattering potentials -----
@@ -267,60 +428,18 @@ class Scattering_Third_Order_Real_1d(Potential):
         self.filters = filters
         self.num_coefficients = int(J*((1+J)/2+1))
 
+    def _indices(self):
+        return indices_third_order(self.J, 1)
+
     def forward(self, x):
-        filters = self.filters.to(x.device)
-        x_filtered = torch.fft.ifft(filters*torch.fft.fft(x))
-        x_filtered_abs = abs_eps(x_filtered)
-
-        output = torch.real(x_filtered[:, None].conj() * torch.fft.ifft(filters[:, None] * torch.fft.fft(x_filtered_abs)[:, :, None]))
-
-        output = output.mean(-1)
-        
-        indices = indices_third_order(self.J, 1).long()
-        
-        output = output[:, indices[0], indices[1]]
-
-        return output
+        return _scat3_forward(self, x, False, self._indices())
 
     def grad(self, x,  v=None,  means=None):
-        filters = self.filters.to(x.device)
-        number_filters = filters.shape[1]
-        
-        x_fourier = torch.fft.fft(x)
-        filters_abs2 = filters*filters.conj()
-        x_filtered_2 = torch.fft.ifft(x_fourier*filters_abs2)
-        x_filtered = torch.fft.ifft(filters*x_fourier)
-        x_filtered_abs = abs_eps(x_filtered)
-        x_filtered_over_abs = x_filtered/x_filtered_abs
-
-        indices = indices_third_order(self.J, 1)
-
-        if v!=None:
-            m = torch.zeros((number_filters-1, number_filters)).to(x.device)
-            m[indices[0], indices[1]] = v
-            
-            result_conv_phase = x_filtered_over_abs[:,:-1]*torch.einsum('ij, aib -> ajb', m.T, torch.real(x_filtered_2))
-            result_conv_phase = torch.fft.ifft(filters[:,:-1].conj()*torch.fft.fft(result_conv_phase))
-
-            x_filtered_abs_weighted = torch.einsum('ij, aib -> ajb', m, x_filtered_abs[:,:-1])
-            result_conv_modulus = torch.fft.ifft(filters_abs2*torch.fft.fft(x_filtered_abs_weighted))
-            
-            return (result_conv_phase.sum(1) + result_conv_modulus.sum(1)).real[:,None]/x.shape[-1]
-        
-        # Full Jacobian (2026-11-17). phi_jk = mean_t Re[conj(W_k x) (psi_k * |W_j x|)] = mean_t |W_j x| Re(h_k * x),
-        # h_k^ = |psi_k^|^2. grad phi_jk = P_jk + Q_jk: P (result_conv_phase) = derivative through |W_j x|
-        # = W_j^*( (W_j x/|W_j x|) Re(h_k * x) ) / M; Q (result_conv_modulus) = derivative through h_k * x
-        # = h_k * |W_j x| / M. Each depends on its own (j, k) only, so both are evaluated on the K kept pairs
-        # (was: on the full J x (J+1) grid, then restricted).
-        j, k = indices.long()
-        result_conv_phase = x_filtered_over_abs[:, j] * torch.real(x_filtered_2)[:, k]
-        result_conv_phase = torch.fft.ifft(filters[:, j].conj() * torch.fft.fft(result_conv_phase))
-
-        result_conv_modulus = torch.fft.ifft(filters_abs2[:, k] * torch.fft.fft(x_filtered_abs)[:, j])
-
-        output = (result_conv_phase + result_conv_modulus).real / x.shape[-1]
-
-        return output
+        # phi_jk = mean_t |W_j x| Re(h_k * x), h_k^ = |psi_k^|^2; grad phi_jk = W_j^*((W_j x/|W_j x|) Re(h_k * x)) / M
+        # + h_k * |W_j x| / M (phase and modulus terms), evaluated on the K kept pairs only
+        if v is not None:
+            return _scat3_grad_v(self, x, v, False, self._indices())
+        return _scat3_jac(self, x, False, self._indices())
 
 
 class Scattering_Third_Order_Imag_1d(Potential):
@@ -351,56 +470,13 @@ class Scattering_Third_Order_Imag_1d(Potential):
         return indices
 
     def forward(self, x):
-        filters = self.filters.to(x.device)
-        x_filtered = torch.fft.ifft(filters*torch.fft.fft(x))
-        x_filtered_abs = abs_eps(x_filtered)
-
-        output = torch.imag(x_filtered[:, None].conj() * torch.fft.ifft(filters[:, None] * torch.fft.fft(x_filtered_abs)[:, :, None]))
-
-        output = output.mean(-1)
-
-        indices = self._indices().long()
-
-        output = output[:, indices[0], indices[1]]
-
-        return output
+        return _scat3_forward(self, x, True, self._indices())
 
     def grad(self, x,  v=None,  means=None):
-        filters = self.filters.to(x.device)
-        number_filters = filters.shape[1]
-
-        x_fourier = torch.fft.fft(x)
-        filters_abs2 = filters*filters.conj()
-        filters_abs2_flip = torch.roll(torch.flip(filters_abs2, [-1]), 1, -1)   # |psi^|^2 at -omega
-        x_filtered_2 = torch.fft.ifft(x_fourier*filters_abs2)
-        x_filtered = torch.fft.ifft(filters*x_fourier)
-        x_filtered_abs = abs_eps(x_filtered)
-        x_filtered_over_abs = x_filtered/x_filtered_abs
-
-        indices = self._indices()
-
-        if v!=None:
-            m = torch.zeros((number_filters-1, number_filters)).to(x.device)
-            m[indices[0], indices[1]] = v
-
-            result_conv_phase = x_filtered_over_abs[:,:-1]*torch.einsum('ij, aib -> ajb', m.T, -torch.imag(x_filtered_2))
-            result_conv_phase = torch.fft.ifft(filters[:,:-1].conj()*torch.fft.fft(result_conv_phase))
-
-            x_filtered_abs_weighted = torch.einsum('ij, aib -> ajb', m, x_filtered_abs[:,:-1])
-            result_conv_modulus = torch.fft.ifft(filters_abs2_flip*torch.fft.fft(x_filtered_abs_weighted))
-
-            return (result_conv_phase.sum(1).real - result_conv_modulus.sum(1).imag)[:,None]/x.shape[-1]
-
-        # Full Jacobian (2026-11-17): same restriction to the kept pairs as the Real class.
-        j, k = indices.long()
-        result_conv_phase = x_filtered_over_abs[:, j] * (-torch.imag(x_filtered_2))[:, k]
-        result_conv_phase = torch.fft.ifft(filters[:, j].conj() * torch.fft.fft(result_conv_phase))
-
-        result_conv_modulus = torch.fft.ifft(filters_abs2_flip[:, k] * torch.fft.fft(x_filtered_abs)[:, j])
-
-        output = (result_conv_phase.real - result_conv_modulus.imag) / x.shape[-1]
-
-        return output
+        # as the Real class with -Im(h_k * x) in the phase term and |psi_k^|^2 at -omega in the modulus term
+        if v is not None:
+            return _scat3_grad_v(self, x, v, True, self._indices())
+        return _scat3_jac(self, x, True, self._indices())
 
 
 class Scattering_Fourth_Order_Real_1d(Potential):
@@ -674,60 +750,32 @@ class Scattering_Fourth_Order_Mod2_Real_1d(Potential):
         self.num_coefficients = len(self.indices[0])
         
     def forward(self, x):
-        filters = self.filters.to(x.device)
-        filters_Q = self.filters_Q.to(x.device)
-        x_filtered = torch.fft.ifft(filters_Q*torch.fft.fft(x)) #(B,JQ,T) first wavelet transform 
-        
-        #Normalize micro
-        x_filtered = x_filtered/self.norm
-        
-        x_filtered_abs2 = abs_eps(x_filtered)**2 #(B,JQ,T)
-
-        W_Wx = torch.fft.ifft(filters[:, :, None] * torch.fft.fft(x_filtered_abs2)[:, None]) #(B,J+1,JQ,T): [c, a] = psi_c * E_a
-        # statistic (i0, i1, i2) = mean_t Re[ (psi_i2 * E_i1) conj(psi_i2 * E_i0) ], evaluated on the kept triples only
-        # (2026-11-17; was: all (J+1) x JQ x JQ products, a (B, J+1, JQ, JQ, T) intermediate, then indexed)
-        i0, i1, i2 = self.indices.long()
-        output = torch.real(W_Wx[:, i2, i1] * W_Wx[:, i2, i0].conj()).mean(-1)   # (B, K)
-        return output
+        # statistic (i0, i1, i2) = mean_t Re[ (psi_i2 * E_i1) conj(psi_i2 * E_i0) ], E = |W x / norm|^2
+        return _scat4_forward(self, x, False)
 
     def grad(self, x,  v=None, means=None):
+        # grad phi_abc = T[a,b,c] + T[b,a,c], T[a,b,c] = W_a^*( 2 W_a x . Re(|psi_c|^2 * |W_b x|^2) ) / M / norm_indices
+        if v is None:
+            return _scat4_jac(self, x, False)
+        if not self.filters_Q.is_complex():
+            return _scat4_grad_v(self, x, v, False)
+        # complex filter bank: original grad(x, v) (the fast one is derived for real banks)
         filters = self.filters.to(x.device)
         filters_Q = self.filters_Q.to(x.device)
         number_filters = filters.shape[1]
         number_filters_Q = filters_Q.shape[1]
-
-        
-        x_filtered_no_LF = torch.fft.ifft(filters_Q*torch.fft.fft(x)) # (B,J*Q,M,N)
-        x_filtered_abs2_no_LF = abs_eps(x_filtered_no_LF)**2 # (B,J*L,M,N)
+        x_filtered_no_LF = torch.fft.ifft(filters_Q*torch.fft.fft(x))
+        x_filtered_abs2_no_LF = abs_eps(x_filtered_no_LF)**2
         x_filtered_grad = 2 * x_filtered_no_LF
-
-        
-
         x_filtered_abs2_no_LF_filtered_2 = torch.fft.ifft(
             (torch.fft.fft(x_filtered_abs2_no_LF)[:,:,None] * (filters*filters.conj()))
-        )        
+        )
         indices = self.indices
-
-        if v != None:
-            m = torch.zeros((number_filters_Q, number_filters_Q, number_filters)).to(x.device)
-            m[indices[0], indices[1], indices[2]] = v / self.norm_indices.to(v.device).to(v.dtype)
-            m = m+torch.transpose(m,0,1) 
-    
-            intermediate_output = x_filtered_grad*torch.einsum('ijk, ajkb -> aib', m, torch.real(x_filtered_abs2_no_LF_filtered_2))
-            return torch.fft.ifft(filters_Q.conj()*torch.fft.fft(intermediate_output)).real.sum(1)[:,None]/x.shape[-1]
-            
-        # Full Jacobian (2026-11-17: gather). grad phi_abc = T[a,b,c] + T[b,a,c] with
-        # T[a,b,c] = W_a^*( 2 W_a x . Re(|psi_c|^2 * |W_b x|^2) ): each T depends on its own (a,b,c) only, so only
-        # the 2K entries the K kept triples need are computed (was: all n_Q x n_Q x n_f, then indexed).
-        a, b, c = indices.long()
-        aa, bb, cc = torch.cat([a, b]), torch.cat([b, a]), torch.cat([c, c])          # (a,b,c) then partner (b,a,c)
-        F = torch.real(x_filtered_abs2_no_LF_filtered_2)                             # (B, n_Q, n_f, M)
-        T = x_filtered_grad[:, aa] * F[:, bb, cc]                                    # (B, 2K, M)
-        T = torch.fft.ifft(filters_Q[:, aa].conj() * torch.fft.fft(T)).real
-        K = a.shape[0]
-        output = (T[:, :K] + T[:, K:]) / x.shape[-1]
-
-        return output / self.norm_indices[:,None].to(x.device).to(x.dtype)
+        m = torch.zeros((number_filters_Q, number_filters_Q, number_filters)).to(x.device)
+        m[indices[0], indices[1], indices[2]] = v / self.norm_indices.to(v.device).to(v.dtype)
+        m = m+torch.transpose(m,0,1)
+        intermediate_output = x_filtered_grad*torch.einsum('ijk, ajkb -> aib', m, torch.real(x_filtered_abs2_no_LF_filtered_2))
+        return torch.fft.ifft(filters_Q.conj()*torch.fft.fft(intermediate_output)).real.sum(1)[:,None]/x.shape[-1]
         
     def fit_micro(self,x):
         # Same normalization role as Scattering_Fourth_Order_Real_1d.fit_micro
@@ -777,23 +825,13 @@ class Scattering_Fourth_Order_Mod2_Imag_1d(Potential):
         self.num_coefficients = len(self.indices[0])
 
     def forward(self, x):
-        filters = self.filters.to(x.device)
-        filters_Q = self.filters_Q.to(x.device)
-
-        x_filtered = torch.fft.ifft(filters_Q*torch.fft.fft(x)) #(B,JQ,T)
-
-        #Normalize micro
-        x_filtered = x_filtered/self.norm
-
-        x_filtered_abs2 = abs_eps(x_filtered)**2 #(B,JQ,T)  <-- mod2
-
-        W_Wx = torch.fft.ifft(filters[:, :, None] * torch.fft.fft(x_filtered_abs2)[:, None]) #(B,J+1,JQ,T): [c, a] = psi_c * E_a
-        # statistic (i0, i1, i2) = mean_t Im[ (psi_i2 * E_i1) conj(psi_i2 * E_i0) ], kept triples only (2026-11-17, as Real)
-        i0, i1, i2 = self.indices.long()
-        output = torch.imag(W_Wx[:, i2, i1] * W_Wx[:, i2, i0].conj()).mean(-1)   # (B, K)
-        return output
+        # statistic (i0, i1, i2) = mean_t Im[ (psi_i2 * E_i1) conj(psi_i2 * E_i0) ], E = |W x / norm|^2
+        return _scat4_forward(self, x, True)
 
     def grad(self, x,  v=None, means=None):
+        if not self.filters_Q.is_complex():
+            return _scat4_jac(self, x, True) if v is None else _scat4_grad_v(self, x, v, True)
+        # complex (Daubechies) filter bank: original code below (the fast one is derived for real banks)
         filters = self.filters.to(x.device)
         filters_tilde = torch.fft.fft(torch.fft.ifft(filters).conj()).conj()
         filters_Q = self.filters_Q.to(x.device)
@@ -1301,12 +1339,24 @@ class Scalar_GGD_KRegion():
         return self
 
     # ---- where the coefficients come from: undecimated bank (FFT) or decimated DWT ----
+    def _half_filters(self, x):
+        """psi_s = (psi(k) + conj psi(-k)) / 2 on the first T/2+1 bins (2026-11-23): x and the pulled-back D are real, so
+        Re ifft(psi fft(x)) = irfft(rfft(x) psi_s) and Re ifft(fft(D) conj psi) = irfft(rfft(D) conj psi_s), exactly."""
+        key = (x.device, x.dtype)
+        c = self.__dict__.get('_half_cache')
+        if c is not None and c[0] == key and c[1] is self.filters:
+            return c[2]
+        f = _as_dtype(self.filters.to(x.device), x.dtype)
+        T = f.shape[-1]
+        fs = 0.5 * (f + f[..., (-torch.arange(T, device=x.device)) % T].conj())[..., :T // 2 + 1]
+        self.__dict__['_half_cache'] = (key, self.filters, fs)
+        return fs
+
     def _coeffs(self, x):
         """Coefficients (B, J, T). DWT: channel j zero-padded beyond dwt.sizes[j]."""
         if self.dwt is not None:
             return self.dwt.analysis(x)
-        filters = self.filters.to(x.device)
-        return torch.fft.ifft(filters * torch.fft.fft(x)).real
+        return torch.fft.irfft(torch.fft.rfft(x) * self._half_filters(x), n=x.shape[-1])
 
     def _channel_values(self, z, j):
         """Coefficients of channel j (B, n_j), without the DWT padding."""
@@ -1323,8 +1373,10 @@ class Scalar_GGD_KRegion():
         """Pull d phi / d z (B, n_slots*J, T) back to x: the adjoint of _coeffs, with the
         1/T (1/n_j) of the position mean. For the orthonormal DWT the adjoint is the inverse."""
         if self.dwt is None:
-            fKx = self._get_filters_Kx(x.device)
-            return torch.fft.ifft(torch.fft.fft(D_all) * fKx.conj()).real / x.shape[-1]
+            T = x.shape[-1]
+            fs = self._half_filters(x)
+            ch = torch.arange(D_all.shape[1], device=x.device) % self.J                # channel of each slot
+            return torch.fft.irfft(torch.fft.rfft(D_all) * fs[0, ch].conj(), n=T) / T
         B, J = D_all.shape[0], self.J
         D = D_all.reshape(B, self.n_slots, J, -1)
         out = D_all.new_zeros(B, self.n_slots, J, self.dwt.d)
@@ -1804,11 +1856,6 @@ class Scalar_GGD_KRegion():
                 phi = phi / self.stat_scale.to(x.device)[None, :]
         return phi
 
-    def _get_filters_Kx(self, device):
-        if self._filters_Kx is None or self._filters_Kx.device != device:
-            self._filters_Kx = self.filters.repeat(1, self.n_slots, 1).to(device)
-        return self._filters_Kx
-
     def _all_slot_grad(self, x):
         """Gradient of every candidate slot (B, n_slots*J, T), active or not (fit-time tools)."""
         return self._adjoint(self._all_slot_D(x), x)
@@ -1821,8 +1868,8 @@ class Scalar_GGD_KRegion():
         if self.dwt is not None:
             return self._all_slot_grad(x).index_select(1, idx)
         D = self._all_slot_D(x).index_select(1, idx)
-        fKx = self._get_filters_Kx(x.device).index_select(1, idx)
-        return torch.fft.ifft(torch.fft.fft(D) * fKx.conj()).real / x.shape[-1]
+        T = x.shape[-1]
+        return torch.fft.irfft(torch.fft.rfft(D) * self._half_filters(x)[0, idx % self.J].conj(), n=T) / T
 
     def _grad_projected(self, x, v):
         """sum_s v_s grad phi_s(x), (B, 1, T) (2026-11-17). grad phi_s = L_j(D_s) / stat_scale_s with
@@ -1840,9 +1887,9 @@ class Scalar_GGD_KRegion():
             Wm = torch.zeros(self.J, idx.numel(), dtype=D.dtype, device=x.device)
             Wm[idx % self.J, torch.arange(idx.numel(), device=x.device)] = w   # (J, n_act): channel of each slot
             Dc = torch.matmul(Wm, D)                                            # (B, J, T)
-            filters = self.filters.to(x.device)
-            S = (torch.fft.fft(Dc) * filters.conj()).sum(1, keepdim=True)     # (B, 1, T)
-            return torch.fft.ifft(S).real / x.shape[-1]
+            T = x.shape[-1]
+            S = (torch.fft.rfft(Dc) * self._half_filters(x).conj()).sum(1, keepdim=True)   # (B, 1, T/2+1)
+            return torch.fft.irfft(S, n=T) / T
 
     def _all_slot_D(self, x):
         """d phi_slot / d z (B, n_slots*J, T) for every slot, before the pull-back to x (_adjoint)."""

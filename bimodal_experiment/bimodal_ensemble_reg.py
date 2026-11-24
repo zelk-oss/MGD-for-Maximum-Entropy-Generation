@@ -124,7 +124,7 @@ def estimate_theta_full(seed: int):
         solve_reg=False,
         return_system=True,
     )
-    return out[5].cpu(), out[8]
+    return out[5].cpu(), out[8], out[1].detach().cpu()      # theta_t, system, final walkers (n1,)
 
 
 def run():
@@ -139,11 +139,12 @@ def run():
             continue
         print(f"Run {k+1}/{K}  (beta={beta}, seed={seed})", flush=True)
 
-        theta_traj_mgd, system = estimate_theta_full(seed)
+        theta_traj_mgd, system, x_final = estimate_theta_full(seed)
         system["meta"].update(config, seed=seed, run=k)
         save_atomic(system, sys_path)
         save_atomic({"theta_traj_mgd": theta_traj_mgd,      # (nt, 4)
                      "theta_final_mgd": theta_traj_mgd[-1],  # (4,)
+                     "x_final": x_final,                     # (n1,) final MGD walkers (start of the MALA test)
                      "seed": seed, "run": k, "config": config}, mgd_path)
 
 

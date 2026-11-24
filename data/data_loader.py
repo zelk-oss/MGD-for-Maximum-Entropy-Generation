@@ -21,7 +21,7 @@ from scipy import io
 def load_SNP(nb_copy=1):
     return torch.load('../../data/data_files/SNP')[None, None].repeat(nb_copy,1,1)
 
-def load_turbulence_1d(sous_ech = 0):
+def load_turbulence_1d(sous_ech = 0, n_lagr = 10000):
 
 
     data_path = os.environ.get(
@@ -29,9 +29,16 @@ def load_turbulence_1d(sous_ech = 0):
         '/lustre/fswork/projects/rech/wbg/ukv59en/conditional_mgd/data/data_files/turbulence_1d_period.pt',
     )
 
-    Data = torch.load(data_path)
+    if data_path.endswith('.npz'):
+        # Lagrangian dataset (32768 x 1024): fixed random subset of rows, one row per trajectory.
+        z = np.load(data_path)
+        assert len(np.unique(z['selection_i'])) == len(z['selection_i'])  # no two components of one trajectory
+        idx = np.sort(np.random.default_rng(0).choice(len(z['data']), n_lagr, replace=False))
+        Data = torch.from_numpy(z['data'][idx])[:, None, :]  # held-out rows = complement of idx
+    else:
+        Data = torch.load(data_path)
     Data = Data.to(torch.float32)
-  
+
     for i in range(sous_ech):
         if Data.shape[-1]%2 == 0:
             Data = (Data[:,:,::2]+Data[:,:,1::2]) / 2
