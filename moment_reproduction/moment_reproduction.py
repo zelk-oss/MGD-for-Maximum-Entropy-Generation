@@ -79,8 +79,10 @@ def training_data(cfg):
         return x1.float()
     if not str(_need(cfg, 'config_name')).startswith('turb'):
         raise ValueError(f"unknown dataset for {cfg['config_name']}")
+    if cfg.get('n1_spread') and cfg.get('data_path'):
+        raise ValueError('--n1_spread with a recorded data_path: not supported here, not guessing')
     if not cfg.get('n1_spread'):
-        return build_data(L, T, n1, 0)[0]
+        return build_data(L, T, n1, 0, data_path=cfg.get('data_path'))[0]
     # --n1_spread: same selection as turbulence/run_SDE.py:461-472
     from utils import normalize, split_periodize_reshape
     from ortho_wavelet.ReadyToUseWavelets import DefineWavelet

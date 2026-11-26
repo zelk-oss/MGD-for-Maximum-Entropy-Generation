@@ -1313,6 +1313,9 @@ class Scalar_GGD_KRegion():
         # statistic that is a near-copy of one in another family (2026-10-01:
         # Scalar_morlet ch 8 region 3 ~ Scalar_psi ch 21 region 3, 1 - |corr| = 6.7e-6)
         self.drop_slots = ()
+        # whole channels removed after the fit (--drop_stats NAME:LO-HI:all), as (lo, hi) ranges with hi None =
+        # up to the last channel (low-pass included); resolved into drop_slots once the active set is known
+        self.drop_channels = ()
 
     def __call__(self, x, *args):
         return self.forward(x, *args)
@@ -1762,10 +1765,21 @@ class Scalar_GGD_KRegion():
     def _apply_drop_slots(self):
         """Remove the (channel, region) statistics in self.drop_slots from the active set.
         Raises if one is not active (pruned or empty), so a wrong slot never passes silently."""
-        if not self.drop_slots:
-            return
         J = self.J
         flat = [int(f) for f in self.active_flat.cpu()]
+        if getattr(self, 'drop_channels', ()):
+            chans = set()
+            for lo, hi in self.drop_channels:
+                hi = J - 1 if hi is None else hi
+                if not 0 <= lo <= hi < J:
+                    raise ValueError(f"drop_channels ({lo}, {hi}): this potential has channels 0..{J - 1}")
+                chans |= set(range(lo, hi + 1))
+            self.drop_slots = tuple(self.drop_slots) + tuple(
+                (f % J, f // J) for f in flat if f % J in chans and (f % J, f // J) not in set(self.drop_slots))
+            self.drop_channels = ()
+            print(f"[drop_channels] channels {sorted(chans)}: all their active statistics are dropped")
+        if not self.drop_slots:
+            return
         drop = {int(k) * J + int(j) for j, k in self.drop_slots}
         missing = sorted((f % J, f // J) for f in drop - set(flat))
         if missing:

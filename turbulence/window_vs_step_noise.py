@@ -79,7 +79,7 @@ def main(label, seed, show):
                              deduplicate_filters=bool(a.get('deduplicate_filters', False)),
                              dedup_tol=float(a.get('dedup_tol', 1e-12)), ggd_kwargs=ggd)
 
-    x1, _ = build_data(int(a.get('subseries_len', 512)), M, int(a['n1']), 1)
+    x1, _ = build_data(int(a.get('subseries_len', 512)), M, int(a['n1']), 1, data_path=a.get('data_path'))
     white = torch.randn(4000, 1, M, dtype=torch.float64)
 
     loaded = {}

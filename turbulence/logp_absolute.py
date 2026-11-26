@@ -125,7 +125,7 @@ def main(a):
 
     pots = load_potentials(exp, cfg, device)
     ranges = {k: (s, s + w) for k, (s, w) in theta_column_map(pots, len(theta)).items()}
-    x1, _ = build_data(int(cfg.get('subseries_len', 512)), int(cfg['M']), int(cfg['n1']), 1)
+    x1, _ = build_data(int(cfg.get('subseries_len', 512)), int(cfg['M']), int(cfg['n1']), 1, data_path=cfg.get('data_path'))
     phi_d = phi_matrix(pots, x1.to(device))
     phi_g = phi_matrix(pots, xt.to(device))
     m_data, m_gen = phi_d.mean(0), phi_g.mean(0)

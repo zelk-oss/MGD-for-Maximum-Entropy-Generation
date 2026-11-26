@@ -1,0 +1,44 @@
+=== turbulencesynth_M1024_J8_Q3_sigma2.5_nt27500_n1_5000_lam0.0_thomas_nsub1_moment_f64_dedupfilt1e-08_seed_900_termsab244184_turbulence_nested_M3_bicw_allmass_scat34d_term_lagr1024J8_q3cut_n15000_20261124_2308
+  aux rows 27818, statistics 387, terminal_start (= planned steps) 27500, terminal steps logged 318; last row index 27817 (expected k0 + n_term - 1 = 27817)
+  terminal phase: z at end of planned grid 129 (stat 49), h 1.52e-08 -> 2.74e-10, max z after the last step 0.0662, reason: hold finished; params {'tol': 0.1, 'shrink': 0.8, 'hold': 300, 'h_min': 1e-14, 'max_steps': 2000, 'in_system': True}
+  row 27499 (planned end): sanity: statistic 49 = Scalar_psi_gaussianK[40]: rel 2.346e+00, z 129 -> rel/z 1.820e-02 (= SE/|e| of that statistic; at the last row the same ratio nan if the worst stat is the same)
+
+  stats with rel above threshold: before (row 27499, planned end) -> after (last row)
+    > 0.01:   22 ->    0   of 387
+    > 0.001:   46 ->    1   of 387
+    > 0.0001:   84 ->    8   of 387
+  before: median 1.33e-06  p90 1.43e-03  p99 7.39e-01  max 5.23e+00
+  after : median 1.27e-07  p90 3.50e-06  p99 2.24e-04  max 2.18e-03
+
+  worst 15 before the terminal phase:
+   idx statistic                                       rel before   rel after   factor  p/e before  p/e after
+   182 Scattering_Third_Order_Imag_nolp[7]              5.231e+00   2.181e-03   2398.8      6.2309     0.9978
+    49 Scalar_psi_gaussianK[40]                         2.346e+00   5.694e-04   4120.5      3.3464     1.0006
+    36 Scalar_psi_gaussianK[27]                         2.235e+00   5.152e-04   4339.3      3.2355     1.0005
+    50 Scalar_psi_gaussianK[41]                         7.812e-01   1.382e-04   5654.0      1.7812     1.0001
+    37 Scalar_psi_gaussianK[28]                         7.319e-01   1.233e-04   5935.5      1.7319     1.0001
+    23 Scalar_psi_gaussianK[14]                         2.348e-01   2.240e-04   1048.2      1.2348     1.0002
+    24 Scalar_psi_gaussianK[15]                         1.006e-01   9.013e-05   1116.6      1.1006     1.0001
+    51 Scalar_psi_gaussianK[42]                         7.552e-02   1.631e-05   4629.1      1.0755     1.0000
+    90 Scalar_morlet_gaussianK[14]                      7.525e-02   2.253e-04    334.0      1.0753     1.0002
+    38 Scalar_psi_gaussianK[29]                         6.892e-02   1.473e-05   4677.9      1.0689     1.0000
+   138 Scattering_Third_Order_Real[7]                   5.266e-02   5.308e-05    992.1      0.9473     0.9999
+   179 Scattering_Third_Order_Imag_nolp[4]              3.981e-02   1.595e-04    249.5      1.0398     1.0002
+   139 Scattering_Third_Order_Real[8]                   3.314e-02   3.365e-05    985.0      0.9669     1.0000
+   175 Scattering_Third_Order_Imag_nolp[0]              2.892e-02   7.340e-07  39401.1      0.9711     1.0000
+    25 Scalar_psi_gaussianK[16]                         2.574e-02   1.507e-05   1708.3      1.0257     1.0000
+
+  5 statistics whose error GREW most (after - before), to see side effects:
+   149 Scattering_Third_Order_Real[18]                  1.603e-06 -> 9.817e-06
+   374 Scattering_Fourth_Order_Mod2_Imag_Q1[43]         2.133e-06 -> 6.480e-06
+   380 Scattering_Fourth_Order_Mod2_Imag_Q1[49]         8.551e-07 -> 3.677e-06
+   196 Scattering_Third_Order_Imag_nolp[21]             3.964e-07 -> 2.973e-06
+   192 Scattering_Third_Order_Imag_nolp[17]             1.342e-06 -> 3.738e-06
+
+  5 worst AFTER the terminal phase:
+   182 Scattering_Third_Order_Imag_nolp[7]              5.231e+00 -> 2.181e-03
+    49 Scalar_psi_gaussianK[40]                         2.346e+00 -> 5.694e-04
+    36 Scalar_psi_gaussianK[27]                         2.235e+00 -> 5.152e-04
+    90 Scalar_morlet_gaussianK[14]                      7.525e-02 -> 2.253e-04
+    23 Scalar_psi_gaussianK[14]                         2.348e-01 -> 2.240e-04
+  wrote terminal_phase_test/errors_m1024_smoke/turbulencesynth_M1024_J8_Q3_sigma2.5_nt27500_n1_5000_lam0.0_thomas_nsub1_moment_f64_dedupfilt1e-08_seed_900_termsab244184_turbulence_nested_M3_bicw_allmass_scat34d_term_lagr1024J8_q3cut_n15000_20261124_2308_before_after.csv

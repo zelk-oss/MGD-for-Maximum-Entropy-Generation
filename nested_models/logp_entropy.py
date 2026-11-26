@@ -130,7 +130,7 @@ def analyse(label, seed, lam=5e-4, ridge=1e-4, device=None, n_model=None, root=T
     labels = [l for _, _, l in stat_labels(pots)]
     assert ends[-1] == theta.shape[0] == len(labels), (ends[-1], theta.shape, len(labels))
 
-    x1, _ = build_data(int(cfg.get('subseries_len', 512)), int(cfg['M']), int(cfg['n1']), 1)
+    x1, _ = build_data(int(cfg.get('subseries_len', 512)), int(cfg['M']), int(cfg['n1']), 1, data_path=cfg.get('data_path'))
     xt = _pt(sr / 'samples' / f'{config}.pt').float()
     xt = xt.reshape(xt.shape[0], 1, -1)
     if n_model:

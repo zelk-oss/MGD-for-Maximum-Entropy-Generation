@@ -137,6 +137,15 @@ def parse_args():
     p.add_argument('--pin_eps_nats', type=float, default=1e-2,
                    help='with --pin_l6: eps in nats per standard deviation of phi_i on the walkers (default 1e-2, '
                         'the pinall standard of 2026-11-18)')
+    p.add_argument('--pin_mode', choices=['all', 'pos'], default='all',
+                   help='with --pin_l6 (2026-11-25): all = pinall (every L_6 entry at -eps, one solve); pos = PINPOS '
+                        '(user standard since 11-20): start from the free solve at the same lam (the saved file without '
+                        'the pin if it exists, else solved here), fix at -eps only the L_6 entries above -eps, re-solve, '
+                        'repeat until none is above (add_only; pinned entries are never released). pos adds _pos to the '
+                        'pin tag (_pinl6pos / _pinl6e<eps>pos).')
+    p.add_argument('--pin_max_iter', type=int, default=10,
+                   help='with --pin_mode pos: max pinned re-solves; a run that ends with entries still above -eps is '
+                        'saved with _NOTFEASIBLE in the name')
     p.add_argument('--node_stride', type=int, default=1,
                    help='keep every m-th node (plus the last) before the solve: cells then span m steps, so the '
                         'directions of C filled by one step of SDE noise (mu ~ 2 h sigma^2) move to ~2 m h sigma^2. '
@@ -350,6 +359,56 @@ def build_pin_l6(system, inp, args):
     return (bounded.clone(), torch.where(bounded, U, torch.zeros_like(U))), (a_, b_), eps[-1]
 
 
+def solve_pinpos(solver_self, inp, lam, args, mode, pin, free_file, config):
+    """PINPOS L_6 method (theta_sign_constraint/pin_l6_test.py, made a production step 2026-11-25). pin = (bounded,
+    value) from build_pin_l6. Start = the free Theta at this lam: the saved file free_file if it exists (it has no
+    node 0, which then starts unpinned and is checked after the first pinned solve), else one free solve. Each round
+    pins every bounded entry above its value -eps and re-solves; pinned entries stay pinned. Returns (Theta, info)."""
+    bounded, U = pin
+
+    def thomas(p):
+        t0 = time.time()
+        with contextlib.redirect_stdout(io.StringIO()):
+            Th = SDE._solve_regularised_thomas(solver_self, inp['t'], inp['M'], inp['C'], inp['b'], inp['v'], lam,
+                                               ridge=args.ridge, mode=mode, dim=inp['dim'], schedule=args.schedule,
+                                               live=inp['live'], n_walkers=inp['n_walkers'], pin=p)
+        return Th, time.time() - t0
+
+    if free_file.exists():
+        saved = torch.load(free_file, map_location='cpu', weights_only=False)['Theta_reg']
+        if saved.shape != (bounded.shape[0] - 1, bounded.shape[1]):
+            raise ValueError(f'[{config}] free file {free_file.name} has shape {tuple(saved.shape)}, '
+                             f'expected {(bounded.shape[0] - 1, bounded.shape[1])}')
+        Th = torch.cat([torch.full_like(saved[:1], float('-inf')), saved]).to(U.dtype)
+        start = f'saved {free_file.name}'
+    else:
+        Th, dt = thomas(None)
+        Th = Th.cpu().to(U.dtype)
+        start = f'free solve here ({dt:.0f} s)'
+    if not bool(torch.isfinite(Th[1:]).all()):
+        raise ValueError(f'[{config}] lam={lam:g}: free Theta has non-finite entries: pinpos cannot run')
+    pinned = torch.zeros_like(bounded)
+    added = []
+    for _ in range(args.pin_max_iter):
+        viol = bounded & ~pinned & (Th > U)
+        added.append(int(viol.sum()))
+        if not added[-1]:
+            break
+        pinned |= viol
+        Th, dt = thomas((pinned.clone(), torch.where(pinned, U, torch.zeros_like(U))))
+        Th = Th.cpu().to(U.dtype)
+        print(f'[{config}] lam={lam:g} pinpos round {len(added)}: +{added[-1]} pinned (total {int(pinned.sum())}), '
+              f'{dt:.0f} s, residual {solver_self.last_reg_residual:.2e}', flush=True)
+    left = int((bounded & ~pinned & (Th > U)).sum())
+    info = dict(start=start, added_per_round=added, n_pinned=int(pinned.sum()), n_bounded=int(bounded.sum()),
+                n_pinned_last_node=int(pinned[-1].sum()), still_above=left, feasible=left == 0,
+                pinned_mask=pinned[1:].clone())
+    print(f'[{config}] lam={lam:g} pinpos: {"feasible" if left == 0 else f"NOT feasible ({left} entries above -eps)"}, '
+          f'{info["n_pinned"]} of {info["n_bounded"]} L_6 entries pinned ({info["n_pinned_last_node"]} at the last node), '
+          f'start: {start}', flush=True)
+    return Th, info
+
+
 def diagnose(inp, n_nodes):
     """Conditioning of the per-node blocks (Jacobi-scaled, float64): at lam=0 the solve is
     M_k theta = b_k (+ ridge), so an exactly rank-deficient M_k is singular."""
@@ -436,10 +495,17 @@ def main():
                                  f'--neg_cols, --node_stride > 1 or --c_floor_eps')
             pin, (pa, pb), eps_last = build_pin_l6(system, inp, args)
             pin_info = dict(cols=(pa, pb), eps_nats=args.pin_eps_nats, n_pinned=int(pin[0].sum()))
-            print(f'[{config}] pinall L_6: Theta = -eps on columns {pa}:{pb} at all {len(inp["t"])} nodes '
+            print(f'[{config}] L_6 pin ({"pinpos: candidates" if args.pin_mode == "pos" else "pinall"}): '
+                  f'Theta = -eps on columns {pa}:{pb} at all {len(inp["t"])} nodes '
                   f'({pin_info["n_pinned"]} entries), eps_nats {args.pin_eps_nats:g}; value at the last node '
                   f'(-eps/sd per filter): {[f"{-float(u):.3g}" for u in eps_last]}')
         pin_tag = '' if pin is None else ('_pinl6' if args.pin_eps_nats == 1e-2 else f'_pinl6e{args.pin_eps_nats:g}')
+        if pin is not None and args.pin_mode == 'pos':
+            if args.c_shrink is not None:
+                raise ValueError(f'[{config}] --pin_mode pos with --c_shrink: not supported (free file name ambiguous)')
+            pin_tag += 'pos'
+            pin_info['mode'] = 'pos'
+            print(f'[{config}] pin mode pos: only entries above -eps get pinned (add_only, max {args.pin_max_iter} re-solves)')
         extra0 = neg_tag(args)
         if any(e for e in args.c_floor_eps) and (neg is not None or args.select or mode != 'moment'):
             raise ValueError(f'[{config}] --c_floor_eps > 0 needs moment mode, no --neg_cols, no --select')
@@ -499,6 +565,12 @@ def main():
                           f'({info["n_wants_out"]} of them would go below the bound if freed), '
                           f'max Theta on the bounded columns {info["max_theta_bounded"]:.3g}, '
                           f'max excess over the bound {info["max_excess"]:.3g}')
+                elif pin is not None and args.pin_mode == 'pos':
+                    free_file = out_path(args.outdir, config, lam, args.ridge, mode, args.schedule, inp['mask'],
+                                         extra0 + stride_tag)
+                    Theta, pos_info = solve_pinpos(solver_self, inp, lam, args, mode, pin, free_file, config)
+                    pin_info = {**pin_info, **pos_info}
+                    neg_info = None
                 else:
                     with contextlib.redirect_stdout(io.StringIO()):
                         Theta = SDE._solve_regularised_thomas(
@@ -512,6 +584,8 @@ def main():
                 failed.append((lam, c_eps))
                 continue
             dest = out_path(args.outdir, config, lam, args.ridge, mode, args.schedule, inp['mask'], extra)
+            if pin_info is not None and pin_info.get('mode') == 'pos' and not pin_info['feasible']:
+                dest = dest.with_name(dest.stem + '_NOTFEASIBLE_' + time.strftime('%Y%m%d_%H%M%S') + '.pt')
             if neg_info is not None and not neg_info['converged']:
                 # Timestamp the NOTCONVERGED name so a relaunch never clobbers the previous attempt
                 # (lets us keep both for comparison without moving them to a stash dir).

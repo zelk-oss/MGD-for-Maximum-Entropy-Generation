@@ -141,7 +141,14 @@ def pull_commands(labels, subdir='turbulence'):
 
 def reference_data(cfg, device='cpu'):
     """x1 exactly as run_SDE.py builds it, from a run's config.json."""
-    if 'TURBULENCE_1D_DATA_PATH' not in os.environ and LOCAL_DATA.exists():
+    if cfg.get('data_path'):            # recorded since 2026-11-24: never fall back to another file for these runs
+        path = Path(cfg['data_path'])
+        if not path.exists():           # JZ path read on another machine: same file name under data/data_files
+            path = PROJECT / 'data' / 'data_files' / path.name
+        if not path.exists():
+            raise FileNotFoundError(f"training data {cfg['data_path']} of this run not found (nor {path})")
+        os.environ['TURBULENCE_1D_DATA_PATH'] = str(path)
+    elif 'TURBULENCE_1D_DATA_PATH' not in os.environ and LOCAL_DATA.exists():
         os.environ['TURBULENCE_1D_DATA_PATH'] = str(LOCAL_DATA)
     from data_loader import load_turbulence_1d
     W = DefineWavelet('Db', m=3, device=device)

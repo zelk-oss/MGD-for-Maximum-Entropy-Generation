@@ -526,6 +526,7 @@ def main():
         extra_metadata={
             'M': M, 'B': B, 'channels': channels,
             'coarse_grained': coarse_grained, 'pre_coarse_grain_length': pre_len,
+            'data_path': turbulence_1d_path(),       # analyses rebuild x1 from this file (run_comparison.reference_data)
         },
         include_potentials_dir=True,
     )

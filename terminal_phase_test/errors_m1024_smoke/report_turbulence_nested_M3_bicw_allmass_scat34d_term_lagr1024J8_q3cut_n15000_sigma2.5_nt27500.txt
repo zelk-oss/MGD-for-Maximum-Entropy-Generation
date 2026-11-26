@@ -1,0 +1,13 @@
+
+=== seed 900: turbulencesynth_M1024_J8_Q3_sigma2.5_nt27500_n1_5000_lam0.0_thomas_nsub1_moment_f64_dedupfilt1e-08_seed_900_termsab244184_turbulence_nested_M3_bicw_allmass_scat34d_term_lagr1024J8_q3cut_n15000_20261124_2308
+  n1=5000 M=1024 J=8 Q=3 sigma=2.5 terms=['L_6', 'Scalar_psi_gaussianK', 'Scalar_morlet_gaussianK', 'Scattering_Third_Order_Real', 'Scattering_Third_Order_Imag_nolp', 'Scattering_Fourth_Order_Mod2_Real_Q1_diag', 'Scattering_Fourth_Order_Mod2_Imag_Q1']
+[deduplicate_filters] filters_Q: 25 -> 25 channels for channel-list potentials (dropped duplicates [], tol=1e-08)
+  check: rebuilt phi on saved samples vs aux barphi_p: median rel 4.7e-07, max 1.7e-04
+1. 387 statistics at t=1 (miss: rel > 0.01); z median 0.67 under independent-sample noise
+  all       n= 387  rel mean 1.27e-05 median 1.27e-07 p90 3.50e-06 max 2.18e-03 | z median 2.9e-07 | sign persistence (1-t<1e-2) median 44%
+  matched   n= 387  rel mean 1.27e-05 median 1.27e-07 p90 3.50e-06 max 2.18e-03 | z median 2.9e-07 | sign persistence (1-t<1e-2) median 44%
+2. Ito term, 122 Scalar statistics (Spearman of |I_n| with rel_n across statistics):
+   1-t= 1e-2 h=3.04e-06: Spearman +0.61 (p 5e-14); |I| median missed nan vs matched 6.44e-02
+   1-t= 1e-3 h=3.04e-07: Spearman +0.61 (p 5e-14); |I| median missed nan vs matched 6.44e-03
+   1-t=  end h=2.74e-10: Spearman +0.61 (p 5e-14); |I| median missed nan vs matched 5.80e-06
+  wrote terminal_phase_test/errors_m1024_smoke/turbulencesynth_M1024_J8_Q3_sigma2.5_nt27500_n1_5000_lam0.0_thomas_nsub1_moment_f64_dedupfilt1e-08_seed_900_termsab244184_turbulence_nested_M3_bicw_allmass_scat34d_term_lagr1024J8_q3cut_n15000_20261124_2308.csv (387 statistics)

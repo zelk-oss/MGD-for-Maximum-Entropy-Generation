@@ -70,7 +70,7 @@ def main():
         cfg = json.loads((exp / 'config.json').read_text())
         config = cfg['config_name']
         configs[s] = config
-        x1, _ = build_data(int(cfg.get('subseries_len', 512)), int(cfg['M']), int(cfg['n1']), 1)
+        x1, _ = build_data(int(cfg.get('subseries_len', 512)), int(cfg['M']), int(cfg['n1']), 1, data_path=cfg.get('data_path'))
         if a.n_signals:
             x1 = x1[:a.n_signals]
         if x1_ref is None:

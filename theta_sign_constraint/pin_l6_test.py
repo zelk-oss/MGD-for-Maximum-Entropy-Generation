@@ -255,7 +255,7 @@ def main():
     assert cfg['config_name'] == config, (cfg['config_name'], config)
     device = 'cuda' if torch.cuda.is_available() else 'cpu'
     pots = load_potentials(args.exp_dir, cfg, device)
-    x1, _ = build_data(int(cfg.get('subseries_len', 512)), int(cfg['M']), int(cfg['n1']), 1)
+    x1, _ = build_data(int(cfg.get('subseries_len', 512)), int(cfg['M']), int(cfg['n1']), 1, data_path=cfg.get('data_path'))
     x1 = x1.to(device)
     xg = torch.load(args.samples, map_location='cpu', weights_only=False).float()
     xg = xg.reshape(xg.shape[0], 1, -1).to(device)

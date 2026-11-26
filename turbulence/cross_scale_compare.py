@@ -226,6 +226,9 @@ def compute(args):
 
     def timed(name, x, key):
         tag = ''.join(ch if ch.isalnum() else '_' for ch in f'{name}__{key}')
+        if len(tag) > 200:                           # long labels (M=1024 runs, 2026-11-25): file name > 255 bytes
+            import hashlib
+            tag = tag[:80] + '_' + hashlib.sha1(tag.encode()).hexdigest()[:16]
         f = cache / f'v{CACHE_VERSION}_{tag}.npz'
         if f.exists():
             print(f'  {name:32s} cached', flush=True)

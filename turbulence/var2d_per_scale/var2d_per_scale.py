@@ -8,8 +8,8 @@ is driven by rare events (higher cumulants).
 Energy of statistic i of a Scalar_*_gaussianK potential: A_i(x) = theta_i * phi_i(x), theta = Theta_reg(t=1)
 of the chosen lambda. Statistics (channel j, magnitude region k) are grouped per channel j. Var over
 signals x, evaluated on the data x1 and on the model samples.
-    Var/2d = Var(sum_i in channel A_i) / (2 d ln 10)   [digits per dimension; table convention of 2026-11-06]
-    nats total = Var/2d * d * ln 10  (csv has both).
+    Var/2d = Var(sum_i in channel A_i) / (2 d), d = M = signal length   [nats per dimension; was digits until 2026-11-25]
+    nats total = Var/2d * d  (csv has both: var2d, half_var_nats).
 "Dropped set" of a period P: all channels with scale >= P (incl. the low-pass); its Var is the Var of the SUM of
 the energies (the terms are correlated, the sum of single Var/2 is not the group value).
 
@@ -52,11 +52,13 @@ ap.add_argument('--lam', type=float, default=1e-3, help='rule A (cross-seed M, t
 ap.add_argument('--ridge', type=float, default=1e-4)
 ap.add_argument('--sweep_dir', type=Path, default=None,
                 help='folder with <config>/lam*_ridge*_moment_mask.pt (default: SCRATCH theta_reg_lamsweep_xseed/bscat4)')
+ap.add_argument('--theta_file', type=Path, default=None,
+                help='Theta_reg file to use (e.g. a pinpos or droplast solve); overrides --lam/--ridge/--sweep_dir lookup')
 ap.add_argument('--n_max', type=int, default=None, help='use only the first n signals (smoke test)')
 ap.add_argument('--out', type=Path, default=HERE / 'results')
 args = ap.parse_args()
 args.out.mkdir(parents=True, exist_ok=True)
-if args.sweep_dir is None:
+if args.sweep_dir is None and args.theta_file is None:
     args.sweep_dir = (Path(os.environ['SCRATCH']) / 'MGD-for-Maximum-Entropy-Generation/turbulence'
                       / 'theta_reg_lamsweep_xseed/bscat4')
 
@@ -68,8 +70,17 @@ assert exp is not None, f'no experiments folder for {config}'
 run = rc.load_config(config, rc.ROOT, label=args.label, extras=False)
 cfg = run['cfg']
 M = int(cfg['M'])
-theta, desc = find_theta(config, args.lam, args.ridge, 1e-2, False, args.sweep_dir,
-                         Path('/nonexistent'), unconstrained=True)
+# periods are reported in ORIGINAL samples (before coarse graining), so runs at different M / coarse graining
+# compare at the same physical scale (user decision 2026-11-25). M=256 runs: 1 grid sample = 2 original samples.
+GRID_TO_ORIG = int(cfg['subseries_len']) / int(cfg['target_len'])
+if args.theta_file is not None:
+    sol = torch.load(args.theta_file, map_location='cpu', weights_only=False)
+    assert sol['config'] == config, (sol['config'], config)
+    theta, desc = sol['Theta_reg'][-1].double().numpy(), f"{args.theta_file.name} lam={sol['lam']:g}"
+    args.lam = float(sol['lam'])
+else:
+    theta, desc = find_theta(config, args.lam, args.ridge, 1e-2, False, args.sweep_dir,
+                             Path('/nonexistent'), unconstrained=True)
 device = 'cuda' if torch.cuda.is_available() else 'cpu'
 pots = load_potentials(exp, cfg, device)
 cmap = theta_column_map(pots, theta.shape[0])
@@ -89,7 +100,7 @@ def energies(pot, th, x):
 
 
 # %% Var of the energy per statistic and per channel
-to_digits = 1.0 / (2 * M * np.log(10))            # Var -> Var/2d  [digits per dimension]
+per_dim = 1.0 / (2 * M)                           # Var -> Var/2d  [nats per dimension], d = M (user 2026-11-25)
 stat_rows, chan_rows, A_chan, filt = [], [], {}, {}
 for key, name in NAMES.items():
     pot = pots[name]
@@ -101,7 +112,7 @@ for key, name in NAMES.items():
     slot, chan = np.array([divmod(f, J)[0] for f in flat]), np.array([divmod(f, J)[1] for f in flat])
     f = pot.filters.reshape(-1, M).cpu()
     xi = np.abs(np.fft.fftfreq(M))[f.abs().argmax(-1).numpy()]       # centre frequency, cycles/sample
-    period = np.where(xi == 0, np.inf, 1 / np.maximum(xi, 1e-12))
+    period = np.where(xi == 0, np.inf, 1 / np.maximum(xi, 1e-12)) * GRID_TO_ORIG   # original samples
     filt[key] = (f.to(torch.complex128).numpy(), period)
     for src, x in signals.items():
         A = energies(pot, th, x)                                     # (N, n_stat)
@@ -116,8 +127,8 @@ for key, name in NAMES.items():
             Aj = A[:, cols].sum(1)
             A_chan[(key, src, j)] = Aj
             chan_rows.append(dict(potential=key, source=src, channel=j, period=period[j], n_stats=cols.size,
-                                  half_var_nats=Aj.var(ddof=1) / 2, var2d=Aj.var(ddof=1) * to_digits,
-                                  var2d_sum_of_singles=var_stat[cols].sum() * to_digits))
+                                  half_var_nats=Aj.var(ddof=1) / 2, var2d=Aj.var(ddof=1) * per_dim,
+                                  var2d_sum_of_singles=var_stat[cols].sum() * per_dim))
     print(f'{key}: {width} statistics in {len(set(chan.tolist()))} of {J} channels')
 
 for fname, rows in (('var2d_per_stat.csv', stat_rows), ('var2d_per_channel.csv', chan_rows)):
@@ -135,7 +146,7 @@ for key in NAMES:
         for r in ch:
             acc = acc + A_chan[(key, src, r['channel'])]
             drop_rows.append(dict(potential=key, source=src, period_min=r['period'], n_channels=0,
-                                  var2d=acc.var(ddof=1) * to_digits, half_var_nats=acc.var(ddof=1) / 2))
+                                  var2d=acc.var(ddof=1) * per_dim, half_var_nats=acc.var(ddof=1) / 2))
         for k, r in enumerate([r for r in drop_rows if r['potential'] == key and r['source'] == src]):
             r['n_channels'] = k + 1
 with open(args.out / 'var2d_dropped_set.csv', 'w', newline='') as fh:
@@ -163,8 +174,19 @@ for src in signals:
     for m in sorted(set(best.values())):
         chs = [j for j in sorted(best) if best[j] == m and ('psi', src, j) in A_chan]
         add(f'Q=1 ch {m}', chs, [m], per_m[m])
-    coarse = [m for m in range(len(per_m)) if 128 <= per_m[m] < np.inf]            # Q=1 channels at 128 and 256
-    add('scales 128 and 256 together (no low-pass)', [j for j in sorted(best) if best[j] in coarse], coarse, np.nan)
+    # the two coarsest Q=1 octaves of the M=256 report (grid 128 and 256 = 256 and 512 ORIGINAL samples), kept at the
+    # same physical scale; coarser octaves (J=9, 10 at M=1024) are separate per-channel rows above
+    coarse = [m for m in range(len(per_m)) if 256 / 1.2 <= per_m[m] <= 512 * 1.2]
+    if coarse:
+        add('periods 256 and 512 orig. samples together (no low-pass)',
+            [j for j in sorted(best) if best[j] in coarse], coarse, np.nan)
+    # Q=3 band of the M=256 report (grid 21-85 = 42-170 original samples): Var of the SUM of its channels' energies
+    band = [j for j in range(len(per_p)) if 42 <= per_p[j] <= 170 and ('psi', src, j) in A_chan]
+    if band:
+        a = sum(A_chan[('psi', src, j)] for j in band)
+        group_rows.append(dict(source=src, group='Q=3 band 42-170 orig. samples (sum)', period_morlet=np.nan,
+                               n_psi_channels=len(band), psi_channels=' '.join(map(str, band)), half_var_psi=HALF(a),
+                               half_var_morlet=np.nan, corr=np.nan, half_var_sum=HALF(a)))
 with open(args.out / 'var2d_bank_groups.csv', 'w', newline='') as fh:
     wr = csv.DictWriter(fh, fieldnames=list(group_rows[0]))
     wr.writeheader(); wr.writerows(group_rows)
@@ -191,7 +213,7 @@ def figure(rows, ycol, ylabel, title, fname, cumulative):
             if (~fin).any():                                          # low-pass: drawn at the right edge, marked
                 ax.plot([per[fin].max() * 1.6], val[~fin], 's', color=COL[src], ms=6, mfc='none')
         ax.set_xscale('log'); ax.set_yscale('log')
-        ax.set_title(TITLES[key]); ax.set_xlabel('scale = 1 / centre frequency  [samples]  (square = low-pass)')
+        ax.set_title(TITLES[key]); ax.set_xlabel('scale = 1 / centre frequency  [original samples]  (square = low-pass)')
         ax.grid(alpha=0.3, which='both')
     axes[0].set_ylabel(ylabel); axes[0].legend(fontsize=8)
     if cumulative:
@@ -202,9 +224,9 @@ def figure(rows, ycol, ylabel, title, fname, cumulative):
     fig.savefig(args.out / fname, dpi=150)
 
 
-figure(chan_rows, 'var2d', 'Var/2d of the channel energy  [digits per dimension]',
+figure(chan_rows, 'var2d', 'Var/2d of the channel energy  [nats per dimension]',
        f'Var(theta.phi)/2d per channel, Theta_reg lam={args.lam:g}, seed {args.seed}', 'var2d_per_channel.png', False)
-figure(drop_rows, 'var2d', 'Var/2d of the dropped set  [digits per dimension]',
+figure(drop_rows, 'var2d', 'Var/2d of the dropped set  [nats per dimension]',
        'Var/2d of the energy of ALL channels with scale >= x (what removing them would cost, 1st order)',
        'var2d_dropped_set.png', True)
 print(f'saved in {args.out}: var2d_per_channel.{{csv,png}}, var2d_per_stat.csv, var2d_dropped_set.{{csv,png}}, '

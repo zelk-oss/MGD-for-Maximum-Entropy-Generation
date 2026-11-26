@@ -436,10 +436,16 @@ def run_experiment(args, M, config, x1, filters, t, logger, outdir, device,
         # (codes/whitening.py). Before fit/load: the loaded fitted states take the potentials' own filters.
         from codes.whitening import whiten_potentials
         whiten_potentials(potentials, whiten_mult, log=logger.info)
-    for spec in getattr(args, 'drop_stats', None) or []:     # NAME:CHANNEL:REGION
+    for spec in getattr(args, 'drop_stats', None) or []:     # NAME:CHANNEL:REGION, or NAME:LO-HI:all (whole channels)
         name, ch, reg = spec.split(':')
         if not hasattr(potentials.get(name), 'drop_slots'):
             raise ValueError(f'--drop_stats {spec}: {name} is not a region potential of this run')
+        if reg == 'all':                                      # e.g. Scalar_psi_gaussianK:10-:all = channel 10 to the last
+            lo, _, hi = ch.partition('-')
+            rng = (int(lo), int(hi) if hi else None) if _ else (int(lo), int(lo))
+            potentials[name].drop_channels = tuple(getattr(potentials[name], 'drop_channels', ())) + (rng,)
+            logger.info('Dropping %s channels %s (all regions) after the fit', name, ch)
+            continue
         potentials[name].drop_slots = tuple(potentials[name].drop_slots) + ((int(ch), int(reg)),)
         logger.info('Dropping %s channel %s region %s after the fit', name, ch, reg)
 

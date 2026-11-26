@@ -21,19 +21,24 @@ from scipy import io
 def load_SNP(nb_copy=1):
     return torch.load('../../data/data_files/SNP')[None, None].repeat(nb_copy,1,1)
 
+TURBULENCE_1D_DEFAULT = '/lustre/fswork/projects/rech/wbg/ukv59en/conditional_mgd/data/data_files/turbulence_1d_period.pt'
+
+
+def turbulence_1d_path():
+    """The file load_turbulence_1d reads (recorded in each run's config.json as data_path)."""
+    return os.environ.get('TURBULENCE_1D_DATA_PATH', TURBULENCE_1D_DEFAULT)
+
+
 def load_turbulence_1d(sous_ech = 0, n_lagr = 10000):
 
-
-    data_path = os.environ.get(
-        'TURBULENCE_1D_DATA_PATH',
-        '/lustre/fswork/projects/rech/wbg/ukv59en/conditional_mgd/data/data_files/turbulence_1d_period.pt',
-    )
+    data_path = turbulence_1d_path()
 
     if data_path.endswith('.npz'):
         # Lagrangian dataset (32768 x 1024): fixed random subset of rows, one row per trajectory.
         z = np.load(data_path)
         assert len(np.unique(z['selection_i'])) == len(z['selection_i'])  # no two components of one trajectory
-        idx = np.sort(np.random.default_rng(0).choice(len(z['data']), n_lagr, replace=False))
+        # random order, not sorted (2026-11-24): runs take x1 = data[:n1], so any n1 < n_lagr is itself a random subset
+        idx = np.random.default_rng(0).choice(len(z['data']), n_lagr, replace=False)
         Data = torch.from_numpy(z['data'][idx])[:, None, :]  # held-out rows = complement of idx
     else:
         Data = torch.load(data_path)

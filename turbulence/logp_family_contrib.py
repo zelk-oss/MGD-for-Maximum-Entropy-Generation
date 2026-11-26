@@ -154,7 +154,7 @@ def main(label, seed, lam, ridge, eps, use_theta_t, percentiles, unconstrained=F
                              unconstrained=unconstrained)
 
     device = 'cuda' if torch.cuda.is_available() else 'cpu'
-    x1, _ = build_data(int(cfg.get('subseries_len', 512)), int(cfg['M']), int(cfg['n1']), 1)
+    x1, _ = build_data(int(cfg.get('subseries_len', 512)), int(cfg['M']), int(cfg['n1']), 1, data_path=cfg.get('data_path'))
     x1 = x1.to(device)
     pots = load_potentials(exp, cfg, device)
     n_feat = theta.shape[0]

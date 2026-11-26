@@ -136,7 +136,7 @@ def analyse(label, seed, root, with_ito=True, config=None):
         if hasattr(pots[name], 'load_fixed_parameters') and state.exists():
             pots[name] = type(pots[name]).load_fixed_parameters(state, pots[name].filters, map_location='cpu')
 
-    x1, _ = build_data(int(a.get('subseries_len', 512)), M, n1, 1)
+    x1, _ = build_data(int(a.get('subseries_len', 512)), M, n1, 1, data_path=a.get('data_path'))
     x1 = x1.double()
 
     def per_sample(x):                           # (N, r), same concatenation as SDE.compute_moments
@@ -169,6 +169,8 @@ def analyse(label, seed, root, with_ito=True, config=None):
             ito[sl] = np.outer(lap / np.abs(e[sl]).clip(1e-300), [hv * sigma ** 2 for hv in h_at.values()])
     return dict(seed=seed, cfg=cfg, sigma=sigma, nt=a.get('nt'), names=names, e=e, p=p, d=d, rel=np.abs(d),
                 z=np.abs(p - e) / se.clip(1e-300),
+                sd_data=phi_d.std(0, ddof=1), sd_model=phi_s.std(0, ddof=1), n_data=phi_d.shape[0],
+                n_model=phi_s.shape[0],
                 rel_t=np.abs(d_t), g_rows=1.0 - t_rows, persist=persist, ito=ito, h_at=h_at)
 
 
@@ -179,13 +181,14 @@ def dump_csv(r, outdir):
     rel_t, g = r['rel_t'], r['g_rows']
     jp = rel_t[1:].argmax(0) + 1                                  # step of the peak error along the run
     cols = ['index', 'name', 'target_e', 'generated_p', 'd_signed', 'rel', 'z', 'persist_sign',
-            'peak_rel', 'peak_at_1mt', 'ito_1e-2', 'ito_1e-3', 'ito_end']
+            'peak_rel', 'peak_at_1mt', 'ito_1e-2', 'ito_1e-3', 'ito_end', 'sd_data', 'sd_model', 'n_data', 'n_model']
     with open(f, 'w') as fh:
         fh.write(f"# {r['cfg']}  sigma={r['sigma']} nt={r['nt']} seed={r['seed']}  rel=|p-e|/|e| at t=1\n")
         fh.write(','.join(cols) + '\n')
         for i, nm in enumerate(r['names']):
             row = [i, nm, r['e'][i], r['p'][i], r['d'][i], r['rel'][i], r['z'][i], r['persist'][i],
-                   rel_t[jp[i], i], g[jp[i]], *r['ito'][i]]
+                   rel_t[jp[i], i], g[jp[i]], *r['ito'][i], r['sd_data'][i], r['sd_model'][i], r['n_data'],
+                   r['n_model']]
             fh.write(','.join(str(v) if isinstance(v, (int, str)) else f'{float(v):.6e}' for v in row) + '\n')
     print(f'  wrote {f} ({len(r["names"])} statistics)')
 

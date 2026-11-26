@@ -81,7 +81,7 @@ def main():
         assert len(exp) == 1, (config, exp)
         cfg = json.loads((exp[0] / 'config.json').read_text())
         pots = load_potentials(exp[0], cfg, device)
-        x1, _ = build_data(int(cfg.get('subseries_len', 512)), int(cfg['M']), int(cfg['n1']), 1)
+        x1, _ = build_data(int(cfg.get('subseries_len', 512)), int(cfg['M']), int(cfg['n1']), 1, data_path=cfg.get('data_path'))
         xg = torch.load(a.samples / f'{config}.pt', map_location='cpu', weights_only=False).float()
         xg = xg.reshape(xg.shape[0], 1, -1)
         inc = (x1[..., 1:] - x1[..., :-1]).abs().amax(dim=(1, 2)).numpy()          # as logp_family_contrib.py

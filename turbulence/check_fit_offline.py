@@ -18,6 +18,7 @@ Usage (repo root):
         python turbulence/check_fit_offline.py [--configs prod tailq mass]
 """
 import argparse
+import os
 import sys
 import time
 from pathlib import Path
@@ -61,7 +62,16 @@ def bic_min_window(C, gap_ref, sigma, nt, n_bulk, t_switch, gap_end):
     return float(C) * (2.0 * (t[i + 1] - t[i])) ** 0.5 * float(sigma)
 
 
-def build_data(subseries_len, target_len, n1, n_heldout):
+def build_data(subseries_len, target_len, n1, n_heldout, data_path=None):
+    """data_path: the run's config.json 'data_path' (recorded since 2026-11-24). Given, it overrides
+    TURBULENCE_1D_DATA_PATH, so a run is never compared with another dataset (default file on JZ)."""
+    if data_path:
+        p = Path(data_path)
+        if not p.exists():                       # JZ path read on another machine: same name under data/data_files
+            p = ROOT / 'data' / 'data_files' / p.name
+        if not p.exists():
+            raise FileNotFoundError(f'training data {data_path} not found (nor {p})')
+        os.environ['TURBULENCE_1D_DATA_PATH'] = str(p)
     W = DefineWavelet('Db', m=3, device='cpu')
     D = split_periodize_reshape(load_turbulence_1d().cpu(), subseries_len)
     for _ in range(int(np.log2(subseries_len / target_len))):

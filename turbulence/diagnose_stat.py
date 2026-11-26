@@ -61,7 +61,7 @@ def main(label, seed, stat, root):
         state = exp / 'fitted_potentials' / f'{name}.pt'
         if hasattr(pots[name], 'load_fixed_parameters') and state.exists():
             pots[name] = type(pots[name]).load_fixed_parameters(state, pots[name].filters, map_location='cpu')
-    x1, _ = build_data(int(a.get('subseries_len', 512)), M, n1, 1)
+    x1, _ = build_data(int(a.get('subseries_len', 512)), M, n1, 1, data_path=a.get('data_path'))
     sizes = [pt.forward(x1[:1]).shape[1] for pt in pots.values()]
     names = [f'{nm}[{i}]' for nm, k in zip(pots, sizes) for i in range(k)]
     if stat not in names:
